@@ -1,4 +1,4 @@
-name: QA
+name: Full Pipeline QA
 description: >-
   Generate and review functional, negative, security, API, and exploratory
   test scenarios, consolidate coverage, and pause for human approval.

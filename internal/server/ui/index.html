@@ -453,6 +453,17 @@ async function showExecution(id) {
       ${runs || '<div class="muted">No runs yet.</div>'}
       ${finals ? `<div class="results-head"><h2 style="font-size:16px;margin:0">Results</h2>${copyAll}</div>${finals}` : ''}`;
     restoreViewState(state);
+    const activeRun = (x.runs || []).slice().reverse().find(run =>
+      ['pending', 'running', 'waiting_inputs', 'waiting_approval', 'waiting_retry'].includes(run.status));
+    const diagramViewport = $main.querySelector('.execution-diagram .diagram-card');
+    const diagramNode = activeRun && [...$main.querySelectorAll('.execution-diagram [data-node-id]')]
+      .find(node => node.dataset.nodeId === activeRun.node_id);
+    if (diagramViewport && diagramNode) {
+      const viewportRect = diagramViewport.getBoundingClientRect();
+      const nodeRect = diagramNode.getBoundingClientRect();
+      diagramViewport.scrollLeft += nodeRect.left - viewportRect.left - (diagramViewport.clientWidth - nodeRect.width) / 2;
+      diagramViewport.scrollTop += nodeRect.top - viewportRect.top - (diagramViewport.clientHeight - nodeRect.height) / 2;
+    }
     if (isTerminal(x.status)) stopPolling();
   };
   await render();
@@ -706,7 +717,7 @@ function flowDiagram(p, execution = null) {
     const mid = x + it.w / 2;
     const status = runStatusByNode[n.id] || '';
     const tip = n.type === 'ref' ? (it.missing ? `${n.id} (not defined)` : `continues at ${n.id}`) : `${it.num}. ${n.id} · ${n.type}${n.description ? ' — ' + n.description : ''}${status ? ' · ' + status : ''}`;
-    out.push(`<g class="node"><title>${esc(tip)}</title>`);
+    out.push(`<g class="node" data-node-id="${esc(n.id)}"><title>${esc(tip)}</title>`);
     if (n.type === 'orchestrator') {
       out.push(`<rect x="${x}" y="${y - 11}" width="${it.w}" height="22" fill="#c8732a" stroke="#7a3f12" stroke-width="1" />`);
       text(mid, y + 4, label, 'block');
