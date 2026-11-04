@@ -581,7 +581,12 @@ function textWidth(text, font) { measureCtx.font = font; return measureCtx.measu
 function flowDiagram(p, execution = null) {
   const byId = Object.fromEntries(p.nodes.map(n => [n.id, n]));
   const runStatusByNode = {};
-  if (execution) for (const run of execution.runs || []) runStatusByNode[run.node_id] = run.status;
+  if (execution) for (const run of execution.runs || []) {
+    const hasError = ['failed', 'waiting_retry', 'rejected'].includes(run.status) ||
+      (run.error && !['canceled', 'interrupted'].includes(run.status));
+    runStatusByNode[run.node_id] = hasError
+      ? 'failed' : run.status;
+  }
   const seen = new Set();
   const numbered = [];
   const LABEL = `600 11px ${DIAGRAM_FONT}`;
@@ -803,8 +808,8 @@ function flowDiagram(p, execution = null) {
       .run-lamp { stroke: #151515; stroke-width: .8; }
       .run-lamp.running { fill: #20c55a; stroke: #eaffee; filter: drop-shadow(0 0 3px #20c55a); }
       .run-lamp.completed { fill: #339d52; }
-      .run-lamp.pending, .run-lamp.waiting_inputs, .run-lamp.waiting_approval, .run-lamp.waiting_retry { fill: #efb52f; }
-      .run-lamp.failed, .run-lamp.rejected { fill: #e2463a; }
+      .run-lamp.pending, .run-lamp.waiting_inputs, .run-lamp.waiting_approval { fill: #efb52f; }
+      .run-lamp.failed, .run-lamp.waiting_retry, .run-lamp.rejected { fill: #e2463a; }
       .run-lamp.canceled, .run-lamp.interrupted { fill: #747c75; }
       .cell { fill: #fff; stroke: ${INK}; stroke-width: .8; }
       .cell-rule { stroke: ${INK}; stroke-width: .6; }
