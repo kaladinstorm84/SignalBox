@@ -30,14 +30,25 @@ type Engine struct {
 
 // liveExec is the in-memory state wrapped around a persisted Execution.
 type liveExec struct {
-	exec      *Execution
-	p         *pipeline.Pipeline
-	ctx       context.Context
-	cancel    context.CancelFunc
-	liveRuns  int
-	done      chan struct{}
-	approvals map[string]chan approvalDecision
-	orchs     map[string]*orchInstance
+	exec           *Execution
+	p              *pipeline.Pipeline
+	ctx            context.Context
+	cancel         context.CancelFunc
+	liveRuns       int
+	done           chan struct{}
+	approvals      map[string]chan approvalDecision
+	retries        map[string]*pendingRetry
+	orchs          map[string]*orchInstance
+	outputsChanged chan struct{}
+	// joins holds fan-in nodes outside any stage still waiting for inputs.
+	joins map[string][]deliveredInput
+}
+
+// pendingRetry is a run parked after a failed agent call.
+type pendingRetry struct {
+	run    *NodeRun
+	resume Status
+	ch     chan bool
 }
 
 type approvalDecision struct {
@@ -67,9 +78,11 @@ type deliveredInput struct {
 // it reaches zero every chain has handed back and the stage can proceed.
 type stageState struct {
 	sr          *StageRun
+	scope       string
 	outstanding int
 	done        chan struct{}
 	closed      bool
+	joins       map[string][]deliveredInput
 }
 
 // New builds an engine and loads persisted execution history.
@@ -95,12 +108,30 @@ func New(pipelines map[string]*pipeline.Pipeline, registry *runtime.Registry, st
 }
 
 // Pipelines returns the loaded pipelines.
-func (eng *Engine) Pipelines() map[string]*pipeline.Pipeline { return eng.pipelines }
+func (eng *Engine) Pipelines() map[string]*pipeline.Pipeline {
+	eng.mu.Lock()
+	defer eng.mu.Unlock()
+
+	pipelines := make(map[string]*pipeline.Pipeline, len(eng.pipelines))
+	for name, p := range eng.pipelines {
+		pipelines[name] = p
+	}
+	return pipelines
+}
+
+// SetPipelines replaces the definitions used by future executions.
+func (eng *Engine) SetPipelines(pipelines map[string]*pipeline.Pipeline) {
+	eng.mu.Lock()
+	defer eng.mu.Unlock()
+	eng.pipelines = pipelines
+}
 
 // Start begins a new execution of the named pipeline and returns its ID.
 func (eng *Engine) Start(pipelineName, input string) (string, error) {
+	eng.mu.Lock()
 	p, ok := eng.pipelines[pipelineName]
 	if !ok {
+		eng.mu.Unlock()
 		return "", fmt.Errorf("unknown pipeline %q", pipelineName)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -112,15 +143,16 @@ func (eng *Engine) Start(pipelineName, input string) (string, error) {
 			Status:    StatusRunning,
 			CreatedAt: time.Now().UTC(),
 		},
-		p:         p,
-		ctx:       ctx,
-		cancel:    cancel,
-		done:      make(chan struct{}),
-		approvals: map[string]chan approvalDecision{},
-		orchs:     map[string]*orchInstance{},
+		p:              p,
+		ctx:            ctx,
+		cancel:         cancel,
+		done:           make(chan struct{}),
+		approvals:      map[string]chan approvalDecision{},
+		retries:        map[string]*pendingRetry{},
+		orchs:          map[string]*orchInstance{},
+		outputsChanged: make(chan struct{}),
 	}
 
-	eng.mu.Lock()
 	eng.execs[le.exec.ID] = le
 	eng.deliverLocked(le, p.Entry, input, "", nil)
 	eng.persistLocked(le)
@@ -145,6 +177,37 @@ func (eng *Engine) Approve(execID, runID string, approved bool, approvedBy, comm
 	return nil
 }
 
+// ResolveFailure resumes a run paused after a failed agent call: retry
+// re-invokes the agent with the same input; otherwise the execution fails.
+func (eng *Engine) ResolveFailure(execID, runID string, retry bool) error {
+	eng.mu.Lock()
+	defer eng.mu.Unlock()
+	le, ok := eng.execs[execID]
+	if !ok {
+		return fmt.Errorf("unknown execution %q", execID)
+	}
+	pending, ok := le.retries[runID]
+	if !ok {
+		return fmt.Errorf("no failed run %q awaiting retry in execution %q", runID, execID)
+	}
+	delete(le.retries, runID)
+	if retry {
+		// Update state here, not in the waiting goroutine, so callers never
+		// observe a stale waiting_retry status after a successful Retry.
+		pending.run.Status = pending.resume
+		pending.run.Error = ""
+		pending.run.Retries++
+		eng.persistLocked(le)
+	}
+	pending.ch <- retry
+	return nil
+}
+
+// Retry re-runs a failed agent call that is awaiting retry.
+func (eng *Engine) Retry(execID, runID string) error {
+	return eng.ResolveFailure(execID, runID, true)
+}
+
 // Cancel aborts a running execution.
 func (eng *Engine) Cancel(execID string) error {
 	eng.mu.Lock()
@@ -162,6 +225,33 @@ func (eng *Engine) Cancel(execID string) error {
 		le.cancel()
 	}
 	eng.persistLocked(le)
+	return nil
+}
+
+// Delete removes a finished execution from memory and disk. Executions that
+// are still running (including canceled ones whose agent calls have not yet
+// wound down) cannot be deleted.
+func (eng *Engine) Delete(execID string) error {
+	eng.mu.Lock()
+	defer eng.mu.Unlock()
+	le, ok := eng.execs[execID]
+	if !ok {
+		return fmt.Errorf("unknown execution %q", execID)
+	}
+	select {
+	case <-le.done:
+	default:
+		if le.exec.Status.Terminal() {
+			return fmt.Errorf("execution %q is still stopping; try again shortly", execID)
+		}
+		return fmt.Errorf("execution %q is still running (%s); cancel it first", execID, le.exec.Status)
+	}
+	if eng.store != nil {
+		if err := eng.store.Delete(execID); err != nil {
+			return fmt.Errorf("deleting execution %q: %w", execID, err)
+		}
+	}
+	delete(eng.execs, execID)
 	return nil
 }
 
@@ -190,10 +280,13 @@ func (eng *Engine) List() []Summary {
 	defer eng.mu.Unlock()
 	out := make([]Summary, 0, len(eng.execs))
 	for _, le := range eng.execs {
-		waiting := 0
+		waiting, retrying := 0, 0
 		for _, r := range le.exec.Runs {
-			if r.Status == StatusWaitingApproval {
+			switch r.Status {
+			case StatusWaitingApproval:
 				waiting++
+			case StatusWaitingRetry:
+				retrying++
 			}
 		}
 		out = append(out, Summary{
@@ -202,6 +295,7 @@ func (eng *Engine) List() []Summary {
 			Input:      firstChars(le.exec.Input, 160),
 			Status:     le.exec.Status,
 			Waiting:    waiting,
+			Retrying:   retrying,
 			CreatedAt:  le.exec.CreatedAt,
 			FinishedAt: le.exec.FinishedAt,
 		})
@@ -212,6 +306,15 @@ func (eng *Engine) List() []Summary {
 
 // WaitingApprovals returns the runs currently blocked on human approval.
 func (eng *Engine) WaitingApprovals(execID string) []*NodeRun {
+	return eng.runsWithStatus(execID, StatusWaitingApproval)
+}
+
+// WaitingRetries returns the runs paused after a failed agent call.
+func (eng *Engine) WaitingRetries(execID string) []*NodeRun {
+	return eng.runsWithStatus(execID, StatusWaitingRetry)
+}
+
+func (eng *Engine) runsWithStatus(execID string, status Status) []*NodeRun {
 	eng.mu.Lock()
 	defer eng.mu.Unlock()
 	le, ok := eng.execs[execID]
@@ -220,7 +323,7 @@ func (eng *Engine) WaitingApprovals(execID string) []*NodeRun {
 	}
 	var out []*NodeRun
 	for _, r := range le.exec.Runs {
-		if r.Status == StatusWaitingApproval {
+		if r.Status == status {
 			cp := *r
 			out = append(out, &cp)
 		}
@@ -281,6 +384,32 @@ func (eng *Engine) deliverLocked(le *liveExec, nodeID, input, from string, octx 
 		return
 	}
 
+	// A node with several inbound deliveries in this scope waits for all of
+	// them, then runs once on the combined input. A source is always still
+	// live while its delivery is outstanding, so the scope cannot settle
+	// before the join completes.
+	scope, joins := pipeline.TopScope, &le.joins
+	if octx != nil {
+		scope, joins = octx.scope, &octx.joins
+	}
+	if expected := le.p.JoinCount(scope, nodeID); expected > 1 {
+		if *joins == nil {
+			*joins = map[string][]deliveredInput{}
+		}
+		inputs := append((*joins)[nodeID], deliveredInput{from: from, input: input})
+		if len(inputs) < expected {
+			(*joins)[nodeID] = inputs
+			return
+		}
+		delete(*joins, nodeID)
+		input = joinInputs(inputs)
+		froms := make([]string, len(inputs))
+		for i, in := range inputs {
+			froms[i] = in.from
+		}
+		from = strings.Join(froms, ", ")
+	}
+
 	run := &NodeRun{
 		ID:         newRunID(),
 		NodeID:     nodeID,
@@ -302,6 +431,10 @@ func (eng *Engine) deliverLocked(le *liveExec, nodeID, input, from string, octx 
 // --- node execution ---
 
 func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx *stageState) {
+	if _, err := eng.awaitAdditionalInputs(le, run, node, run.Input); err != nil {
+		eng.finishRunErr(le, run, node, octx, err)
+		return
+	}
 	if node.Type == pipeline.TypeApproval {
 		eng.runApproval(le, run, node, octx)
 		return
@@ -314,12 +447,13 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 	eng.persistLocked(le)
 	eng.mu.Unlock()
 
-	rt, err := eng.registry.Get(node.Runtime)
-	if err != nil {
-		eng.finishRunErr(le, run, node, octx, err)
-		return
-	}
-	out, err := rt.Invoke(le.ctx, runtime.Request{SystemPrompt: node.Prompt, Input: run.Input})
+	out, err := eng.invokeRetrying(le, run, func() (string, error) {
+		rt, err := eng.registry.Get(node.Runtime)
+		if err != nil {
+			return "", err
+		}
+		return rt.Invoke(le.ctx, runtime.Request{SystemPrompt: node.Prompt, Input: run.Input})
+	})
 	if err != nil {
 		eng.finishRunErr(le, run, node, octx, err)
 		return
@@ -392,6 +526,8 @@ func (eng *Engine) finishRunOK(le *liveExec, run *NodeRun, handoffs []string, ou
 	run.Output = output
 	run.Status = StatusCompleted
 	run.FinishedAt = &now
+	close(le.outputsChanged)
+	le.outputsChanged = make(chan struct{})
 
 	if !le.exec.Status.Terminal() {
 		if len(handoffs) > 0 {
@@ -498,12 +634,16 @@ func (eng *Engine) runOrchestrator(le *liveExec, oi *orchInstance) {
 	now := time.Now().UTC()
 	oi.run.Status = StatusRunning
 	oi.run.StartedAt = &now
-	stageContext := joinInputs(oi.inputs)
-	oi.run.Input = stageContext
+	input := joinInputs(oi.inputs)
 	eng.persistLocked(le)
 	eng.mu.Unlock()
 
 	node := oi.node
+	stageContext, err := eng.awaitAdditionalInputs(le, oi.run, node, input)
+	if err != nil {
+		eng.finishRunErr(le, oi.run, node, nil, err)
+		return
+	}
 	for _, stage := range node.Stages {
 		eng.mu.Lock()
 		if le.exec.Status.Terminal() {
@@ -519,7 +659,7 @@ func (eng *Engine) runOrchestrator(le *liveExec, oi *orchInstance) {
 			ownerRunID: oi.run.ID,
 		}
 		oi.run.Stages = append(oi.run.Stages, sr)
-		oi.cur = &stageState{sr: sr, done: make(chan struct{})}
+		oi.cur = &stageState{sr: sr, scope: pipeline.StageScope(node.ID, stage.ID), done: make(chan struct{})}
 		for _, agentID := range stage.Agents {
 			eng.deliverLocked(le, agentID, stageContext, node.ID, oi.cur)
 		}
@@ -545,7 +685,7 @@ func (eng *Engine) runOrchestrator(le *liveExec, oi *orchInstance) {
 		eng.mu.Unlock()
 
 		if stage.Prompt != "" {
-			out, err := eng.invokeOrchPrompt(le, node, stage.Prompt, collected)
+			out, err := eng.invokeOrchPrompt(le, oi.run, node, stage.Prompt, collected)
 			if err != nil {
 				eng.failStage(le, sr)
 				eng.finishRunErr(le, oi.run, node, nil, fmt.Errorf("stage %q synthesis: %w", stage.ID, err))
@@ -567,7 +707,7 @@ func (eng *Engine) runOrchestrator(le *liveExec, oi *orchInstance) {
 
 	final := stageContext
 	if node.Prompt != "" {
-		out, err := eng.invokeOrchPrompt(le, node, node.Prompt, final)
+		out, err := eng.invokeOrchPrompt(le, oi.run, node, node.Prompt, final)
 		if err != nil {
 			eng.finishRunErr(le, oi.run, node, nil, fmt.Errorf("final synthesis: %w", err))
 			return
@@ -577,12 +717,109 @@ func (eng *Engine) runOrchestrator(le *liveExec, oi *orchInstance) {
 	eng.finishRunOK(le, oi.run, node.Handoff, final, nil)
 }
 
-func (eng *Engine) invokeOrchPrompt(le *liveExec, node *pipeline.Node, prompt, input string) (string, error) {
-	rt, err := eng.registry.Get(node.Runtime)
-	if err != nil {
-		return "", err
+func (eng *Engine) invokeOrchPrompt(le *liveExec, run *NodeRun, node *pipeline.Node, prompt, input string) (string, error) {
+	return eng.invokeRetrying(le, run, func() (string, error) {
+		rt, err := eng.registry.Get(node.Runtime)
+		if err != nil {
+			return "", err
+		}
+		return rt.Invoke(le.ctx, runtime.Request{SystemPrompt: prompt, Input: input})
+	})
+}
+
+func (eng *Engine) awaitAdditionalInputs(le *liveExec, run *NodeRun, node *pipeline.Node, input string) (string, error) {
+	for {
+		eng.mu.Lock()
+		combined, ready := collectAdditionalInputs(le, node, input)
+		changed := le.outputsChanged
+		if ready {
+			run.Input = combined
+			eng.persistLocked(le)
+			eng.mu.Unlock()
+			return combined, nil
+		}
+		eng.mu.Unlock()
+
+		select {
+		case <-changed:
+		case <-le.ctx.Done():
+			return "", le.ctx.Err()
+		}
 	}
-	return rt.Invoke(le.ctx, runtime.Request{SystemPrompt: prompt, Input: input})
+}
+
+func collectAdditionalInputs(le *liveExec, node *pipeline.Node, input string) (string, bool) {
+	if len(node.AdditionalInput) == 0 {
+		return input, true
+	}
+	outputs := make([]string, len(node.AdditionalInput))
+	for i, sourceID := range node.AdditionalInput {
+		found := false
+		for runIndex := len(le.exec.Runs) - 1; runIndex >= 0; runIndex-- {
+			source := le.exec.Runs[runIndex]
+			if source.NodeID != sourceID {
+				continue
+			}
+			if source.Status != StatusCompleted {
+				return "", false
+			}
+			outputs[i] = source.Output
+			found = true
+			break
+		}
+		if !found {
+			return "", false
+		}
+	}
+
+	var combined strings.Builder
+	combined.WriteString(input)
+	for i, sourceID := range node.AdditionalInput {
+		if combined.Len() > 0 {
+			combined.WriteString("\n\n")
+		}
+		fmt.Fprintf(&combined, "--- additional input from %s ---\n%s", sourceID, outputs[i])
+	}
+	return combined.String(), true
+}
+
+// invokeRetrying runs an agent call. On failure the run is parked in
+// waiting_retry until ResolveFailure is called or the execution ends; the
+// returned error means the failure was abandoned or the execution canceled.
+// The caller's stage and live-run counters stay held while parked, so
+// parallel branches continue but nothing downstream proceeds without it.
+func (eng *Engine) invokeRetrying(le *liveExec, run *NodeRun, invoke func() (string, error)) (string, error) {
+	for {
+		out, err := invoke()
+		if err == nil {
+			return out, nil
+		}
+
+		eng.mu.Lock()
+		if le.ctx.Err() != nil || le.exec.Status.Terminal() {
+			eng.mu.Unlock()
+			return "", err
+		}
+		pending := &pendingRetry{run: run, resume: run.Status, ch: make(chan bool, 1)}
+		run.Status = StatusWaitingRetry
+		run.Error = err.Error()
+		le.retries[run.ID] = pending
+		eng.persistLocked(le)
+		eng.mu.Unlock()
+
+		var retry bool
+		select {
+		case retry = <-pending.ch:
+		case <-le.ctx.Done():
+			eng.mu.Lock()
+			delete(le.retries, run.ID)
+			eng.mu.Unlock()
+			return "", err
+		}
+		if !retry {
+			return "", err
+		}
+	}
 }
 
 func (eng *Engine) failStage(le *liveExec, sr *StageRun) {

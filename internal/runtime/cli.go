@@ -19,23 +19,33 @@ type cliRuntime struct {
 	command    string
 	args       []string
 	promptMode string // "arg" or "stdin"
+	stdinArgs  []string
 	timeout    time.Duration
 }
 
+// maxArgPrompt keeps arg-mode prompts well inside the 32,767-character
+// Windows command-line limit, leaving room for the command, other arguments
+// and quoting.
+const maxArgPrompt = 24000
+
 // Presets for the known agent CLIs. All of them support a non-interactive
 // single-prompt mode; the user can override command/args in signalbox.yaml.
+// stdinArgs, when set, are appended instead of the prompt to make the CLI read
+// the prompt from stdin; prompts too long for the command line use this.
 var cliPresets = map[string]struct {
-	command string
-	args    []string
+	command   string
+	args      []string
+	stdinArgs []string
 }{
-	"codex":   {command: "codex", args: []string{"exec"}},
-	"claude":  {command: "claude", args: []string{"-p"}},
+	"codex":   {command: "codex", args: []string{"exec"}, stdinArgs: []string{"-"}},
+	"claude":  {command: "claude", args: []string{"-p"}, stdinArgs: []string{}},
 	"copilot": {command: "copilot", args: []string{"-p"}},
 }
 
 func newCLI(name string, rc config.RuntimeConfig) (Runtime, error) {
 	command := rc.Command
 	args := rc.Args
+	var stdinArgs []string
 	if preset, ok := cliPresets[rc.Type]; ok {
 		if command == "" {
 			command = preset.command
@@ -43,6 +53,7 @@ func newCLI(name string, rc config.RuntimeConfig) (Runtime, error) {
 		if args == nil {
 			args = preset.args
 		}
+		stdinArgs = preset.stdinArgs
 	}
 	if command == "" {
 		return nil, fmt.Errorf("cli runtime requires a command")
@@ -63,6 +74,7 @@ func newCLI(name string, rc config.RuntimeConfig) (Runtime, error) {
 		command:    command,
 		args:       args,
 		promptMode: mode,
+		stdinArgs:  stdinArgs,
 		timeout:    timeout,
 	}, nil
 }
@@ -80,10 +92,16 @@ func (c *cliRuntime) Invoke(ctx context.Context, req Request) (string, error) {
 
 	args := append([]string{}, c.args...)
 	var stdin *bytes.Reader
-	if c.promptMode == "arg" {
-		args = append(args, prompt)
-	} else {
+	switch {
+	case c.promptMode == "stdin":
 		stdin = bytes.NewReader([]byte(prompt))
+	case argLength(prompt) <= maxArgPrompt:
+		args = append(args, prompt)
+	case c.stdinArgs != nil:
+		args = append(args, c.stdinArgs...)
+		stdin = bytes.NewReader([]byte(prompt))
+	default:
+		return "", fmt.Errorf("prompt is %d characters, too long to pass to %s as a command-line argument; set prompt_mode: stdin for runtime %q if the command can read its prompt from stdin", len(prompt), c.command, c.name)
 	}
 
 	cmd := exec.CommandContext(ctx, c.command, args...)
@@ -105,4 +123,10 @@ func (c *cliRuntime) Invoke(ctx context.Context, req Request) (string, error) {
 		return "", fmt.Errorf("%s failed: %w: %s", c.command, err, truncate(detail, 800))
 	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+// argLength estimates the command-line length of an argument, counting the
+// escaping Windows applies to quotes and backslashes.
+func argLength(s string) int {
+	return len(s) + strings.Count(s, `"`) + strings.Count(s, `\`) + 2
 }

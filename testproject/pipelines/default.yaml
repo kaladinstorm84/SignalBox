@@ -1,0 +1,74 @@
+# A demo pipeline showing every SignalBox concept. It uses the mock runtime
+# so it works out of the box; point the agents at real runtimes in
+# signalbox.yaml when ready.
+name: default
+description: >-
+  Demo flow: a triage agent hands off to an orchestrator that coordinates a
+  research stage (two agents in parallel) and a drafting stage, then a human
+  approves the draft before the publisher agent finishes.
+entry: triage
+
+agents:
+  # A standard agent accepts a handoff (when several agents hand off to it,
+  # it waits for all of them and runs once) and hands off to one or more
+  # agents, or to a single orchestrator.
+  - id: triage
+    type: standard
+    runtime: mock
+    description: Classifies the incoming request and frames the task.
+    prompt: |
+      You are the triage agent. Restate the request as a clear task brief.
+    handoff: [coordinator]
+
+  # An orchestrator accepts handoffs from many agents (fan-in) and runs its
+  # stages in order. Each stage dispatches to agents in parallel and collects
+  # the results of their chains before moving on.
+  - id: coordinator
+    type: orchestrator
+    runtime: mock
+    description: Long-running coordinator for research and drafting.
+    stages:
+      - id: research
+        agents: [researcher, analyst]
+        prompt: |
+          Merge the research notes and analysis into one coherent summary.
+      - id: drafting
+        agents: [writer]
+    handoff: [review]
+
+  - id: researcher
+    type: standard
+    runtime: mock
+    description: Gathers background information.
+    prompt: |
+      You are the researcher. List the key facts relevant to the brief.
+    # No handoff: inside an orchestrator stage this hands back to the
+    # orchestrator.
+
+  - id: analyst
+    type: standard
+    runtime: mock
+    description: Analyses risks and constraints.
+    prompt: |
+      You are the analyst. Identify risks, constraints, and open questions.
+
+  - id: writer
+    type: standard
+    runtime: mock
+    description: Produces the draft.
+    prompt: |
+      You are the writer. Produce a polished draft from the stage context.
+
+  # An approval node pauses the execution until a human approves or rejects
+  # it in the web UI (signalbox serve) or the terminal (signalbox run).
+  - id: review
+    type: approval
+    description: Human review of the draft before publishing.
+    handoff: [publisher]
+
+  - id: publisher
+    type: standard
+    runtime: mock
+    description: Final formatting and delivery.
+    prompt: |
+      You are the publisher. Format the approved draft for delivery.

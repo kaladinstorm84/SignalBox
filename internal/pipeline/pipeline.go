@@ -16,8 +16,9 @@ import (
 type NodeType string
 
 const (
-	// TypeStandard is a single-shot agent: it accepts one handoff, runs its
-	// prompt against a runtime, and hands off to one or more targets.
+	// TypeStandard is a single-shot agent: it accepts a handoff (or joins
+	// several, see JoinCount), runs its prompt against a runtime, and hands
+	// off to one or more targets.
 	TypeStandard NodeType = "standard"
 	// TypeOrchestrator is a long-running coordinator. It accepts handoffs
 	// from many agents (fan-in) and runs its stages sequentially, dispatching
@@ -62,6 +63,8 @@ type Node struct {
 	// terminates here (and, inside an orchestrator stage, hands back to the
 	// orchestrator).
 	Handoff []string `yaml:"handoff,omitempty"`
+	// AdditionalInput lists outputs that this node also requires in its input.
+	AdditionalInput []string `yaml:"additional-input,omitempty"`
 
 	// Stages is only valid for orchestrators.
 	Stages []Stage `yaml:"stages,omitempty"`
@@ -76,6 +79,64 @@ type Pipeline struct {
 	Nodes []Node `yaml:"agents"`
 
 	byID map[string]*Node
+	// joins maps a scope key (TopScope or StageScope) to the number of
+	// deliveries each non-orchestrator node receives within that scope.
+	joins map[string]map[string]int
+}
+
+// TopScope is the scope key for nodes running outside any orchestrator stage.
+const TopScope = ""
+
+// StageScope returns the scope key for chains started by one orchestrator
+// stage.
+func StageScope(orchID, stageID string) string {
+	return orchID + "/" + stageID
+}
+
+// JoinCount returns how many deliveries a non-orchestrator node receives in
+// the given scope. A node with more than one waits for all of them (fan-in)
+// and then runs once on the combined input.
+func (p *Pipeline) JoinCount(scope, id string) int {
+	return p.joins[scope][id]
+}
+
+// computeJoins counts, per scope, the handoff edges into each node from
+// nodes that run in that scope (plus the scope's own dispatches). Every
+// node in a scope runs exactly once, so each counted edge delivers once.
+func (p *Pipeline) computeJoins() {
+	p.joins = map[string]map[string]int{}
+	count := func(scope string, roots []string, throughOrchs bool) {
+		counts := map[string]int{}
+		seen := map[string]bool{}
+		queue := append([]string{}, roots...)
+		for _, r := range roots {
+			counts[r]++
+		}
+		for len(queue) > 0 {
+			id := queue[0]
+			queue = queue[1:]
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			n := p.byID[id]
+			if n.Type == TypeOrchestrator && !throughOrchs {
+				continue
+			}
+			for _, t := range n.Handoff {
+				counts[t]++
+				queue = append(queue, t)
+			}
+		}
+		p.joins[scope] = counts
+	}
+	count(TopScope, []string{p.Entry}, true)
+	for i := range p.Nodes {
+		n := &p.Nodes[i]
+		for _, s := range n.Stages {
+			count(StageScope(n.ID, s.ID), s.Agents, false)
+		}
+	}
 }
 
 // Node returns the node with the given ID, or nil.
@@ -200,14 +261,54 @@ func (p *Pipeline) validate() error {
 		}
 	}
 
-	if err := p.checkHandoffCycle(); err != nil {
+	if err := p.checkDependencyCycle(); err != nil {
 		return fmt.Errorf("pipeline %q: %w", p.Name, err)
 	}
 	if err := p.checkStageClosures(); err != nil {
 		return fmt.Errorf("pipeline %q: %w", p.Name, err)
 	}
+	if err := p.checkAdditionalInputStageOrder(); err != nil {
+		return fmt.Errorf("pipeline %q: %w", p.Name, err)
+	}
 	if err := p.checkReachability(); err != nil {
 		return fmt.Errorf("pipeline %q: %w", p.Name, err)
+	}
+	p.computeJoins()
+	return nil
+}
+
+func (p *Pipeline) checkAdditionalInputStageOrder() error {
+	for i := range p.Nodes {
+		orch := &p.Nodes[i]
+		if orch.Type != TypeOrchestrator {
+			continue
+		}
+		stageNodes := make([]map[string]bool, len(orch.Stages))
+		for stageIndex, stage := range orch.Stages {
+			seen := map[string]bool{}
+			queue := append([]string{}, stage.Agents...)
+			for len(queue) > 0 {
+				id := queue[0]
+				queue = queue[1:]
+				if seen[id] {
+					continue
+				}
+				seen[id] = true
+				queue = append(queue, p.byID[id].Handoff...)
+			}
+			stageNodes[stageIndex] = seen
+		}
+		for stageIndex, agents := range stageNodes {
+			for agentID := range agents {
+				for _, sourceID := range p.byID[agentID].AdditionalInput {
+					for laterStage := stageIndex + 1; laterStage < len(stageNodes); laterStage++ {
+						if stageNodes[laterStage][sourceID] {
+							return fmt.Errorf("orchestrator %q: agent %q in stage %q requires output from later stage agent %q", orch.ID, agentID, orch.Stages[stageIndex].ID, sourceID)
+						}
+					}
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -271,6 +372,20 @@ func (p *Pipeline) checkStageClosures() error {
 }
 
 func (p *Pipeline) validateNode(n *Node) error {
+	seenAdditional := map[string]bool{}
+	for _, id := range n.AdditionalInput {
+		if _, ok := p.byID[id]; !ok {
+			return fmt.Errorf("agent %q requires additional input from unknown agent %q", n.ID, id)
+		}
+		if id == n.ID {
+			return fmt.Errorf("agent %q may not require additional input from itself", n.ID)
+		}
+		if seenAdditional[id] {
+			return fmt.Errorf("agent %q lists additional input from %q more than once", n.ID, id)
+		}
+		seenAdditional[id] = true
+	}
+
 	for _, t := range n.Handoff {
 		if _, ok := p.byID[t]; !ok {
 			return fmt.Errorf("agent %q hands off to unknown agent %q", n.ID, t)
@@ -345,9 +460,9 @@ func (p *Pipeline) validateNode(n *Node) error {
 	return nil
 }
 
-// checkHandoffCycle rejects cycles over the union of handoff and stage
-// edges, since execution would never terminate.
-func (p *Pipeline) checkHandoffCycle() error {
+// checkDependencyCycle rejects cycles over handoff, stage, and additional
+// input dependencies, since execution would never terminate.
+func (p *Pipeline) checkDependencyCycle() error {
 	const (
 		white = 0
 		grey  = 1
@@ -358,7 +473,7 @@ func (p *Pipeline) checkHandoffCycle() error {
 	visit = func(id string, trail []string) error {
 		switch color[id] {
 		case grey:
-			return fmt.Errorf("handoff cycle detected: %s -> %s", strings.Join(trail, " -> "), id)
+			return fmt.Errorf("pipeline dependency cycle detected: %s -> %s", strings.Join(trail, " -> "), id)
 		case black:
 			return nil
 		}
@@ -368,6 +483,13 @@ func (p *Pipeline) checkHandoffCycle() error {
 		next := append([]string{}, n.Handoff...)
 		for _, s := range n.Stages {
 			next = append(next, s.Agents...)
+		}
+		for _, target := range p.Nodes {
+			for _, inputID := range target.AdditionalInput {
+				if inputID == id {
+					next = append(next, target.ID)
+				}
+			}
 		}
 		for _, t := range next {
 			if err := visit(t, trail); err != nil {
