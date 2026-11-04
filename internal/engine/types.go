@@ -66,6 +66,8 @@ type NodeRun struct {
 	Status Status            `json:"status"`
 	Input  string            `json:"input,omitempty"`
 	Output string            `json:"output,omitempty"`
+	Format bool              `json:"format,omitempty"`
+	OutputHTML string        `json:"output_html,omitempty"`
 	Error  string            `json:"error,omitempty"`
 	// Retries counts how many times a failed agent call was retried.
 	Retries int `json:"retries,omitempty"`

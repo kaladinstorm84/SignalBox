@@ -3,6 +3,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -17,7 +18,10 @@ import (
 	"github.com/gitea/signalbox/internal/engine"
 	"github.com/gitea/signalbox/internal/pipeline"
 	"github.com/gitea/signalbox/internal/watcher"
+	"github.com/yuin/goldmark"
 )
+
+var markdown = goldmark.New()
 
 //go:embed ui
 var uiFS embed.FS
@@ -203,6 +207,17 @@ func (s *Server) handleGetExecution(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, http.StatusNotFound, err)
 		return
+	}
+	for _, run := range exec.Runs {
+		if !run.Format || run.Output == "" {
+			continue
+		}
+		var rendered bytes.Buffer
+		if err := markdown.Convert([]byte(run.Output), &rendered); err != nil {
+			writeErr(w, http.StatusInternalServerError, fmt.Errorf("rendering Markdown for %q: %w", run.NodeID, err))
+			return
+		}
+		run.OutputHTML = rendered.String()
 	}
 	writeJSON(w, http.StatusOK, exec)
 }
