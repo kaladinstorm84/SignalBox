@@ -47,6 +47,11 @@ Go 1.25, single dependency: `gopkg.in/yaml.v3`).
 - **Smoke tested** — `init` → `validate` → `run` (terminal approval) →
   `serve` (UI 200, start execution via API, approve via API, completed).
 
+### Backup
+
+- Pushed to http://192.168.68.56:3000/gitea/SignalBox.git (`main`); machine
+  stores credentials via git credential store for future pushes.
+
 ### Fixes during build
 
 - `signalbox run <pipeline> --input x`: Go's `flag` stops at the first
