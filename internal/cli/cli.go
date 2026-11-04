@@ -3,9 +3,11 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/gitea/signalbox/internal/pipeline"
 	"github.com/gitea/signalbox/internal/runtime"
 	"github.com/gitea/signalbox/internal/server"
+	"github.com/gitea/signalbox/internal/watcher"
 )
 
 // Version is stamped at build time via -ldflags.
@@ -151,8 +154,13 @@ func cmdServe(args []string) error {
 	if *addr != "" {
 		listen = *addr
 	}
-	srv := server.New(eng, cfg.Project)
-	return srv.ListenAndServe(listen)
+	srv := server.New(eng, cfg.Project, func() (map[string]*pipeline.Pipeline, error) {
+		_, pipelines, err := loadProject()
+		return pipelines, err
+	}, watcher.New(cfg.StatePath(), eng.Start), cfg.Watchers)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	return srv.ListenAndServe(ctx, listen)
 }
 
 // --- run ---
@@ -241,6 +249,25 @@ func cmdRun(args []string) error {
 				fmt.Fprintf(os.Stderr, "approve failed: %v\n", err)
 			}
 		}
+		for _, run := range eng.WaitingRetries(execID) {
+			key := fmt.Sprintf("%s#%d", run.ID, run.Retries)
+			if handled[key] {
+				continue
+			}
+			handled[key] = true
+			fmt.Printf("\n=== agent failed: %s ===\n%s\n", run.NodeID, run.Error)
+			retry := false
+			if *autoApprove {
+				fmt.Println("not retrying (--yes)")
+			} else {
+				fmt.Print("retry? [y/N]: ")
+				line, _ := reader.ReadString('\n')
+				retry = strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "y")
+			}
+			if err := eng.ResolveFailure(execID, run.ID, retry); err != nil {
+				fmt.Fprintf(os.Stderr, "resolve failure: %v\n", err)
+			}
+		}
 		select {
 		case <-done:
 			printProgress(eng, execID, seen)
@@ -321,6 +348,11 @@ func loadProject() (*config.Config, map[string]*pipeline.Pipeline, error) {
 			if _, ok := cfg.Runtimes[n.Runtime]; !ok {
 				return nil, nil, fmt.Errorf("pipeline %q: agent %q references runtime %q which is not defined in %s", p.Name, n.ID, n.Runtime, config.FileName)
 			}
+		}
+	}
+	for _, watcher := range cfg.Watchers {
+		if _, ok := pipelines[watcher.Pipeline]; !ok {
+			return nil, nil, fmt.Errorf("watcher %q references unknown pipeline %q", watcher.Name, watcher.Pipeline)
 		}
 	}
 	return cfg, pipelines, nil

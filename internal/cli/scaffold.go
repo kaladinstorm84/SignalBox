@@ -46,6 +46,15 @@ runtimes:
   #   command: my-agent
   #   args: ["--quiet"]
   #   prompt_mode: stdin            # "arg" (default) or "stdin"
+
+# Optional polling triggers. A changed, non-empty command output starts the
+# named pipeline with that output as input. Watchers run under signalbox serve.
+# watchers:
+#   - name: issue-feed
+#     command: jira
+#     args: [issues, list, --project, OPS, --output, json]
+#     interval: 5m
+#     pipeline: default
 `
 
 const defaultPipelineTemplate = `# A demo pipeline showing every SignalBox concept. It uses the mock runtime
@@ -59,8 +68,9 @@ description: >-
 entry: triage
 
 agents:
-  # A standard agent accepts a handoff from one agent/orchestrator and hands
-  # off to one or more agents, or to a single orchestrator.
+  # A standard agent accepts a handoff (when several agents hand off to it,
+  # it waits for all of them and runs once) and hands off to one or more
+  # agents, or to a single orchestrator.
   - id: triage
     type: standard
     runtime: mock

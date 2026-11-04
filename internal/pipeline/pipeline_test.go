@@ -28,6 +28,7 @@ agents:
     runtime: mock
   - id: writer
     runtime: mock
+    additional-input: [researcher]
   - id: review
     type: approval
     handoff: [publisher]
@@ -42,6 +43,9 @@ agents:
 	}
 	if p.Node("triage").Type != TypeStandard {
 		t.Errorf("triage type = %q, want standard default", p.Node("triage").Type)
+	}
+	if len(p.Node("writer").AdditionalInput) != 1 || p.Node("writer").AdditionalInput[0] != "researcher" {
+		t.Errorf("writer additional input = %v, want [researcher]", p.Node("writer").AdditionalInput)
 	}
 	if got := p.InboundCount("coordinator"); got != 1 {
 		t.Errorf("InboundCount(coordinator) = %d, want 1", got)
@@ -73,6 +77,52 @@ agents:
   - id: a
 `,
 			wantErr: "missing a runtime",
+		},
+		{
+			name: "unknown additional input",
+			yaml: `
+name: p
+agents:
+  - id: a
+    runtime: mock
+    additional-input: [ghost]
+`,
+			wantErr: "unknown agent",
+		},
+		{
+			name: "additional input dependency cycle",
+			yaml: `
+name: p
+agents:
+  - id: a
+    runtime: mock
+    additional-input: [b]
+  - id: b
+    runtime: mock
+    additional-input: [a]
+`,
+			wantErr: "cycle",
+		},
+		{
+			name: "additional input from later stage",
+			yaml: `
+name: p
+entry: orch
+agents:
+  - id: orch
+    type: orchestrator
+    stages:
+      - id: first
+        agents: [consumer]
+      - id: second
+        agents: [source]
+  - id: consumer
+    runtime: mock
+    additional-input: [source]
+  - id: source
+    runtime: mock
+`,
+			wantErr: "later stage",
 		},
 		{
 			name: "cycle",

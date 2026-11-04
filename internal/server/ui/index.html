@@ -4,11 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SignalBox</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='14' y='4' width='3' height='25' fill='%23d8cfb6'/%3E%3Crect x='6' y='27' width='19' height='3' rx='1' fill='%23c9a34a'/%3E%3Crect x='17' y='7' width='13' height='4' fill='%23d6372c'/%3E%3Crect x='25' y='7' width='2' height='4' fill='%23f4eedc'/%3E%3Ccircle cx='15.5' cy='14' r='2.2' fill='%2346d27a'/%3E%3C/svg%3E">
 <style>
+  /* Theme: the inside of a mechanical railway signal box at night — Brunswick
+     green panelling, cream enamel signage, brass fittings, a colour-coded
+     lever frame, block-instrument lamps, and an illuminated track diagram. */
   :root {
-    --bg: #0d1117; --bg2: #161b22; --bg3: #1c2230; --border: #2b3242;
-    --text: #e6e9ef; --muted: #8b94a7; --accent: #4f8cff; --accent2: #7aa5ff;
-    --ok: #3fb67d; --warn: #e0a42c; --err: #e05c5c; --purple: #a07aff;
+    --bg: #0e1813; --bg2: #14231b; --bg3: #1b2f24; --border: #2b4436;
+    --text: #ece4cf; --muted: #93a596; --accent: #c9a34a; --accent2: #e2c26f;
+    --ok: #46d27a; --warn: #f0b432; --err: #e2463a; --purple: #5b93d6;
+    --cream: #efe6cf; --enamel: #10331f; --diagram: #0a0f0c; --rail: #d9d4c4;
+    --sign: "Gill Sans", "Gill Sans MT", "Gill Sans Nova", "Trebuchet MS", Calibri, sans-serif;
   }
   * { box-sizing: border-box; }
   body {
@@ -16,105 +22,238 @@
     font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
   a { color: var(--accent2); text-decoration: none; }
-  .layout { display: flex; min-height: 100vh; }
+  a:hover { text-decoration: underline; }
+  .layout { display: flex; min-height: 100vh; min-width: 0; }
+
+  /* Sidebar: timber-panelled box wall with a lever frame. */
   .sidebar {
-    width: 220px; flex-shrink: 0; background: var(--bg2); border-right: 1px solid var(--border);
-    padding: 20px 14px; display: flex; flex-direction: column; gap: 4px;
+    width: 236px; flex-shrink: 0; border-right: 1px solid #000;
+    background:
+      repeating-linear-gradient(90deg, rgba(255,255,255,.018) 0 2px, transparent 2px 38px),
+      linear-gradient(180deg, #1a2c22, #111d17);
+    padding: 18px 14px; display: flex; flex-direction: column; gap: 4px;
   }
-  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; padding: 0 8px; }
-  .brand .logo {
-    width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
-    background: linear-gradient(135deg, var(--accent), var(--purple));
-    display: flex; align-items: center; justify-content: center; font-weight: 800; color: #fff;
+  .nameboard {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 22px; padding: 10px 12px;
+    background: var(--enamel); border-radius: 4px; color: var(--cream);
+    border: 2px solid var(--cream); box-shadow: 0 0 0 3px var(--enamel), 0 6px 14px rgba(0,0,0,.45);
   }
-  .brand h1 { font-size: 17px; margin: 0; letter-spacing: .3px; }
-  .brand .sub { font-size: 11px; color: var(--muted); }
+  .nameboard svg { width: 30px; height: 34px; flex-shrink: 0; }
+  .nameboard .arm { transform-origin: 16px 9px; transition: transform .5s cubic-bezier(.5,1.6,.5,1); }
+  .nameboard:hover .arm { transform: rotate(-40deg); }
+  .nameboard .lamp { transition: fill .3s; }
+  .nameboard:hover .lamp { fill: var(--ok); }
+  .nameboard h1 { font: 700 17px/1.1 var(--sign); margin: 0; letter-spacing: 2px; text-transform: uppercase; }
+  .nameboard .sub { font: 11px/1.3 var(--sign); letter-spacing: 1px; text-transform: uppercase; opacity: .75; margin-top: 3px; }
+
+  .nav { display: flex; flex-direction: column; gap: 2px; padding-bottom: 10px;
+         border-bottom: 4px solid var(--accent); border-radius: 0 0 2px 2px;
+         box-shadow: 0 3px 0 #6d5626; }
   .nav a {
-    display: block; padding: 9px 12px; border-radius: 8px; color: var(--text); font-weight: 500;
+    display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 6px;
+    color: var(--text); font-weight: 500; text-decoration: none;
   }
-  .nav a:hover { background: var(--bg3); }
-  .nav a.active { background: var(--bg3); color: var(--accent2); }
-  .main { flex: 1; padding: 28px 36px; max-width: 1100px; }
-  h2 { margin: 0 0 4px; font-size: 20px; }
+  .nav a:hover { background: rgba(255,255,255,.04); }
+  .nav a.active { background: rgba(201,163,74,.1); color: var(--accent2); }
+  .lever { position: relative; width: 18px; height: 34px; flex-shrink: 0; }
+  .lever::before {
+    content: ""; position: absolute; left: 6px; bottom: 6px; width: 6px; height: 28px; border-radius: 3px 3px 1px 1px;
+    background: var(--lever, #222); box-shadow: inset -2px 0 0 rgba(0,0,0,.35), inset 1px 0 0 rgba(255,255,255,.2);
+    transform-origin: 50% 100%; transition: transform .35s cubic-bezier(.4,1.5,.5,1);
+  }
+  .lever::after {
+    content: attr(data-n); position: absolute; left: 1px; bottom: 0; width: 16px; height: 11px;
+    background: var(--cream); color: #1a1a1a; border-radius: 2px; font: 700 8.5px/11px var(--sign); text-align: center;
+  }
+  .nav a.active .lever::before, .nav a:hover .lever::before { transform: rotate(-22deg); }
+  .lever.red { --lever: #c8322b; } .lever.yellow { --lever: #e3b225; } .lever.black { --lever: #1b1b1b; }
+
+  .diagram-mini { margin-top: auto; padding-top: 18px; }
+  .diagram-mini .panel { background: var(--diagram); border: 1px solid #000; border-radius: 4px; padding: 8px; }
+  .diagram-mini svg { display: block; width: 100%; height: 46px; }
+  .diagram-mini .track { stroke: var(--rail); stroke-width: 2; fill: none; opacity: .55; }
+  .diagram-mini .occupied { stroke: var(--err); stroke-width: 3; fill: none; stroke-dasharray: 26 400; animation: occupy 9s linear infinite; }
+  @keyframes occupy { from { stroke-dashoffset: 26; } to { stroke-dashoffset: -230; } }
+
+  .main { flex: 1 1 0; min-width: 0; width: 100%; padding: 28px 36px; }
+  h2 { margin: 0 0 4px; font: 600 22px/1.3 var(--sign); letter-spacing: .4px; }
+  h2.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 18px; letter-spacing: 0; }
   .page-sub { color: var(--muted); margin-bottom: 22px; }
   .card {
-    background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
-    padding: 18px 20px; margin-bottom: 14px;
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+    padding: 18px 20px; margin-bottom: 14px; box-shadow: inset 0 1px 0 rgba(255,255,255,.03), 0 2px 8px rgba(0,0,0,.25);
   }
   table { width: 100%; border-collapse: collapse; }
-  th { text-align: left; color: var(--muted); font-size: 12px; text-transform: uppercase;
-       letter-spacing: .5px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { text-align: left; color: var(--muted); font: 600 11.5px var(--sign); text-transform: uppercase;
+       letter-spacing: 1.2px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
   td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
   tr.row:hover { background: var(--bg3); cursor: pointer; }
   tr:last-child td { border-bottom: none; }
+
+  /* Status pills carry a signal lamp showing the equivalent aspect. */
   .pill {
-    display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
-    border: 1px solid transparent; white-space: nowrap;
+    display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px 2px 7px; border-radius: 999px;
+    font-size: 12px; font-weight: 600; border: 1px solid transparent; white-space: nowrap; background: #0b120e;
   }
-  .pill.running, .pill.pending { color: var(--accent2); border-color: var(--accent); background: rgba(79,140,255,.1); }
-  .pill.waiting_approval { color: var(--warn); border-color: var(--warn); background: rgba(224,164,44,.12); }
-  .pill.waiting_inputs { color: var(--purple); border-color: var(--purple); background: rgba(160,122,255,.12); }
-  .pill.completed { color: var(--ok); border-color: var(--ok); background: rgba(63,182,125,.1); }
-  .pill.failed, .pill.rejected { color: var(--err); border-color: var(--err); background: rgba(224,92,92,.1); }
-  .pill.canceled, .pill.interrupted { color: var(--muted); border-color: var(--muted); background: rgba(139,148,167,.1); }
+  .pill .lamp { width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 6px currentColor; }
+  .pill .lamp + .lamp { margin-left: -2px; }
+  .pill.running, .pill.pending { color: var(--warn); border-color: rgba(240,180,50,.55); }
+  .pill.running .lamp, .pill.pending .lamp { animation: blink 1.2s steps(2, jump-none) infinite; }
+  .pill.waiting_approval { color: var(--warn); border-color: var(--warn); }
+  .pill.waiting_approval .lamp { color: var(--err); animation: blink 1.6s steps(2, jump-none) infinite; }
+  .pill.waiting_inputs { color: var(--purple); border-color: var(--purple); }
+  .pill.waiting_inputs .lamp { color: var(--warn); }
+  .pill.completed { color: var(--ok); border-color: rgba(70,210,122,.55); }
+  .pill.failed, .pill.rejected, .pill.waiting_retry { color: var(--err); border-color: var(--err); }
+  .pill.waiting_retry .lamp { animation: blink 1s steps(2, jump-none) infinite; }
+  .pill.canceled, .pill.interrupted { color: var(--muted); border-color: #4a5a4f; }
+  .pill.canceled .lamp, .pill.interrupted .lamp { background: #2b332e; box-shadow: none; }
+  @keyframes blink { 50% { opacity: .25; } }
+
   .muted { color: var(--muted); }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+
+  /* Buttons: brass fittings; approve/retry pull "off", reject/cancel to danger. */
   button {
-    background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 9px 16px;
-    font-weight: 600; font-size: 13.5px; cursor: pointer;
+    background: linear-gradient(180deg, var(--accent2), var(--accent)); color: #1d1606;
+    border: 1px solid #7a6127; border-radius: 5px; padding: 9px 16px;
+    font: 600 13.5px var(--sign); letter-spacing: .5px; cursor: pointer;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 2px 0 #5b4718;
   }
-  button:hover { background: var(--accent2); }
-  button.secondary { background: var(--bg3); color: var(--text); border: 1px solid var(--border); }
+  button:hover { filter: brightness(1.08); }
+  button:active { transform: translateY(1px); box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 1px 0 #5b4718; }
+  button:disabled { opacity: .55; cursor: default; }
+  button.secondary { background: var(--bg3); color: var(--text); border: 1px solid var(--border); box-shadow: none; }
   button.secondary:hover { border-color: var(--muted); }
-  button.danger { background: transparent; color: var(--err); border: 1px solid var(--err); }
-  button.danger:hover { background: rgba(224,92,92,.12); }
-  button.approve { background: var(--ok); }
+  button.danger { background: transparent; color: var(--err); border: 1px solid var(--err); box-shadow: none; }
+  button.danger:hover { background: rgba(226,70,58,.12); }
+  button.sm { padding: 3px 9px; font-size: 12px; }
+  .results-head { display: flex; align-items: center; gap: 10px; margin: 20px 0 10px; }
+  td.actions { white-space: nowrap; text-align: right; }
+  td.actions button + button { margin-left: 6px; }
+  button.approve { background: linear-gradient(180deg, #5fe08e, #2fae5f); border-color: #1d6d3b; color: #06210f; box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 2px 0 #1d6d3b; }
   select, textarea, input[type=text] {
     width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border);
-    border-radius: 8px; padding: 9px 12px; font: inherit;
+    border-radius: 5px; padding: 9px 12px; font: inherit;
   }
+  select:focus, textarea:focus, input[type=text]:focus { outline: none; border-color: var(--accent); }
   textarea { min-height: 120px; resize: vertical; }
-  label { display: block; font-weight: 600; margin: 14px 0 6px; }
-  .runcard { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; background: var(--bg); }
-  .runcard.waiting { border-color: var(--warn); box-shadow: 0 0 0 1px rgba(224,164,44,.3); }
+  label { display: block; font: 600 12px var(--sign); letter-spacing: 1.2px; text-transform: uppercase; color: var(--muted); margin: 14px 0 6px; }
+
+  /* Run cards: the left edge is a track circuit, lit by the run's state. */
+  .runcard { border: 1px solid var(--border); border-left: 4px solid #33473b; border-radius: 6px; padding: 14px 16px; margin-bottom: 10px; background: var(--bg); }
+  .runcard.st-running, .runcard.st-pending { border-left-color: var(--warn); }
+  .runcard.st-completed { border-left-color: var(--ok); }
+  .runcard.st-failed, .runcard.st-rejected { border-left-color: var(--err); }
+  .runcard.st-waiting_inputs { border-left-color: var(--purple); }
+  .runcard.waiting { border-color: var(--warn); border-left-color: var(--err); box-shadow: 0 0 0 1px rgba(240,180,50,.3); }
+  .runcard.retry { border-color: var(--err); border-left-color: var(--err); box-shadow: 0 0 0 1px rgba(226,70,58,.3); }
   .runhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .runhead .nodeid { font-weight: 700; }
-  .runhead .type { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted);
-                   border: 1px solid var(--border); border-radius: 5px; padding: 1px 7px; }
+  /* Type badges look like enamel lever plates, banded by lever colour. */
+  .type { display: inline-block; font: 700 10.5px var(--sign); text-transform: uppercase; letter-spacing: 1px;
+          color: #1a1a1a; background: var(--cream); border-radius: 3px; padding: 1px 7px; border-top: 3px solid #1b1b1b; }
+  .type.approval { border-top-color: #c8322b; }
+  .type.orchestrator { border-top-color: var(--purple); }
+  .type.final { border-top-color: var(--ok); }
   pre.out {
-    background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+    background: var(--bg3); border: 1px solid var(--border); border-radius: 5px; padding: 10px 12px;
     white-space: pre-wrap; word-break: break-word; font-size: 12.5px; margin: 8px 0 0; max-height: 300px; overflow: auto;
   }
   details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; margin-top: 8px; }
-  .approve-box { margin-top: 12px; padding: 12px; border-radius: 8px; background: rgba(224,164,44,.07);
-                 border: 1px solid rgba(224,164,44,.35); }
-  .approve-actions { display: flex; gap: 8px; margin-top: 10px; }
-  .stage { border-left: 3px solid var(--purple); padding: 8px 12px; margin: 10px 0 0 4px; background: var(--bg3); border-radius: 0 8px 8px 0; }
-  .flow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12.5px; }
-  .flow .n { border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; background: var(--bg); }
-  .flow .n.orchestrator { border-color: var(--purple); color: var(--purple); }
-  .flow .n.approval { border-color: var(--warn); color: var(--warn); }
-  .err-banner { background: rgba(224,92,92,.1); border: 1px solid var(--err); color: var(--err);
-                border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; }
+  .approve-box { margin-top: 12px; padding: 12px; border-radius: 6px; background: rgba(240,180,50,.06);
+                 border: 1px solid rgba(240,180,50,.35); }
+  .approve-actions { display: flex; gap: 8px; margin-top: 10px; align-items: center; flex-wrap: wrap; }
+  .held { display: inline-flex; align-items: center; gap: 8px; }
+  .held .aspect { width: 12px; height: 12px; border-radius: 50%; background: var(--err); box-shadow: 0 0 8px var(--err); flex-shrink: 0; }
+  .stage { border-left: 3px solid var(--purple); padding: 8px 12px; margin: 10px 0 0 4px; background: var(--bg3); border-radius: 0 6px 6px 0; }
+
+  /* Pipeline preview drawn like a printed signal-box track diagram: white
+     panel, black lines, coloured parallel tracks, oval agent markers, signal
+     heads for approvals and a numbered strip. Geometry is in flowDiagram(). */
+  .diagram-card { overflow-x: auto; background: #fbfbf8; border: 1px solid #d8d6cc; border-radius: 3px;
+                  box-shadow: 0 2px 0 rgba(0,0,0,.25), 0 8px 22px rgba(0,0,0,.35); }
+  .diagram-card svg { display: block; }
+  .flow-note { margin-top: 6px; font-size: 12px; }
+
+  .err-banner { background: rgba(226,70,58,.1); border: 1px solid var(--err); color: #ff8a80;
+                border-radius: 5px; padding: 10px 14px; margin-bottom: 14px; }
   .topline { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
-  .toast { position: fixed; bottom: 20px; right: 20px; background: var(--bg3); border: 1px solid var(--border);
-           padding: 12px 18px; border-radius: 10px; opacity: 0; transition: opacity .25s; pointer-events: none; }
+  .toast { position: fixed; bottom: 20px; right: 20px; background: var(--enamel); color: var(--cream); border: 2px solid var(--cream);
+           font-family: var(--sign); letter-spacing: .5px; padding: 10px 18px; border-radius: 4px; opacity: 0; transition: opacity .25s; pointer-events: none; }
   .toast.show { opacity: 1; }
   .empty { text-align: center; color: var(--muted); padding: 40px 0; }
+  .card, .runcard { min-width: 0; }
+  .card:has(table) { overflow-x: auto; }
+  @media (max-width: 900px) {
+    .sidebar { width: 200px; }
+    .main { padding: 24px; }
+    .topline { flex-wrap: wrap; }
+  }
+  @media (max-width: 640px) {
+    .layout { flex-direction: column; }
+    .sidebar {
+      width: 100%; flex: 0 0 auto; border-right: 0; border-bottom: 1px solid #000;
+      padding: 12px 14px 0;
+    }
+    .nameboard { align-self: flex-start; margin-bottom: 12px; padding: 7px 10px; }
+    .nav { flex-direction: row; overflow-x: auto; padding-bottom: 7px; border-bottom-width: 3px; }
+    .nav a { flex: 0 0 auto; gap: 7px; padding: 6px 9px; white-space: nowrap; }
+    .lever { width: 16px; height: 30px; }
+    .lever::before { left: 5px; bottom: 5px; width: 5px; height: 23px; }
+    .lever::after { width: 14px; }
+    .diagram-mini { display: none; }
+    .main { width: 100%; padding: 20px 14px 30px; }
+    .topline { align-items: center; }
+    .topline > div { min-width: 0; }
+    .topline > div:last-child { display: flex; flex-wrap: wrap; align-items: center; }
+    .page-sub, .mono { overflow-wrap: anywhere; }
+    .card { padding: 14px; }
+    .runcard { padding: 12px; }
+    .runhead { gap: 7px; }
+    .results-head { flex-wrap: wrap; }
+    .card:has(table) table { min-width: 680px; }
+    .toast { left: 14px; right: 14px; bottom: 14px; text-align: center; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
 </style>
 </head>
 <body>
 <div class="layout">
   <aside class="sidebar">
-    <div class="brand">
-      <div class="logo">S</div>
+    <div class="nameboard">
+      <svg viewBox="0 0 32 36" aria-hidden="true">
+        <rect x="14" y="4" width="3" height="28" fill="#d8cfb6"/>
+        <circle cx="15.5" cy="3" r="1.8" fill="#d8cfb6"/>
+        <rect x="7" y="31" width="17" height="3" rx="1" fill="#c9a34a"/>
+        <g class="arm">
+          <rect x="16" y="7" width="14" height="4" fill="#d6372c"/>
+          <rect x="25" y="7" width="2" height="4" fill="#f4eedc"/>
+        </g>
+        <circle class="lamp" cx="15.5" cy="15" r="2.3" fill="#e2463a"/>
+      </svg>
       <div><h1>SignalBox</h1><div class="sub" id="project-name"></div></div>
     </div>
     <nav class="nav">
-      <a href="#/executions" data-nav="executions">Executions</a>
-      <a href="#/new" data-nav="new">New run</a>
-      <a href="#/pipelines" data-nav="pipelines">Pipelines</a>
+      <a href="#/executions" data-nav="executions">
+        <span class="lever red" data-n="1" aria-hidden="true"></span><span>Executions</span></a>
+      <a href="#/new" data-nav="new">
+        <span class="lever yellow" data-n="2" aria-hidden="true"></span><span>New run</span></a>
+      <a href="#/pipelines" data-nav="pipelines">
+        <span class="lever black" data-n="3" aria-hidden="true"></span><span>Pipelines</span></a>
     </nav>
+    <div class="diagram-mini" aria-hidden="true">
+      <div class="panel">
+        <svg viewBox="0 0 200 46" preserveAspectRatio="none">
+          <path class="track" d="M0 30 H200 M40 30 L70 12 H140 L170 30"/>
+          <path class="occupied" d="M0 30 H40 L70 12 H140 L170 30 H200"/>
+          <circle cx="35" cy="22" r="3" fill="#46d27a"/>
+          <circle cx="135" cy="5" r="3" fill="#e2463a"/>
+        </svg>
+      </div>
+    </div>
   </aside>
   <main class="main" id="main"></main>
 </div>
@@ -123,6 +262,60 @@
 <script>
 const $main = document.getElementById('main');
 let pollTimer = null;
+let lastRendered = '';
+let currentExec = null;
+// State the 2s refresh must not wipe: typed comments and expanded sections.
+const drafts = {};
+const openSections = {};
+$main.addEventListener('input', e => {
+  if (e.target.dataset && e.target.dataset.draft) drafts[e.target.dataset.draft] = e.target.value;
+});
+$main.addEventListener('toggle', e => {
+  if (e.target.dataset && e.target.dataset.key) openSections[e.target.dataset.key] = e.target.open;
+}, true);
+
+function captureViewState() {
+  const a = document.activeElement;
+  const focus = a && a.id && $main.contains(a)
+    ? {id: a.id, start: a.selectionStart, end: a.selectionEnd, scroll: a.scrollTop} : null;
+  return {focus};
+}
+function restoreViewState(state) {
+  $main.querySelectorAll('[data-draft]').forEach(el => { el.value = drafts[el.dataset.draft] || ''; });
+  $main.querySelectorAll('details[data-key]').forEach(el => {
+    if (el.dataset.key in openSections) el.open = openSections[el.dataset.key];
+  });
+  const f = state.focus && document.getElementById(state.focus.id);
+  if (f) {
+    f.focus({preventScroll: true});
+    if (state.focus.start != null && f.setSelectionRange) f.setSelectionRange(state.focus.start, state.focus.end);
+    f.scrollTop = state.focus.scroll;
+  }
+}
+
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select();
+  const ok = document.execCommand('copy');
+  ta.remove();
+  if (!ok) throw new Error('clipboard unavailable');
+}
+async function copyResult(index, button) {
+  const finals = (currentExec && currentExec.final_outputs) || [];
+  const text = index < 0
+    ? finals.map(f => `## ${f.node_id}\n\n${f.output}`).join('\n\n')
+    : (finals[index] || {}).output || '';
+  try {
+    await copyText(text);
+    toast('Copied to clipboard');
+    if (button) { const label = button.textContent; button.textContent = 'Copied'; setTimeout(() => { button.textContent = label; }, 1500); }
+  } catch (e) { toast('Copy failed: ' + e.message); }
+}
 
 async function api(path, opts) {
   const res = await fetch('/api' + path, opts);
@@ -133,7 +326,10 @@ async function api(path, opts) {
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
-function pill(status) { return `<span class="pill ${esc(status)}">${esc(status.replace(/_/g,' '))}</span>`; }
+function pill(status) {
+  const lamps = status === 'waiting_inputs' ? '<i class="lamp"></i><i class="lamp"></i>' : '<i class="lamp"></i>';
+  return `<span class="pill ${esc(status)}">${lamps}${esc(status.replace(/_/g,' '))}</span>`;
+}
 function fmtTime(t) { return t ? new Date(t).toLocaleString() : ''; }
 function toast(msg) {
   const el = document.getElementById('toast');
@@ -157,6 +353,12 @@ function route() {
   return showExecutions();
 }
 window.addEventListener('hashchange', route);
+document.querySelector('[data-nav="new"]').addEventListener('click', event => {
+  if (location.hash === '#/new') {
+    event.preventDefault();
+    route();
+  }
+});
 
 // --- executions list ---
 async function showExecutions() {
@@ -168,15 +370,17 @@ async function showExecutions() {
       <tr class="row" onclick="location.hash='#/exec/${encodeURIComponent(x.id)}'">
         <td class="mono">${esc(x.id)}</td>
         <td>${esc(x.pipeline)}</td>
-        <td>${pill(x.status)}${x.waiting_approvals ? ` <span class="pill waiting_approval">${x.waiting_approvals} to approve</span>` : ''}</td>
+        <td>${pill(x.status)}${x.waiting_approvals ? ` <span class="pill waiting_approval">${x.waiting_approvals} to approve</span>` : ''}${x.waiting_retries ? ` <span class="pill waiting_retry">${x.waiting_retries} failed · retry</span>` : ''}</td>
         <td class="muted">${esc(x.input)}</td>
         <td class="muted">${fmtTime(x.created_at)}</td>
+        <td class="actions" onclick="event.stopPropagation()">
+          <button class="secondary sm" onclick="rerunExec('${esc(x.id)}', this)">Rerun</button>${isTerminal(x.status) ? `<button class="danger sm" onclick="deleteExec('${esc(x.id)}', this)">Delete</button>` : ''}</td>
       </tr>`).join('');
     $main.innerHTML = `
       <div class="topline"><div><h2>Executions</h2><div class="page-sub">Every pipeline run, newest first.</div></div>
       <button onclick="location.hash='#/new'">New run</button></div>
       <div class="card">${list.length
-        ? `<table><thead><tr><th>ID</th><th>Pipeline</th><th>Status</th><th>Input</th><th>Started</th></tr></thead><tbody>${rows}</tbody></table>`
+        ? `<table><thead><tr><th>ID</th><th>Pipeline</th><th>Status</th><th>Input</th><th>Started</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
         : `<div class="empty">No executions yet. Start one from <a href="#/new">New run</a>.</div>`}</div>`;
   };
   await render();
@@ -186,29 +390,45 @@ async function showExecutions() {
 // --- execution detail ---
 async function showExecution(id) {
   setNav('executions');
+  lastRendered = '';
   const render = async () => {
     let x;
     try { x = await api('/executions/' + encodeURIComponent(id)); }
-    catch (e) { $main.innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; stopPolling(); return; }
+    catch (e) { $main.innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; stopPolling(); lastRendered = ''; return; }
+
+    const snapshot = JSON.stringify(x);
+    if (snapshot === lastRendered && $main.querySelector('[data-exec]')) {
+      if (isTerminal(x.status)) stopPolling();
+      return;
+    }
+    lastRendered = snapshot;
+    currentExec = x;
 
     const runs = (x.runs || []).map(r => renderRun(x, r)).join('');
-    const finals = (x.final_outputs || []).map(f => `
-      <div class="runcard"><div class="runhead"><span class="nodeid">${esc(f.node_id)}</span><span class="type">final output</span></div>
+    const finalList = x.final_outputs || [];
+    const finals = finalList.map((f, i) => `
+      <div class="runcard"><div class="runhead"><span class="nodeid">${esc(f.node_id)}</span><span class="type final">final output</span>
+      <button class="secondary sm" style="margin-left:auto" onclick="copyResult(${i}, this)">Copy</button></div>
       <pre class="out">${esc(f.output)}</pre></div>`).join('');
+    const copyAll = finalList.length > 1
+      ? `<button class="secondary sm" onclick="copyResult(-1, this)">Copy all</button>` : '';
 
-    $main.innerHTML = `
+    const state = captureViewState();
+    $main.innerHTML = `<div data-exec="${esc(x.id)}"></div>
       <div class="topline">
         <div><h2 class="mono">${esc(x.id)}</h2>
         <div class="page-sub">Pipeline <b>${esc(x.pipeline)}</b> · started ${fmtTime(x.created_at)}
         ${x.finished_at ? '· finished ' + fmtTime(x.finished_at) : ''}</div></div>
         <div style="display:flex;gap:8px;align-items:center">${pill(x.status)}
-        ${!isTerminal(x.status) ? `<button class="danger" onclick="cancelExec('${esc(x.id)}')">Cancel</button>` : ''}</div>
+        <button class="secondary" onclick="rerunExec('${esc(x.id)}', this)">Rerun</button>
+        ${!isTerminal(x.status) ? `<button class="danger" onclick="cancelExec('${esc(x.id)}')">Cancel</button>` : `<button class="danger" onclick="deleteExec('${esc(x.id)}', this)">Delete</button>`}</div>
       </div>
       ${x.error ? `<div class="err-banner">${esc(x.error)}</div>` : ''}
       <div class="card"><label style="margin-top:0">Input</label><pre class="out">${esc(x.input)}</pre></div>
       <h2 style="font-size:16px;margin:20px 0 10px">Agent runs</h2>
       ${runs || '<div class="muted">No runs yet.</div>'}
-      ${finals ? `<h2 style="font-size:16px;margin:20px 0 10px">Results</h2>${finals}` : ''}`;
+      ${finals ? `<div class="results-head"><h2 style="font-size:16px;margin:0">Results</h2>${copyAll}</div>${finals}` : ''}`;
+    restoreViewState(state);
     if (isTerminal(x.status)) stopPolling();
   };
   await render();
@@ -219,38 +439,56 @@ function isTerminal(s) { return ['completed','failed','rejected','canceled','int
 
 function renderRun(x, r) {
   const waiting = r.status === 'waiting_approval';
+  const retryable = r.status === 'waiting_retry';
   const stages = (r.stages || []).map(s => `
     <div class="stage">
       <div class="runhead"><span class="nodeid">stage: ${esc(s.stage_id)}</span>${pill(s.status)}</div>
-      ${(s.outputs || []).map(o => `<details><summary>result from ${esc(o.node_id)}</summary><pre class="out">${esc(o.output)}</pre></details>`).join('')}
-      ${s.context ? `<details><summary>stage context</summary><pre class="out">${esc(s.context)}</pre></details>` : ''}
+      ${(s.outputs || []).map((o, i) => `<details data-key="${esc(r.id)}:${esc(s.stage_id)}:${i}"><summary>result from ${esc(o.node_id)}</summary><pre class="out">${esc(o.output)}</pre></details>`).join('')}
+      ${s.context ? `<details data-key="${esc(r.id)}:${esc(s.stage_id)}:context"><summary>stage context</summary><pre class="out">${esc(s.context)}</pre></details>` : ''}
     </div>`).join('');
 
   return `
-  <div class="runcard ${waiting ? 'waiting' : ''}">
+  <div class="runcard ${waiting ? 'waiting' : ''} ${retryable ? 'retry' : ''} st-${esc(r.status)}">
     <div class="runhead">
       <span class="nodeid">${esc(r.node_id)}</span>
-      <span class="type">${esc(r.type)}</span>
+      <span class="type ${esc(r.type)}">${esc(r.type)}</span>
       ${pill(r.status)}
       ${r.from_node_id ? `<span class="muted">← ${esc(r.from_node_id)}</span>` : '<span class="muted">entry</span>'}
       ${r.stage_id ? `<span class="muted">in stage ${esc(r.stage_id)}</span>` : ''}
+      ${r.retries ? `<span class="muted">${r.retries} ${r.retries === 1 ? 'retry' : 'retries'}</span>` : ''}
       <span class="muted" style="margin-left:auto">${fmtTime(r.started_at)}</span>
     </div>
     ${r.error ? `<div class="err-banner" style="margin:8px 0 0">${esc(r.error)}</div>` : ''}
-    ${r.input ? `<details><summary>input</summary><pre class="out">${esc(r.input)}</pre></details>` : ''}
+    ${retryable ? `
+      <div class="approve-actions" style="margin-top:8px">
+        <button onclick="retryRun('${esc(x.id)}','${esc(r.id)}', this)">Retry</button>
+        <span class="muted">Re-runs this agent call with the same input. Use Cancel to give up.</span>
+      </div>` : ''}
+    ${r.input ? `<details data-key="${esc(r.id)}:input"><summary>input</summary><pre class="out">${esc(r.input)}</pre></details>` : ''}
     ${stages}
-    ${r.output ? `<details ${!r.stages ? 'open' : ''}><summary>output</summary><pre class="out">${esc(r.output)}</pre></details>` : ''}
+    ${r.output ? `<details data-key="${esc(r.id)}:output" ${!r.stages ? 'open' : ''}><summary>output</summary><pre class="out">${esc(r.output)}</pre></details>` : ''}
     ${r.approved_by ? `<div class="muted" style="margin-top:8px">${r.status === 'rejected' ? 'Rejected' : 'Approved'} by ${esc(r.approved_by)}${r.comment ? ': ' + esc(r.comment) : ''}</div>` : ''}
     ${waiting ? `
       <div class="approve-box">
-        <b>Human approval required</b>
-        <input type="text" id="comment-${esc(r.id)}" placeholder="Optional comment" style="margin-top:8px">
+        <span class="held"><i class="aspect"></i><b>Human approval required</b></span>
+        <textarea id="comment-${esc(r.id)}" data-draft="${esc(r.id)}" rows="3" placeholder="Optional comment (included with approve or reject)" style="margin-top:8px;min-height:72px"></textarea>
         <div class="approve-actions">
           <button class="approve" onclick="decide('${esc(x.id)}','${esc(r.id)}',true)">Approve</button>
           <button class="danger" onclick="decide('${esc(x.id)}','${esc(r.id)}',false)">Reject</button>
         </div>
       </div>` : ''}
   </div>`;
+}
+
+async function retryRun(execId, runId, button) {
+  if (button) button.disabled = true;
+  try {
+    await api(`/executions/${encodeURIComponent(execId)}/retry`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({run_id: runId}),
+    });
+    toast('Retrying');
+  } catch (e) { toast('Error: ' + e.message); if (button) button.disabled = false; }
 }
 
 async function decide(execId, runId, approved) {
@@ -260,6 +498,7 @@ async function decide(execId, runId, approved) {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({run_id: runId, approved, comment, approved_by: 'web-ui'}),
     });
+    delete drafts[runId];
     toast(approved ? 'Approved' : 'Rejected');
   } catch (e) { toast('Error: ' + e.message); }
 }
@@ -269,11 +508,270 @@ async function cancelExec(id) {
   catch (e) { toast('Error: ' + e.message); }
 }
 
+async function rerunExec(id, button) {
+  if (button) button.disabled = true;
+  try {
+    const res = await api(`/executions/${encodeURIComponent(id)}/rerun`, {method: 'POST'});
+    toast('Started ' + res.id);
+    location.hash = '#/exec/' + encodeURIComponent(res.id);
+  } catch (e) { toast('Error: ' + e.message); if (button) button.disabled = false; }
+}
+
+async function deleteExec(id, button) {
+  if (!confirm(`Delete execution ${id}? This cannot be undone.`)) return;
+  if (button) button.disabled = true;
+  try {
+    await api(`/executions/${encodeURIComponent(id)}`, {method: 'DELETE'});
+    toast('Deleted');
+    if (location.hash === '#/executions' || !location.hash) route();
+    else location.hash = '#/executions';
+  } catch (e) { toast('Error: ' + e.message); if (button) button.disabled = false; }
+}
+
+// --- pipeline track diagram ---
+// Lays a pipeline out from its entry: a chain of single handoffs is one line,
+// orchestrator stages and multi-target handoffs become parallel tracks that
+// rejoin (at the orchestrator's fan-in, at an agent several branches hand off
+// to, or after the stage) before continuing.
+const INK = '#151515';
+const TRACK_COLOURS = [INK, '#2fb44a', '#f08a24', '#2f6fd0'];
+const DIAGRAM_FONT = "'Arial Narrow','Helvetica Neue',Arial,sans-serif";
+const D = {curve: 34, gap: 20, lead: 54, pad: 28, top: 92, rowGap: 6, cell: 22};
+const measureCtx = document.createElement('canvas').getContext('2d');
+function textWidth(text, font) { measureCtx.font = font; return measureCtx.measureText(text).width; }
+
+function flowDiagram(p) {
+  const byId = Object.fromEntries(p.nodes.map(n => [n.id, n]));
+  const seen = new Set();
+  const numbered = [];
+  const LABEL = `600 11px ${DIAGRAM_FONT}`;
+  const inbound = {};
+  p.nodes.forEach(n => (n.handoff || []).forEach(t => { inbound[t] = (inbound[t] || 0) + 1; }));
+  const isJoin = id => byId[id] && (byId[id].type === 'orchestrator' || inbound[id] > 1);
+
+  // merge folds branches that stop at the same agent join into one track:
+  // their own parallel tracks, then the shared agent's continuation.
+  const merge = branches => {
+    for (;;) {
+      const i = branches.findIndex(b => b.join && byId[b.join].type !== 'orchestrator');
+      if (i < 0) return branches;
+      const j = branches[i].join;
+      const group = branches.filter(b => b.join === j);
+      const cont = chain(j, true);
+      const head = group.length > 1 ? [{kind: 'par', tracks: group.map(b => b.seq)}] : group[0].seq.items;
+      const merged = {seq: {kind: 'seq', items: [...head, ...cont.seq.items]}, join: cont.join};
+      branches = branches.flatMap((b, k) => k === i ? [merged] : b.join === j ? [] : [b]);
+    }
+  };
+
+  const chain = (id, inBranch) => {
+    const items = [];
+    let join = null;
+    while (id) {
+      const n = byId[id];
+      if (!n || seen.has(id)) { items.push({kind: 'ref', id, missing: !n}); break; }
+      seen.add(id);
+      numbered.push(n);
+      items.push({kind: 'node', n, num: numbered.length});
+      for (const st of n.stages || []) {
+        items.push({kind: 'par', label: st.id, tracks: merge(st.agents.map(a => chain(a, true))).map(b => b.seq)});
+      }
+      const next = n.handoff || [];
+      if (next.length === 0) break;
+      if (next.length === 1) {
+        if (inBranch && isJoin(next[0])) { join = next[0]; break; }
+        id = next[0];
+        continue;
+      }
+      const raw = next.map(t => chain(t, true));
+      const shared = [...new Set(raw.map(b => b.join))];
+      // Every branch meets at one agent in this scope: draw it on this line.
+      const branches = shared.length === 1 && shared[0] && byId[shared[0]].type !== 'orchestrator' ? raw : merge(raw);
+      items.push({kind: 'par', tracks: branches.map(b => b.seq)});
+      const joins = [...new Set(branches.map(b => b.join))];
+      if (joins.length === 1 && joins[0]) {
+        if (inBranch && byId[joins[0]].type === 'orchestrator') { join = joins[0]; break; }
+        id = joins[0];
+        continue;
+      }
+      break;
+    }
+    return {seq: {kind: 'seq', items}, join};
+  };
+
+  // measure sets w (width) and up/down (extent above/below the line).
+  const measure = it => {
+    if (it.kind === 'node' || it.kind === 'ref') {
+      const label = (it.kind === 'node' ? it.n.id : it.id).toUpperCase();
+      it.tw = textWidth(label, LABEL);
+      const type = it.kind === 'node' ? it.n.type : 'ref';
+      if (type === 'orchestrator') { it.w = it.tw + 22; it.up = 13; it.down = 24; }
+      else if (type === 'approval') { it.w = Math.max(40, it.tw); it.up = 40; it.down = 20; }
+      else { it.w = Math.max(36, it.tw); it.up = 22; it.down = 20; }
+    } else if (it.kind === 'seq') {
+      it.items.forEach(measure);
+      it.w = it.items.reduce((a, c) => a + c.w, 0) + D.gap * Math.max(0, it.items.length - 1);
+      it.up = Math.max(0, ...it.items.map(c => c.up));
+      it.down = Math.max(0, ...it.items.map(c => c.down));
+    } else {
+      it.tracks.forEach(measure);
+      it.inner = Math.max(...it.tracks.map(t => t.w)) + D.gap * 2;
+      let y = 0;
+      it.offsets = it.tracks.map((t, i) => {
+        if (i > 0) y += it.tracks[i - 1].down + t.up + D.rowGap;
+        return y;
+      });
+      const k = it.tracks.length;
+      const mid = k % 2 ? it.offsets[(k - 1) / 2] : (it.offsets[k / 2 - 1] + it.offsets[k / 2]) / 2;
+      it.offsets = it.offsets.map(o => o - mid);
+      // All diverging tracks share one slope, so they peel off a common
+      // diagonal like a ladder of points rather than fanning from one spot.
+      const spread = Math.max(1, ...it.offsets.map(Math.abs));
+      it.c = Math.max(D.curve, spread * 0.55);
+      it.k = it.c / spread;
+      it.w = it.inner + it.c * 2;
+      it.up = Math.max(...it.tracks.map((t, i) => t.up - it.offsets[i])) + (it.label ? 22 : 0);
+      it.down = Math.max(...it.tracks.map((t, i) => t.down + it.offsets[i]));
+    }
+  };
+
+  const out = [];
+  const text = (x, y, s, cls, anchor = 'start') =>
+    out.push(`<text x="${x}" y="${y}" class="${cls}" text-anchor="${anchor}">${esc(s)}</text>`);
+  const joint = (x, y) => out.push(`<path class="joint" d="M${x} ${y - 4}V${y + 4}" />`);
+
+  const draw = (it, x, y, depth) => {
+    const colour = TRACK_COLOURS[depth % TRACK_COLOURS.length];
+    const width = depth === 0 ? 4 : 3.2;
+    if (it.kind === 'seq') {
+      let cx = x;
+      it.items.forEach((c, i) => {
+        if (c.kind !== 'par') out.push(`<path d="M${cx} ${y}H${cx + c.w}" stroke="${colour}" stroke-width="${width}" />`);
+        draw(c, cx, y, depth);
+        cx += c.w;
+        if (i < it.items.length - 1) {
+          out.push(`<path d="M${cx} ${y}H${cx + D.gap}" stroke="${colour}" stroke-width="${width}" />`);
+          if (depth > 0) joint(cx + D.gap / 2, y);
+          cx += D.gap;
+        }
+      });
+      return;
+    }
+    if (it.kind === 'par') {
+      const c = it.c, tc = TRACK_COLOURS[(depth + 1) % TRACK_COLOURS.length];
+      const x2 = x + c + it.inner;
+      it.tracks.forEach((t, i) => {
+        const ty = y + it.offsets[i], dx = Math.abs(it.offsets[i]) * it.k;
+        // Lead in and out only: the track's own contents draw the middle, so
+        // nested loops are not overdrawn by a straight line.
+        const sx = x + c + D.gap, ex = sx + t.w;
+        out.push(`<path d="M${x} ${y}L${x + dx} ${ty}H${sx}M${ex} ${ty}H${x2 + c - dx}L${x2 + c} ${y}" stroke="${tc}" stroke-width="3.2" stroke-linejoin="round" fill="none" />`);
+        joint(x + c + 4, ty); joint(x2 - 4, ty);
+      });
+      if (it.label) text(x + c + D.gap, y + it.offsets[0] - it.tracks[0].up - 12, it.label.toUpperCase().replace(/_/g, ' '), 'stage');
+      it.tracks.forEach((t, i) => draw(t, x + c + D.gap, y + it.offsets[i], depth + 1));
+      return;
+    }
+    const n = it.n || {id: it.id, type: 'ref'};
+    const label = n.id.toUpperCase();
+    const mid = x + it.w / 2;
+    const tip = n.type === 'ref' ? (it.missing ? `${n.id} (not defined)` : `continues at ${n.id}`) : `${it.num}. ${n.id} · ${n.type}${n.description ? ' — ' + n.description : ''}`;
+    out.push(`<g class="node"><title>${esc(tip)}</title>`);
+    if (n.type === 'orchestrator') {
+      out.push(`<rect x="${x}" y="${y - 11}" width="${it.w}" height="22" fill="#c8732a" stroke="#7a3f12" stroke-width="1" />`);
+      text(mid, y + 4, label, 'block');
+      text(mid, y + 23, it.num, 'num', 'middle');
+    } else if (n.type === 'approval') {
+      const sx = mid - 4;
+      out.push(`<path d="M${sx} ${y}V${y - 18}" stroke="${INK}" stroke-width="1.4" />`,
+        `<path d="M${sx - 6} ${y - 18}H${sx}" stroke="${INK}" stroke-width="1.4" />`,
+        `<rect x="${sx}" y="${y - 24}" width="26" height="12" rx="6" fill="#fff" stroke="${INK}" stroke-width="1.2" />`,
+        `<circle cx="${sx + 6}" cy="${y - 18}" r="3.8" fill="#e3261b" />`,
+        `<circle cx="${sx + 13}" cy="${y - 18}" r="3.2" fill="#fff" stroke="${INK}" stroke-width=".9" />`,
+        `<circle cx="${sx + 20}" cy="${y - 18}" r="3.2" fill="#fff" stroke="${INK}" stroke-width=".9" />`);
+      text(mid, y - 30, label, 'label', 'middle');
+      text(mid, y + 19, it.num, 'num', 'middle');
+    } else if (n.type === 'ref') {
+      out.push(`<path d="M${x} ${y - 7}V${y + 7}" stroke="${INK}" stroke-width="2" stroke-dasharray="2 2" />`);
+      text(x, y - 11, label + (it.missing ? '?' : ''), 'label ref');
+    } else {
+      out.push(`<rect x="${mid - 17}" y="${y - 6.5}" width="34" height="13" rx="6.5" fill="#fff" stroke="${INK}" stroke-width="2.2" />`);
+      text(mid, y - 12, label, 'label', 'middle');
+      text(mid, y + 19, it.num, 'num', 'middle');
+    }
+    out.push('</g>');
+  };
+
+  const root = chain(p.entry, false).seq;
+  measure(root);
+  const x0 = D.pad + D.lead;
+  const lineW = Math.ceil(x0 + root.w + D.lead + D.pad);
+  const stripW = numbered.length * D.cell;
+  const width = Math.max(lineW, D.pad * 2 + 300 + stripW + 40);
+  const y = Math.ceil(D.top + root.up);
+
+  out.push(`<path d="M${D.pad} ${y}H${x0}" stroke="${INK}" stroke-width="4" />`);
+  out.push(`<path d="M${D.pad + 8} ${y + 14}h22m-6 -4l6 4l-6 4" stroke="${INK}" stroke-width="1.2" />`);
+  draw(root, x0, y, 0);
+  const xe = x0 + root.w;
+  out.push(`<path d="M${xe} ${y}H${xe + D.lead - 14}" stroke="${INK}" stroke-width="4" />`,
+    `<path d="M${xe + D.lead - 14} ${y - 9}V${y + 9}M${xe + D.lead - 14} ${y - 9}h-6M${xe + D.lead - 14} ${y + 9}h-6" stroke="${INK}" stroke-width="2.4" />`);
+
+  // Notes and the numbered strip along the bottom.
+  const stages = p.nodes.reduce((a, n) => a + (n.stages || []).length, 0);
+  const approvals = p.nodes.filter(n => n.type === 'approval').map(n => n.id);
+  const unreached = p.nodes.filter(n => !seen.has(n.id));
+  const notes = [
+    `${p.nodes.length} agent${p.nodes.length === 1 ? '' : 's'}${stages ? `, ${stages} stage${stages === 1 ? '' : 's'}` : ''}`,
+    `entry: ${p.entry}`,
+    approvals.length ? `approval: ${approvals.join(', ')}` : 'no approval gates',
+  ];
+  const base = Math.ceil(y + root.down + 34);
+  notes.forEach((t, i) => text(D.pad, base + 12 + i * 13, t.toUpperCase(), 'note'));
+  const sx = width - D.pad - stripW;
+  numbered.forEach((n, i) => {
+    const cx = sx + i * D.cell;
+    out.push(`<g><title>${esc(`${i + 1}. ${n.id}`)}</title><rect x="${cx}" y="${base}" width="${D.cell}" height="30" class="cell" />` +
+      `<path d="M${cx} ${base + 15}h${D.cell}" class="cell-rule" />` +
+      `<text x="${cx + D.cell / 2}" y="${base + 11}" class="cell-num" text-anchor="middle">${i + 1}</text>` +
+      `<text x="${cx + D.cell / 2}" y="${base + 26}" class="cell-type" text-anchor="middle">${esc(n.type[0].toUpperCase())}</text></g>`);
+  });
+  const height = base + Math.max(30, notes.length * 13 + 4) + 22;
+
+  const words = p.name.split(/[^A-Za-z0-9]+/).filter(Boolean);
+  const code = (words.length === 1 && words[0].length <= 3 ? words[0] : words.map(w => w[0]).join('').slice(0, 3)).toUpperCase();
+  const tx = D.pad + Math.max(160, textWidth(p.name.toUpperCase(), `300 26px ${DIAGRAM_FONT}`) + 20) / 2;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(p.name)} pipeline diagram">
+    <style>
+      path { fill: none; }
+      text { font: 600 11px ${DIAGRAM_FONT}; fill: ${INK}; }
+      .title { font-size: 26px; font-weight: 300; letter-spacing: 1px; }
+      .code { font-size: 13px; font-weight: 400; }
+      .stage { font-size: 10.5px; letter-spacing: 1.2px; fill: #555; }
+      .num { font-size: 10px; font-weight: 400; fill: #444; }
+      .block { fill: #fff; text-anchor: middle; }
+      .ref { fill: #666; }
+      .note { font-size: 8.5px; font-weight: 400; letter-spacing: .3px; }
+      .joint { stroke: ${INK}; stroke-width: 1.4; }
+      .cell { fill: #fff; stroke: ${INK}; stroke-width: .8; }
+      .cell-rule { stroke: ${INK}; stroke-width: .6; }
+      .cell-num, .cell-type { font: 400 9.5px Arial, sans-serif; }
+      .node:hover .label { fill: #2f6fd0; }
+    </style>
+    <text class="title" x="${tx}" y="42" text-anchor="middle">${esc(p.name.toUpperCase())}</text>
+    <path d="M${tx - 80} 52H${tx + 80}" stroke="${INK}" stroke-width="1" />
+    <text class="code" x="${tx}" y="72" text-anchor="middle">'${esc(code)}'</text>
+    ${out.join('')}
+  </svg>`;
+  return `<div class="diagram-card">${svg}</div>` +
+    (unreached.length ? `<div class="muted flow-note">Not reachable from ${esc(p.entry)}: ${unreached.map(n => esc(n.id)).join(', ')}</div>` : '');
+}
+
 // --- new run ---
 async function showNewRun() {
   setNav('new');
   let pipelines;
-  try { pipelines = await api('/pipelines'); } catch (e) { $main.innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; return; }
+  try { pipelines = await api('/pipelines', {cache: 'no-store'}); } catch (e) { $main.innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; return; }
   const options = pipelines.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
   $main.innerHTML = `
     <h2>New run</h2><div class="page-sub">Send an input into a pipeline and follow it through every agent and approval.</div>
@@ -289,8 +787,7 @@ async function showNewRun() {
     const p = pipelines.find(q => q.name === sel.value);
     if (!p) { info.textContent = ''; return; }
     info.innerHTML = `${p.description ? esc(p.description) + '<br>' : ''}
-      <div class="flow" style="margin-top:6px">${p.nodes.map(n =>
-        `<span class="n ${esc(n.type)}">${esc(n.id)}</span>`).join('<span class="muted">·</span>')}</div>`;
+      <div style="margin-top:6px">${flowDiagram(p)}</div>`;
   };
   sel.addEventListener('change', describe); describe();
   document.getElementById('start').addEventListener('click', async () => {
@@ -310,7 +807,7 @@ async function showNewRun() {
 async function showPipelines() {
   setNav('pipelines');
   let pipelines;
-  try { pipelines = await api('/pipelines'); } catch (e) { $main.innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; return; }
+  try { pipelines = await api('/pipelines', {cache: 'no-store'}); } catch (e) { $main.innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; return; }
   $main.innerHTML = `
     <h2>Pipelines</h2><div class="page-sub">Definitions loaded from the pipelines directory.</div>
     ${pipelines.map(p => `
@@ -318,12 +815,13 @@ async function showPipelines() {
         <div class="topline"><div><b style="font-size:16px">${esc(p.name)}</b>
         ${p.description ? `<div class="muted">${esc(p.description)}</div>` : ''}</div>
         <button class="secondary" onclick="location.hash='#/new'">Run</button></div>
+        <div style="margin-top:10px">${flowDiagram(p)}</div>
         <table style="margin-top:10px"><thead><tr><th>Agent</th><th>Type</th><th>Runtime</th><th>Hands off to</th></tr></thead>
         <tbody>${p.nodes.map(n => `
           <tr>
             <td><b>${esc(n.id)}</b>${n.id === p.entry ? ' <span class="muted">(entry)</span>' : ''}
             ${n.description ? `<div class="muted">${esc(n.description)}</div>` : ''}</td>
-            <td><span class="type">${esc(n.type)}</span></td>
+            <td><span class="type ${esc(n.type)}">${esc(n.type)}</span></td>
             <td class="mono">${esc(n.runtime || '—')}</td>
             <td>${n.stages ? n.stages.map(s => `<div class="muted">stage <b>${esc(s.id)}</b> → ${s.agents.map(esc).join(', ')}</div>`).join('') : ''}
                 ${(n.handoff || []).map(esc).join(', ') || (n.stages ? '' : '<span class="muted">terminates</span>')}</td>

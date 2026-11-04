@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -39,6 +40,16 @@ type ServerConfig struct {
 	Port int    `yaml:"port,omitempty"`
 }
 
+// WatcherConfig describes a command polled to trigger a pipeline.
+type WatcherConfig struct {
+	Name           string   `yaml:"name"`
+	Command        string   `yaml:"command"`
+	Args           []string `yaml:"args,omitempty"`
+	Interval       string   `yaml:"interval"`
+	TimeoutSeconds int      `yaml:"timeout_seconds,omitempty"`
+	Pipeline       string   `yaml:"pipeline"`
+}
+
 // Config is the parsed signalbox.yaml.
 type Config struct {
 	Version      int                      `yaml:"version"`
@@ -47,6 +58,7 @@ type Config struct {
 	StateDir     string                   `yaml:"state_dir,omitempty"`
 	Runtimes     map[string]RuntimeConfig `yaml:"runtimes"`
 	Server       ServerConfig             `yaml:"server,omitempty"`
+	Watchers     []WatcherConfig          `yaml:"watchers,omitempty"`
 
 	// Root is the directory containing signalbox.yaml (not serialised).
 	Root string `yaml:"-"`
@@ -106,6 +118,29 @@ func (c *Config) validate() error {
 		}
 		if r.Type == "cli" && r.Command == "" {
 			return fmt.Errorf("runtime %q of type cli requires a command", name)
+		}
+	}
+	watcherNames := map[string]bool{}
+	for _, w := range c.Watchers {
+		if w.Name == "" {
+			return fmt.Errorf("watcher is missing a name")
+		}
+		if watcherNames[w.Name] {
+			return fmt.Errorf("duplicate watcher name %q", w.Name)
+		}
+		watcherNames[w.Name] = true
+		if w.Command == "" {
+			return fmt.Errorf("watcher %q is missing a command", w.Name)
+		}
+		if w.Pipeline == "" {
+			return fmt.Errorf("watcher %q is missing a pipeline", w.Name)
+		}
+		interval, err := time.ParseDuration(w.Interval)
+		if err != nil || interval <= 0 {
+			return fmt.Errorf("watcher %q has invalid interval %q (must be a positive duration such as 30s or 5m)", w.Name, w.Interval)
+		}
+		if w.TimeoutSeconds < 0 {
+			return fmt.Errorf("watcher %q has negative timeout_seconds", w.Name)
 		}
 	}
 	return nil

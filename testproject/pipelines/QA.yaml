@@ -1,0 +1,425 @@
+name: QA
+description: >-
+  Generate and review functional, negative, security, API, and exploratory
+  test scenarios, consolidate coverage, and pause for human approval.
+entry: requirements_loader
+
+agents:
+  - id: requirements_loader
+    type: standard
+    description: Requirements Loader
+    runtime: codex
+    prompt: |
+      You are a test requirements analyst.
+
+      First determine whether the available input contains a Jira ID or story
+      content. Treat any plain-language description of a feature or behavior
+      as story content, even when it is not labeled as a story.
+
+      If given a Jira ID, retrieve the Jira story and available acceptance
+      criteria, linked defects, linked stories, comments and attachments.
+      If story content is present, analyze it directly and skip Jira retrieval.
+      Never ask the user to provide or resend story content that is already
+      available. Do not require a Jira ID, acceptance criteria or supporting
+      details to begin; record missing information as assumptions or open
+      questions.
+
+      Ask the user for input only when neither a Jira ID nor story content is
+      available.
+
+      Analyze the available input and extract:
+
+      - Business objectives
+      - Actors
+      - Critical workflows
+      - Validation rules
+      - Security concerns
+      - API interactions
+      - Risks
+      - Open questions
+
+      Produce a structured requirements summary suitable for testing.
+
+      Do not make assumptions beyond what is explicitly stated in the requirements.
+
+      
+    handoff: [qa_coordinator]
+
+  # Each pair of planners hands off to its category judge, which waits for
+  # both planners and then hands back to this coordinator. The stage ends
+  # once all five judges have reported.
+  - id: qa_coordinator
+    type: orchestrator
+    description: Coordinates parallel test planning and category reviews.
+    stages:
+      - id: planning
+        agents:
+          - functional_planner_a
+          - functional_planner_b
+          - negative_planner_a
+          - negative_planner_b
+          - security_planner_a
+          - security_planner_b
+          - api_planner_a
+          - api_planner_b
+          - exploratory_planner_a
+          - exploratory_planner_b
+    handoff: [master_judge]
+
+  - id: functional_planner_a
+    type: standard
+    description: Functional Flow Planner
+    runtime: codex
+    prompt: |
+      Create test scenarios covering:
+
+      - Happy paths
+      - Core workflows
+      - Multi-step user journeys
+      - End-to-end processes
+
+      Output:
+      - Test ID
+      - Scenario
+      - Preconditions
+      - Expected Outcome
+      - Priority
+      
+      Each test should be listed separately with a clear description and context.
+
+    handoff: [functional_judge]
+
+  - id: functional_planner_b
+    type: standard
+    description: Business Rules Planner
+    runtime: codex
+    prompt: |
+      Create test scenarios covering:
+
+      - Business rules
+      - Validation logic
+      - State transitions
+      - Workflow branching
+
+      Each test should be listed separately with a clear description and context.
+
+    handoff: [functional_judge]
+
+  - id: functional_judge
+    type: standard
+    description: Functional Judge
+    runtime: codex
+    additional-input: [requirements_loader]
+    prompt: |
+      Review all Functional outputs.
+      Your input contains the functional_planner_a and functional_planner_b
+      outputs.
+
+      Ensure:
+      - User journeys covered
+      - Business rules covered
+      - No duplicates
+      - Missing coverage identified
+
+      Return:
+      - Approved tests
+      - Rejected tests
+      - Coverage gaps
+
+      Each test should be listed separately with a clear description and context.
+
+      Ensure that all tests relate to aspects of the original requirements.
+
+  - id: negative_planner_a
+    type: standard
+    description: Negative Input Planner
+    runtime: codex
+    prompt: |
+      Create tests covering:
+
+      - Invalid inputs
+      - Empty values
+      - Boundary values
+      - Invalid formats
+      - Mandatory field failures
+
+      Each test should be listed separately with a clear description and context.
+    handoff: [negative_judge]
+
+  - id: negative_planner_b
+    type: standard
+    description: Failure Mode Planner
+    runtime: codex
+    prompt: |
+      Create tests covering:
+
+      - Service failures
+      - Timeouts
+      - Dependency errors
+      - Browser issues
+      - Interrupted workflows
+
+      Each test should be listed separately with a clear description and context.
+
+    handoff: [negative_judge]
+
+  - id: negative_judge
+    type: standard
+    description: Negative Judge
+    runtime: codex
+    additional-input: [requirements_loader]
+    prompt: |
+      Assess negative testing quality.
+      Your input contains the negative_planner_a and negative_planner_b
+      outputs.
+
+      Verify:
+      - Error handling covered
+      - Failure paths covered
+      - Recovery scenarios covered
+
+      Remove duplicates.
+      Each test should be listed separately with a clear description and context.
+      
+      Ensure that all tests relate to aspects of the original requirements.
+
+  - id: security_planner_a
+    type: standard
+    description: OWASP Planner
+    runtime: codex
+    prompt: |
+      Create tests aligned to:
+
+      - OWASP Top 10
+      - Authentication
+      - Authorization
+      - Session Management
+      - Input Validation
+
+      Each test should be listed separately with a clear description and context.
+
+    handoff: [security_judge]
+
+  - id: security_planner_b
+    type: standard
+    description: Abuse Case Planner
+    runtime: codex
+    prompt: |
+      Create tests covering:
+
+      - Privilege escalation
+      - Data leakage
+      - Enumeration
+      - Abuse scenarios
+      - Injection opportunities
+
+      Each test should be listed separately with a clear description and context.
+
+      Ensure that all tests relate to aspects of the original requirements.
+
+    handoff: [security_judge]
+
+  - id: security_judge
+    type: standard
+    description: Security Judge
+    runtime: codex
+    additional-input: [requirements_loader]
+    prompt: |
+      Review all security scenarios.
+      Your input contains the security_planner_a and security_planner_b
+      outputs.
+
+      Score against:
+
+      - Authentication
+      - Authorization
+      - Auditing
+      - Session Security
+      - Data Protection
+
+      Remove duplicates and weak tests.
+      Each test should be listed separately with a clear description and context.
+
+  - id: api_planner_a
+    type: standard
+    description: API Contract Planner
+    runtime: codex
+    prompt: |
+      Generate tests validating:
+
+      - OpenAPI contracts
+      - Request schema
+      - Response schema
+      - Status codes
+      - Validation rules
+
+      Each test should be listed separately with a clear description and context.
+
+      If there are no API aspects to test, return "No API tests applicable."
+    handoff: [api_judge]
+
+  - id: api_planner_b
+    type: standard
+    description: API Integration Planner
+    runtime: codex
+    prompt: |
+      Generate tests covering:
+
+      - Service integration
+      - Event flows
+      - Transactions
+      - Consumer/provider behaviour
+      - Error propagation
+
+      Each test should be listed separately with a clear description and context.
+
+      If there are no API aspects to test, return "No API integration tests applicable."
+
+      
+    handoff: [api_judge]
+
+  - id: api_judge
+    type: standard
+    description: API Judge
+    runtime: codex
+    additional-input: [requirements_loader]
+    prompt: |
+      Your input contains the api_planner_a and api_planner_b outputs.
+
+      Each test should be listed separately with a clear description and context.
+
+      Assess:
+
+      - Contract coverage
+      - Integration coverage
+      - Reliability coverage
+
+      Deduplicate and identify gaps.
+      Ensure that all tests relate to aspects of the original requirements.
+  - id: exploratory_planner_a
+    type: standard
+    description: Risk Exploration Planner
+    runtime: codex
+    prompt: |
+      Generate exploratory tests using:
+
+      Each test should be listed separately with a clear description and context.
+
+      - Risk based testing
+      - SFDPOT
+      - CRUD
+      - User journeys
+      - Test tours
+    handoff: [exploratory_judge]
+
+  - id: exploratory_planner_b
+    type: standard
+    description: Unknown Unknowns Planner
+    runtime: codex
+    prompt: |
+      Generate exploratory tests targeting:
+
+      Each test should be listed separately with a clear description and context.
+
+      - Unexpected behaviour
+      - Historical defect patterns
+      - Complex workflows
+      - Human misuse
+      - Edge workflows
+    handoff: [exploratory_judge]
+
+  - id: exploratory_judge
+    type: standard
+    description: Exploratory Judge
+    runtime: codex
+    additional-input: [requirements_loader]
+    prompt: |
+      Assess novelty and risk.
+      Your input contains the exploratory_planner_a and exploratory_planner_b
+      outputs.
+
+      Each test should be listed separately with a clear description and context.
+
+      Remove duplicates.
+
+      Prioritize:
+      - High risk
+      - High value
+      - Previously unseen scenarios
+      Ensure that all tests relate to aspects of the original requirements.
+
+  - id: master_judge
+    type: standard
+    description: Master Test Judge
+    runtime: codex
+    additional-input: [requirements_loader]
+    prompt: |
+      Combine all approved tests from:
+
+      - Functional
+      - Negative
+      - Security
+      - API
+      - Exploratory
+
+      Responsibilities:
+
+      1. Deduplicate globally
+      2. Merge equivalent tests
+      3. Ensure that all tests relate to aspects of the original requirements.
+      4. Identify gaps
+      5. Score coverage of the original requirement
+      6. Prioritize tests
+
+      Produce:
+
+      ## Coverage Summary
+
+      Functional:
+      Negative:
+      Security:
+      API:
+      Exploratory:
+
+      ## Coverage Gaps
+
+      ## Recommended Tests
+
+      ## Prioritized Backlog
+
+      ## Risks
+
+      ## Open Questions
+    handoff: [review_presenter]
+
+  # Approval nodes pass their input through without invoking a runtime.
+  - id: review_presenter
+    type: standard
+    description: Formats the consolidated test plan for human review.
+    runtime: codex
+    prompt: |
+      Present only:
+
+      - Coverage Summary
+      - Coverage Gaps
+      - Risk Areas
+      - Prioritized Tests
+      - Open Questions
+
+      The output does not care about the reduction in tests, consolidation counts, or the counts of test families. 
+
+      Preserve the consolidated tests, priorities, and findings in the input.
+
+      No automation generation is permitted.
+      No Playwright generation is permitted.
+    handoff: [human_review]
+
+  # SignalBox supports approve/reject, not a separate REQUEST_CHANGES outcome.
+  # To request changes, reject with a comment and start a revised run.
+  - id: human_review
+    type: approval
+    description: >-
+      Review the coverage summary, gaps, risks, prioritized tests, and open
+      questions. Approve or reject; to request changes, reject with a comment
+      and start a revised run. No automation or Playwright generation is
+      permitted.

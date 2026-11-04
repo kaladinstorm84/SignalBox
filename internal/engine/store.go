@@ -39,6 +39,15 @@ func (s *Store) Save(e *Execution) error {
 	return os.Rename(tmp, final)
 }
 
+// Delete removes a persisted execution record. A missing file is not an error.
+func (s *Store) Delete(id string) error {
+	err := os.Remove(filepath.Join(s.dir, id+".json"))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // LoadAll reads every persisted execution. Any execution that was still in
 // flight (e.g. the server was stopped mid-run) is marked interrupted, along
 // with its unfinished runs, since in-flight state cannot be resumed.

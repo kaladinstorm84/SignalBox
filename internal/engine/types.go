@@ -16,7 +16,10 @@ const (
 	// StatusWaitingInputs applies to orchestrators still collecting fan-in
 	// handoffs before their stages begin.
 	StatusWaitingInputs Status = "waiting_inputs"
-	StatusCompleted     Status = "completed"
+	// StatusWaitingRetry marks a run whose agent call failed and is paused
+	// until a person retries it or gives up.
+	StatusWaitingRetry Status = "waiting_retry"
+	StatusCompleted    Status = "completed"
 	StatusFailed        Status = "failed"
 	StatusRejected      Status = "rejected"
 	StatusCanceled      Status = "canceled"
@@ -64,8 +67,11 @@ type NodeRun struct {
 	Input  string            `json:"input,omitempty"`
 	Output string            `json:"output,omitempty"`
 	Error  string            `json:"error,omitempty"`
+	// Retries counts how many times a failed agent call was retried.
+	Retries int `json:"retries,omitempty"`
 
-	// FromNodeID names the node that handed off to this run ("" for entry).
+	// FromNodeID names the node that handed off to this run ("" for entry);
+	// for a join it lists every source, comma-separated.
 	FromNodeID string `json:"from_node_id,omitempty"`
 
 	// OrchRunID / StageID identify the orchestrator stage this run belongs
@@ -112,6 +118,7 @@ type Summary struct {
 	Input      string     `json:"input"`
 	Status     Status     `json:"status"`
 	Waiting    int        `json:"waiting_approvals"`
+	Retrying   int        `json:"waiting_retries"`
 	CreatedAt  time.Time  `json:"created_at"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }

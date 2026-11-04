@@ -1,0 +1,44 @@
+# SignalBox project configuration.
+version: 1
+project: testproject
+
+# Directory containing pipeline YAML files.
+pipelines_dir: pipelines
+
+# Directory where execution history is stored.
+state_dir: .signalbox
+
+server:
+  host: 127.0.0.1
+  port: 8484
+
+# Runtimes map agent "runtime" names to AI backends.
+# Types: openai (OpenAI-compatible API), codex, claude, copilot (local agent
+# CLIs), cli (any custom command), mock (deterministic echo for demos/tests).
+runtimes:
+  mock:
+    type: mock
+
+  # openai:
+  #   type: openai
+  #   model: gpt-4o
+  #   api_key_env: OPENAI_API_KEY   # key is read from this env var
+  #   # base_url: https://api.openai.com/v1   # any OpenAI-compatible endpoint
+
+  # claude:
+  #   type: claude                  # runs: claude -p "<prompt>"
+  #   # command: claude
+  #   # args: ["-p"]
+  #   # timeout_seconds: 600
+
+  codex:
+     type: codex                   # runs: codex exec "<prompt>"
+
+  # copilot:
+  #   type: copilot                 # runs: copilot -p "<prompt>"
+
+  # custom:
+  #   type: cli
+  #   command: my-agent
+  #   args: ["--quiet"]
+  #   prompt_mode: stdin            # "arg" (default) or "stdin"

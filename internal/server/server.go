@@ -3,15 +3,20 @@
 package server
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
+	"time"
 
+	"github.com/gitea/signalbox/internal/config"
 	"github.com/gitea/signalbox/internal/engine"
 	"github.com/gitea/signalbox/internal/pipeline"
+	"github.com/gitea/signalbox/internal/watcher"
 )
 
 //go:embed ui
@@ -19,13 +24,25 @@ var uiFS embed.FS
 
 // Server wires the engine to HTTP handlers.
 type Server struct {
-	eng     *engine.Engine
-	project string
+	eng           *engine.Engine
+	project       string
+	loadPipelines func() (map[string]*pipeline.Pipeline, error)
+	watcher       *watcher.Runner
+	watchers      []config.WatcherConfig
 }
 
-// New creates a server for the given engine.
-func New(eng *engine.Engine, project string) *Server {
-	return &Server{eng: eng, project: project}
+// New creates a server for the given engine, pipeline loader, and watchers.
+func New(eng *engine.Engine, project string, loadPipelines func() (map[string]*pipeline.Pipeline, error), watcherRunner *watcher.Runner, watchers []config.WatcherConfig) *Server {
+	return &Server{eng: eng, project: project, loadPipelines: loadPipelines, watcher: watcherRunner, watchers: watchers}
+}
+
+func (s *Server) refreshPipelines() error {
+	pipelines, err := s.loadPipelines()
+	if err != nil {
+		return err
+	}
+	s.eng.SetPipelines(pipelines)
+	return nil
 }
 
 // Handler builds the HTTP routing table.
@@ -44,15 +61,37 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/executions", s.handleStartExecution)
 	mux.HandleFunc("GET /api/executions/{id}", s.handleGetExecution)
 	mux.HandleFunc("POST /api/executions/{id}/approve", s.handleApprove)
+	mux.HandleFunc("POST /api/executions/{id}/retry", s.handleRetry)
 	mux.HandleFunc("POST /api/executions/{id}/cancel", s.handleCancel)
+	mux.HandleFunc("POST /api/executions/{id}/rerun", s.handleRerun)
+	mux.HandleFunc("DELETE /api/executions/{id}", s.handleDeleteExecution)
 
 	return logMiddleware(mux)
 }
 
-// ListenAndServe blocks serving HTTP on addr.
-func (s *Server) ListenAndServe(addr string) error {
+// ListenAndServe serves HTTP and runs configured watchers until ctx is canceled.
+func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	for _, cfg := range s.watchers {
+		go s.watcher.Run(runCtx, cfg)
+	}
+	server := &http.Server{Addr: addr, Handler: s.Handler()}
+	go func() {
+		<-runCtx.Done()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("shutting down HTTP server: %v", err)
+		}
+	}()
 	log.Printf("SignalBox serving on http://%s", addr)
-	return http.ListenAndServe(addr, s.Handler())
+	err := server.ListenAndServe()
+	cancel()
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
 }
 
 func logMiddleware(next http.Handler) http.Handler {
@@ -101,6 +140,11 @@ type stageView struct {
 }
 
 func (s *Server) handlePipelines(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if err := s.refreshPipelines(); err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("reloading pipelines: %w", err))
+		return
+	}
 	ps := s.eng.Pipelines()
 	out := []pipelineView{}
 	for _, name := range pipeline.Names(ps) {
@@ -129,6 +173,10 @@ func (s *Server) handleListExecutions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStartExecution(w http.ResponseWriter, r *http.Request) {
+	if err := s.refreshPipelines(); err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("reloading pipelines: %w", err))
+		return
+	}
 	var req struct {
 		Pipeline string `json:"pipeline"`
 		Input    string `json:"input"`
@@ -190,10 +238,66 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid JSON body: %w", err))
+		return
+	}
+	if req.RunID == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("run_id is required"))
+		return
+	}
+	execID := r.PathValue("id")
+	if err := s.eng.Retry(execID, req.RunID); err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	log.Printf("execution %s: retrying run %s", execID, req.RunID)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	if err := s.eng.Cancel(r.PathValue("id")); err != nil {
 		writeErr(w, http.StatusConflict, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleRerun starts a new execution with the same pipeline and input as an
+// existing one, using the pipeline definition currently on disk.
+func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request) {
+	src, err := s.eng.Get(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if err := s.refreshPipelines(); err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("reloading pipelines: %w", err))
+		return
+	}
+	id, err := s.eng.Start(src.Pipeline, src.Input)
+	if err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	log.Printf("started execution %s (pipeline %q, rerun of %s)", id, src.Pipeline, src.ID)
+	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
+}
+
+func (s *Server) handleDeleteExecution(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := s.eng.Get(id); err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if err := s.eng.Delete(id); err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	log.Printf("deleted execution %s", id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
