@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SignalBox</title>
+<style>
+  :root {
+    --bg: #0d1117; --bg2: #161b22; --bg3: #1c2230; --border: #2b3242;
+    --text: #e6e9ef; --muted: #8b94a7; --accent: #4f8cff; --accent2: #7aa5ff;
+    --ok: #3fb67d; --warn: #e0a42c; --err: #e05c5c; --purple: #a07aff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  a { color: var(--accent2); text-decoration: none; }
+  .layout { display: flex; min-height: 100vh; }
+  .sidebar {
+    width: 220px; flex-shrink: 0; background: var(--bg2); border-right: 1px solid var(--border);
+    padding: 20px 14px; display: flex; flex-direction: column; gap: 4px;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; padding: 0 8px; }
+  .brand .logo {
+    width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
+    background: linear-gradient(135deg, var(--accent), var(--purple));
+    display: flex; align-items: center; justify-content: center; font-weight: 800; color: #fff;
+  }
+  .brand h1 { font-size: 17px; margin: 0; letter-spacing: .3px; }
+  .brand .sub { font-size: 11px; color: var(--muted); }
+  .nav a {
+    display: block; padding: 9px 12px; border-radius: 8px; color: var(--text); font-weight: 500;
+  }
+  .nav a:hover { background: var(--bg3); }
+  .nav a.active { background: var(--bg3); color: var(--accent2); }
+  .main { flex: 1; padding: 28px 36px; max-width: 1100px; }
+  h2 { margin: 0 0 4px; font-size: 20px; }
+  .page-sub { color: var(--muted); margin-bottom: 22px; }
+  .card {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+    padding: 18px 20px; margin-bottom: 14px;
+  }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; color: var(--muted); font-size: 12px; text-transform: uppercase;
+       letter-spacing: .5px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr.row:hover { background: var(--bg3); cursor: pointer; }
+  tr:last-child td { border-bottom: none; }
+  .pill {
+    display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    border: 1px solid transparent; white-space: nowrap;
+  }
+  .pill.running, .pill.pending { color: var(--accent2); border-color: var(--accent); background: rgba(79,140,255,.1); }
+  .pill.waiting_approval { color: var(--warn); border-color: var(--warn); background: rgba(224,164,44,.12); }
+  .pill.waiting_inputs { color: var(--purple); border-color: var(--purple); background: rgba(160,122,255,.12); }
+  .pill.completed { color: var(--ok); border-color: var(--ok); background: rgba(63,182,125,.1); }
+  .pill.failed, .pill.rejected { color: var(--err); border-color: var(--err); background: rgba(224,92,92,.1); }
+  .pill.canceled, .pill.interrupted { color: var(--muted); border-color: var(--muted); background: rgba(139,148,167,.1); }
+  .muted { color: var(--muted); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+  button {
+    background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 9px 16px;
+    font-weight: 600; font-size: 13.5px; cursor: pointer;
+  }
+  button:hover { background: var(--accent2); }
+  button.secondary { background: var(--bg3); color: var(--text); border: 1px solid var(--border); }
+  button.secondary:hover { border-color: var(--muted); }
+  button.danger { background: transparent; color: var(--err); border: 1px solid var(--err); }
+  button.danger:hover { background: rgba(224,92,92,.12); }
+  button.approve { background: var(--ok); }
+  select, textarea, input[type=text] {
+    width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 9px 12px; font: inherit;
+  }
+  textarea { min-height: 120px; resize: vertical; }
+  label { display: block; font-weight: 600; margin: 14px 0 6px; }
+  .runcard { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; background: var(--bg); }
+  .runcard.waiting { border-color: var(--warn); box-shadow: 0 0 0 1px rgba(224,164,44,.3); }
+  .runhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .runhead .nodeid { font-weight: 700; }
+  .runhead .type { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted);
+                   border: 1px solid var(--border); border-radius: 5px; padding: 1px 7px; }
+  pre.out {
+    background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+    white-space: pre-wrap; word-break: break-word; font-size: 12.5px; margin: 8px 0 0; max-height: 300px; overflow: auto;
+  }
+  details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; margin-top: 8px; }
+  .approve-box { margin-top: 12px; padding: 12px; border-radius: 8px; background: rgba(224,164,44,.07);
+                 border: 1px solid rgba(224,164,44,.35); }
+  .approve-actions { display: flex; gap: 8px; margin-top: 10px; }
+  .stage { border-left: 3px solid var(--purple); padding: 8px 12px; margin: 10px 0 0 4px; background: var(--bg3); border-radius: 0 8px 8px 0; }
+  .flow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12.5px; }
+  .flow .n { border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; background: var(--bg); }
+  .flow .n.orchestrator { border-color: var(--purple); color: var(--purple); }
+  .flow .n.approval { border-color: var(--warn); color: var(--warn); }
+  .err-banner { background: rgba(224,92,92,.1); border: 1px solid var(--err); color: var(--err);
+                border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; }
+  .topline { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  .toast { position: fixed; bottom: 20px; right: 20px; background: var(--bg3); border: 1px solid var(--border);
+           padding: 12px 18px; border-radius: 10px; opacity: 0; transition: opacity .25s; pointer-events: none; }
+  .toast.show { opacity: 1; }
+  .empty { text-align: center; color: var(--muted); padding: 40px 0; }
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">S</div>
+      <div><h1>SignalBox</h1><div class="sub" id="project-name"></div></div>
+    </div>
+    <nav class="nav">
+      <a href="#/executions" data-nav="executions">Executions</a>
+      <a href="#/new" data-nav="new">New run</a>
+      <a href="#/pipelines" data-nav="pipelines">Pipelines</a>
+    </nav>
+  </aside>
+  <main class="main" id="main"></main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $main = document.getElementById('main');
+let pollTimer = null;
+
+async function api(path, opts) {
+  const res = await fetch('/api' + path, opts);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || res.statusText);
+  return body;
+}
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function pill(status) { return `<span class="pill ${esc(status)}">${esc(status.replace(/_/g,' '))}</span>`; }
+function fmtTime(t) { return t ? new Date(t).toLocaleString() : ''; }
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2500);
+}
+function setNav(name) {
+  document.querySelectorAll('[data-nav]').forEach(a =>
+    a.classList.toggle('active', a.dataset.nav === name));
+}
+function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+
+// --- routing ---
+function route() {
+  stopPolling();
+  const hash = location.hash || '#/executions';
+  const m = hash.match(/^#\/exec\/(.+)$/);
+  if (m) return showExecution(decodeURIComponent(m[1]));
+  if (hash.startsWith('#/new')) return showNewRun();
+  if (hash.startsWith('#/pipelines')) return showPipelines();
+  return showExecutions();
+}
+window.addEventListener('hashchange', route);
+
+// --- executions list ---
+async function showExecutions() {
+  setNav('executions');
+  const render = async () => {
+    let list;
+    try { list = await api('/executions'); } catch (e) { $main.innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; return; }
+    const rows = list.map(x => `
+      <tr class="row" onclick="location.hash='#/exec/${encodeURIComponent(x.id)}'">
+        <td class="mono">${esc(x.id)}</td>
+        <td>${esc(x.pipeline)}</td>
+        <td>${pill(x.status)}${x.waiting_approvals ? ` <span class="pill waiting_approval">${x.waiting_approvals} to approve</span>` : ''}</td>
+        <td class="muted">${esc(x.input)}</td>
+        <td class="muted">${fmtTime(x.created_at)}</td>
+      </tr>`).join('');
+    $main.innerHTML = `
+      <div class="topline"><div><h2>Executions</h2><div class="page-sub">Every pipeline run, newest first.</div></div>
+      <button onclick="location.hash='#/new'">New run</button></div>
+      <div class="card">${list.length
+        ? `<table><thead><tr><th>ID</th><th>Pipeline</th><th>Status</th><th>Input</th><th>Started</th></tr></thead><tbody>${rows}</tbody></table>`
+        : `<div class="empty">No executions yet. Start one from <a href="#/new">New run</a>.</div>`}</div>`;
+  };
+  await render();
+  pollTimer = setInterval(render, 2000);
+}
+
+// --- execution detail ---
+async function showExecution(id) {
+  setNav('executions');
+  const render = async () => {
+    let x;
+    try { x = await api('/executions/' + encodeURIComponent(id)); }
+    catch (e) { $main.innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; stopPolling(); return; }
+
+    const runs = (x.runs || []).map(r => renderRun(x, r)).join('');
+    const finals = (x.final_outputs || []).map(f => `
+      <div class="runcard"><div class="runhead"><span class="nodeid">${esc(f.node_id)}</span><span class="type">final output</span></div>
+      <pre class="out">${esc(f.output)}</pre></div>`).join('');
+
+    $main.innerHTML = `
+      <div class="topline">
+        <div><h2 class="mono">${esc(x.id)}</h2>
+        <div class="page-sub">Pipeline <b>${esc(x.pipeline)}</b> · started ${fmtTime(x.created_at)}
+        ${x.finished_at ? '· finished ' + fmtTime(x.finished_at) : ''}</div></div>
+        <div style="display:flex;gap:8px;align-items:center">${pill(x.status)}
+        ${!isTerminal(x.status) ? `<button class="danger" onclick="cancelExec('${esc(x.id)}')">Cancel</button>` : ''}</div>
+      </div>
+      ${x.error ? `<div class="err-banner">${esc(x.error)}</div>` : ''}
+      <div class="card"><label style="margin-top:0">Input</label><pre class="out">${esc(x.input)}</pre></div>
+      <h2 style="font-size:16px;margin:20px 0 10px">Agent runs</h2>
+      ${runs || '<div class="muted">No runs yet.</div>'}
+      ${finals ? `<h2 style="font-size:16px;margin:20px 0 10px">Results</h2>${finals}` : ''}`;
+    if (isTerminal(x.status)) stopPolling();
+  };
+  await render();
+  pollTimer = setInterval(render, 2000);
+}
+
+function isTerminal(s) { return ['completed','failed','rejected','canceled','interrupted'].includes(s); }
+
+function renderRun(x, r) {
+  const waiting = r.status === 'waiting_approval';
+  const stages = (r.stages || []).map(s => `
+    <div class="stage">
+      <div class="runhead"><span class="nodeid">stage: ${esc(s.stage_id)}</span>${pill(s.status)}</div>
+      ${(s.outputs || []).map(o => `<details><summary>result from ${esc(o.node_id)}</summary><pre class="out">${esc(o.output)}</pre></details>`).join('')}
+      ${s.context ? `<details><summary>stage context</summary><pre class="out">${esc(s.context)}</pre></details>` : ''}
+    </div>`).join('');
+
+  return `
+  <div class="runcard ${waiting ? 'waiting' : ''}">
+    <div class="runhead">
+      <span class="nodeid">${esc(r.node_id)}</span>
+      <span class="type">${esc(r.type)}</span>
+      ${pill(r.status)}
+      ${r.from_node_id ? `<span class="muted">← ${esc(r.from_node_id)}</span>` : '<span class="muted">entry</span>'}
+      ${r.stage_id ? `<span class="muted">in stage ${esc(r.stage_id)}</span>` : ''}
+      <span class="muted" style="margin-left:auto">${fmtTime(r.started_at)}</span>
+    </div>
+    ${r.error ? `<div class="err-banner" style="margin:8px 0 0">${esc(r.error)}</div>` : ''}
+    ${r.input ? `<details><summary>input</summary><pre class="out">${esc(r.input)}</pre></details>` : ''}
+    ${stages}
+    ${r.output ? `<details ${!r.stages ? 'open' : ''}><summary>output</summary><pre class="out">${esc(r.output)}</pre></details>` : ''}
+    ${r.approved_by ? `<div class="muted" style="margin-top:8px">${r.status === 'rejected' ? 'Rejected' : 'Approved'} by ${esc(r.approved_by)}${r.comment ? ': ' + esc(r.comment) : ''}</div>` : ''}
+    ${waiting ? `
+      <div class="approve-box">
+        <b>Human approval required</b>
+        <input type="text" id="comment-${esc(r.id)}" placeholder="Optional comment" style="margin-top:8px">
+        <div class="approve-actions">
+          <button class="approve" onclick="decide('${esc(x.id)}','${esc(r.id)}',true)">Approve</button>
+          <button class="danger" onclick="decide('${esc(x.id)}','${esc(r.id)}',false)">Reject</button>
+        </div>
+      </div>` : ''}
+  </div>`;
+}
+
+async function decide(execId, runId, approved) {
+  const comment = (document.getElementById('comment-' + runId) || {}).value || '';
+  try {
+    await api(`/executions/${encodeURIComponent(execId)}/approve`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({run_id: runId, approved, comment, approved_by: 'web-ui'}),
+    });
+    toast(approved ? 'Approved' : 'Rejected');
+  } catch (e) { toast('Error: ' + e.message); }
+}
+
+async function cancelExec(id) {
+  try { await api(`/executions/${encodeURIComponent(id)}/cancel`, {method: 'POST'}); toast('Canceled'); }
+  catch (e) { toast('Error: ' + e.message); }
+}
+
+// --- new run ---
+async function showNewRun() {
+  setNav('new');
+  let pipelines;
+  try { pipelines = await api('/pipelines'); } catch (e) { $main.innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; return; }
+  const options = pipelines.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
+  $main.innerHTML = `
+    <h2>New run</h2><div class="page-sub">Send an input into a pipeline and follow it through every agent and approval.</div>
+    <div class="card">
+      <label>Pipeline</label><select id="pl">${options}</select>
+      <div id="pl-info" class="muted" style="margin-top:8px"></div>
+      <label>Input</label><textarea id="input" placeholder="The task, question, or payload handed to the entry agent..."></textarea>
+      <div style="margin-top:16px"><button id="start">Start execution</button></div>
+    </div>`;
+  const info = document.getElementById('pl-info');
+  const sel = document.getElementById('pl');
+  const describe = () => {
+    const p = pipelines.find(q => q.name === sel.value);
+    if (!p) { info.textContent = ''; return; }
+    info.innerHTML = `${p.description ? esc(p.description) + '<br>' : ''}
+      <div class="flow" style="margin-top:6px">${p.nodes.map(n =>
+        `<span class="n ${esc(n.type)}">${esc(n.id)}</span>`).join('<span class="muted">·</span>')}</div>`;
+  };
+  sel.addEventListener('change', describe); describe();
+  document.getElementById('start').addEventListener('click', async () => {
+    const input = document.getElementById('input').value.trim();
+    if (!input) { toast('Please provide an input.'); return; }
+    try {
+      const res = await api('/executions', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({pipeline: sel.value, input}),
+      });
+      location.hash = '#/exec/' + encodeURIComponent(res.id);
+    } catch (e) { toast('Error: ' + e.message); }
+  });
+}
+
+// --- pipelines ---
+async function showPipelines() {
+  setNav('pipelines');
+  let pipelines;
+  try { pipelines = await api('/pipelines'); } catch (e) { $main.innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; return; }
+  $main.innerHTML = `
+    <h2>Pipelines</h2><div class="page-sub">Definitions loaded from the pipelines directory.</div>
+    ${pipelines.map(p => `
+      <div class="card">
+        <div class="topline"><div><b style="font-size:16px">${esc(p.name)}</b>
+        ${p.description ? `<div class="muted">${esc(p.description)}</div>` : ''}</div>
+        <button class="secondary" onclick="location.hash='#/new'">Run</button></div>
+        <table style="margin-top:10px"><thead><tr><th>Agent</th><th>Type</th><th>Runtime</th><th>Hands off to</th></tr></thead>
+        <tbody>${p.nodes.map(n => `
+          <tr>
+            <td><b>${esc(n.id)}</b>${n.id === p.entry ? ' <span class="muted">(entry)</span>' : ''}
+            ${n.description ? `<div class="muted">${esc(n.description)}</div>` : ''}</td>
+            <td><span class="type">${esc(n.type)}</span></td>
+            <td class="mono">${esc(n.runtime || '—')}</td>
+            <td>${n.stages ? n.stages.map(s => `<div class="muted">stage <b>${esc(s.id)}</b> → ${s.agents.map(esc).join(', ')}</div>`).join('') : ''}
+                ${(n.handoff || []).map(esc).join(', ') || (n.stages ? '' : '<span class="muted">terminates</span>')}</td>
+          </tr>`).join('')}</tbody></table>
+      </div>`).join('') || '<div class="empty">No pipelines found.</div>'}`;
+}
+
+api('/meta').then(m => { document.getElementById('project-name').textContent = m.project; }).catch(() => {});
+route();
+</script>
+</body>
+</html>
