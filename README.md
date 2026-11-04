@@ -44,6 +44,9 @@ Built in Go; ships as a single static binary with the web UI embedded.
     runtime: codex
     additional-input: [requirements_loader]
   ```
+- **Formatted output:** set `format: true` on an agent to render its Markdown
+  output in the execution detail view. The raw Markdown remains available in a
+  collapsible section; raw HTML in Markdown is not rendered.
 
 ### Runtimes
 

@@ -160,6 +160,25 @@
     background: var(--bg3); border: 1px solid var(--border); border-radius: 5px; padding: 10px 12px;
     white-space: pre-wrap; word-break: break-word; font-size: 12.5px; margin: 8px 0 0; max-height: 300px; overflow: auto;
   }
+  .markdown {
+    background: var(--bg3); border: 1px solid var(--border); border-radius: 5px;
+    padding: 10px 16px; margin-top: 8px; overflow-wrap: anywhere;
+  }
+  .markdown > :first-child { margin-top: 0; }
+  .markdown > :last-child { margin-bottom: 0; }
+  .markdown h1, .markdown h2, .markdown h3, .markdown h4 { margin: 1.15em 0 .45em; line-height: 1.3; }
+  .markdown h1 { font-size: 1.55em; }
+  .markdown h2 { font-size: 1.3em; }
+  .markdown h3, .markdown h4 { font-size: 1.1em; }
+  .markdown p, .markdown ul, .markdown ol, .markdown blockquote, .markdown table { margin: .7em 0; }
+  .markdown blockquote { border-left: 3px solid var(--accent); margin-left: 0; padding-left: 12px; color: var(--muted); }
+  .markdown pre { overflow-x: auto; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
+  .markdown code { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .markdown table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+  .markdown th, .markdown td { border: 1px solid var(--border); padding: 6px 9px; }
+  .markdown th { color: var(--text); text-transform: none; letter-spacing: 0; }
+  .execution-diagram { margin: 12px 0 18px; }
+  .execution-diagram .diagram-card { max-height: 520px; overflow: auto; box-shadow: none; }
   details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; margin-top: 8px; }
   .approve-box { margin-top: 12px; padding: 12px; border-radius: 6px; background: rgba(240,180,50,.06);
                  border: 1px solid rgba(240,180,50,.35); }
@@ -204,6 +223,7 @@
     .lever::after { width: 14px; }
     .diagram-mini { display: none; }
     .main { width: 100%; padding: 20px 14px 30px; }
+    .execution-diagram .diagram-card { max-height: 320px; }
     .topline { align-items: center; }
     .topline > div { min-width: 0; }
     .topline > div:last-child { display: flex; flex-wrap: wrap; align-items: center; }
@@ -391,6 +411,7 @@ async function showExecutions() {
 async function showExecution(id) {
   setNav('executions');
   lastRendered = '';
+  const pipelinePromise = api('/pipelines', {cache: 'no-store'}).catch(() => []);
   const render = async () => {
     let x;
     try { x = await api('/executions/' + encodeURIComponent(id)); }
@@ -403,8 +424,10 @@ async function showExecution(id) {
     }
     lastRendered = snapshot;
     currentExec = x;
+    const pipelineDefinition = (await pipelinePromise).find(p => p.name === x.pipeline);
 
     const runs = (x.runs || []).map(r => renderRun(x, r)).join('');
+    const diagram = pipelineDefinition ? flowDiagram(pipelineDefinition, x) : '';
     const finalList = x.final_outputs || [];
     const finals = finalList.map((f, i) => `
       <div class="runcard"><div class="runhead"><span class="nodeid">${esc(f.node_id)}</span><span class="type final">final output</span>
@@ -423,6 +446,7 @@ async function showExecution(id) {
         <button class="secondary" onclick="rerunExec('${esc(x.id)}', this)">Rerun</button>
         ${!isTerminal(x.status) ? `<button class="danger" onclick="cancelExec('${esc(x.id)}')">Cancel</button>` : `<button class="danger" onclick="deleteExec('${esc(x.id)}', this)">Delete</button>`}</div>
       </div>
+      ${diagram ? `<div class="execution-diagram">${diagram}</div>` : ''}
       ${x.error ? `<div class="err-banner">${esc(x.error)}</div>` : ''}
       <div class="card"><label style="margin-top:0">Input</label><pre class="out">${esc(x.input)}</pre></div>
       <h2 style="font-size:16px;margin:20px 0 10px">Agent runs</h2>
@@ -446,6 +470,9 @@ function renderRun(x, r) {
       ${(s.outputs || []).map((o, i) => `<details data-key="${esc(r.id)}:${esc(s.stage_id)}:${i}"><summary>result from ${esc(o.node_id)}</summary><pre class="out">${esc(o.output)}</pre></details>`).join('')}
       ${s.context ? `<details data-key="${esc(r.id)}:${esc(s.stage_id)}:context"><summary>stage context</summary><pre class="out">${esc(s.context)}</pre></details>` : ''}
     </div>`).join('');
+  const outputContent = r.format
+    ? `<div class="markdown">${r.output_html || esc(r.output)}<details data-key="${esc(r.id)}:raw"><summary>raw Markdown</summary><pre class="out">${esc(r.output)}</pre></details></div>`
+    : `<pre class="out">${esc(r.output)}</pre>`;
 
   return `
   <div class="runcard ${waiting ? 'waiting' : ''} ${retryable ? 'retry' : ''} st-${esc(r.status)}">
@@ -466,7 +493,7 @@ function renderRun(x, r) {
       </div>` : ''}
     ${r.input ? `<details data-key="${esc(r.id)}:input"><summary>input</summary><pre class="out">${esc(r.input)}</pre></details>` : ''}
     ${stages}
-    ${r.output ? `<details data-key="${esc(r.id)}:output" ${!r.stages ? 'open' : ''}><summary>output</summary><pre class="out">${esc(r.output)}</pre></details>` : ''}
+    ${r.output ? `<details data-key="${esc(r.id)}:output" ${!r.stages ? 'open' : ''}><summary>${r.format ? 'formatted output' : 'output'}</summary>${outputContent}</details>` : ''}
     ${r.approved_by ? `<div class="muted" style="margin-top:8px">${r.status === 'rejected' ? 'Rejected' : 'Approved'} by ${esc(r.approved_by)}${r.comment ? ': ' + esc(r.comment) : ''}</div>` : ''}
     ${waiting ? `
       <div class="approve-box">
@@ -540,8 +567,10 @@ const D = {curve: 34, gap: 20, lead: 54, pad: 28, top: 92, rowGap: 6, cell: 22};
 const measureCtx = document.createElement('canvas').getContext('2d');
 function textWidth(text, font) { measureCtx.font = font; return measureCtx.measureText(text).width; }
 
-function flowDiagram(p) {
+function flowDiagram(p, execution = null) {
   const byId = Object.fromEntries(p.nodes.map(n => [n.id, n]));
+  const runStatusByNode = {};
+  if (execution) for (const run of execution.runs || []) runStatusByNode[run.node_id] = run.status;
   const seen = new Set();
   const numbered = [];
   const LABEL = `600 11px ${DIAGRAM_FONT}`;
@@ -675,7 +704,8 @@ function flowDiagram(p) {
     const n = it.n || {id: it.id, type: 'ref'};
     const label = n.id.toUpperCase();
     const mid = x + it.w / 2;
-    const tip = n.type === 'ref' ? (it.missing ? `${n.id} (not defined)` : `continues at ${n.id}`) : `${it.num}. ${n.id} · ${n.type}${n.description ? ' — ' + n.description : ''}`;
+    const status = runStatusByNode[n.id] || '';
+    const tip = n.type === 'ref' ? (it.missing ? `${n.id} (not defined)` : `continues at ${n.id}`) : `${it.num}. ${n.id} · ${n.type}${n.description ? ' — ' + n.description : ''}${status ? ' · ' + status : ''}`;
     out.push(`<g class="node"><title>${esc(tip)}</title>`);
     if (n.type === 'orchestrator') {
       out.push(`<rect x="${x}" y="${y - 11}" width="${it.w}" height="22" fill="#c8732a" stroke="#7a3f12" stroke-width="1" />`);
@@ -698,6 +728,12 @@ function flowDiagram(p) {
       out.push(`<rect x="${mid - 17}" y="${y - 6.5}" width="34" height="13" rx="6.5" fill="#fff" stroke="${INK}" stroke-width="2.2" />`);
       text(mid, y - 12, label, 'label', 'middle');
       text(mid, y + 19, it.num, 'num', 'middle');
+    }
+    if (status) {
+      const lamp = n.type === 'orchestrator'
+        ? {x: x + it.w - 6, y: y - 5}
+        : n.type === 'approval' ? {x: mid + 23, y: y - 18} : {x: mid + 12, y: y - 4};
+      out.push(`<circle class="run-lamp ${esc(status)}" cx="${lamp.x}" cy="${lamp.y}" r="3"><title>${esc(status)}</title></circle>`);
     }
     out.push('</g>');
   };
@@ -753,6 +789,12 @@ function flowDiagram(p) {
       .ref { fill: #666; }
       .note { font-size: 8.5px; font-weight: 400; letter-spacing: .3px; }
       .joint { stroke: ${INK}; stroke-width: 1.4; }
+      .run-lamp { stroke: #151515; stroke-width: .8; }
+      .run-lamp.running { fill: #20c55a; stroke: #eaffee; filter: drop-shadow(0 0 3px #20c55a); }
+      .run-lamp.completed { fill: #339d52; }
+      .run-lamp.pending, .run-lamp.waiting_inputs, .run-lamp.waiting_approval, .run-lamp.waiting_retry { fill: #efb52f; }
+      .run-lamp.failed, .run-lamp.rejected { fill: #e2463a; }
+      .run-lamp.canceled, .run-lamp.interrupted { fill: #747c75; }
       .cell { fill: #fff; stroke: ${INK}; stroke-width: .8; }
       .cell-rule { stroke: ${INK}; stroke-width: .6; }
       .cell-num, .cell-type { font: 400 9.5px Arial, sans-serif; }

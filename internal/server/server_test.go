@@ -259,6 +259,67 @@ agents:
 	}
 }
 
+func TestFormattedNodeOutputIsRenderedSafely(t *testing.T) {
+	p, err := pipeline.Parse([]byte(`
+name: review
+entry: judge
+agents:
+  - id: judge
+    runtime: mock
+    format: true
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := runtime.NewRegistry(map[string]config.RuntimeConfig{"mock": {Type: "mock"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const raw = "# Review\n\n**Approved**\n\n<script>alert(1)</script>"
+	registry.Register(&runtime.Mock{RuntimeName: "mock", Handler: func(_ context.Context, _ runtime.Request) (string, error) {
+		return raw, nil
+	}})
+	eng, err := engine.New(map[string]*pipeline.Pipeline{"review": p}, registry, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := New(eng, "test", func() (map[string]*pipeline.Pipeline, error) {
+		return map[string]*pipeline.Pipeline{"review": p}, nil
+	}, nil, nil).Handler()
+	id, err := eng.Start("review", "review this")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done, _ := eng.Wait(id)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("execution did not finish")
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/executions/"+id, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET execution status = %d: %s", response.Code, response.Body.String())
+	}
+	var exec engine.Execution
+	if err := json.Unmarshal(response.Body.Bytes(), &exec); err != nil {
+		t.Fatal(err)
+	}
+	if len(exec.Runs) != 1 {
+		t.Fatalf("runs = %d, want 1", len(exec.Runs))
+	}
+	run := exec.Runs[0]
+	if !run.Format || run.Output != raw {
+		t.Fatalf("format/raw output = %v / %q", run.Format, run.Output)
+	}
+	if !strings.Contains(run.OutputHTML, "<h1>Review</h1>") || !strings.Contains(run.OutputHTML, "<strong>Approved</strong>") {
+		t.Fatalf("Markdown was not rendered: %s", run.OutputHTML)
+	}
+	if strings.Contains(run.OutputHTML, "<script") {
+		t.Fatalf("unsafe raw HTML was rendered: %s", run.OutputHTML)
+	}
+}
+
 func TestRerunAndDeleteExecution(t *testing.T) {
 	p, err := pipeline.Parse([]byte(`
 name: demo

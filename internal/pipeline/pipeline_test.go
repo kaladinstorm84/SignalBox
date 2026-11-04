@@ -29,6 +29,7 @@ agents:
   - id: writer
     runtime: mock
     additional-input: [researcher]
+    format: true
   - id: review
     type: approval
     handoff: [publisher]
@@ -47,6 +48,9 @@ agents:
 	if len(p.Node("writer").AdditionalInput) != 1 || p.Node("writer").AdditionalInput[0] != "researcher" {
 		t.Errorf("writer additional input = %v, want [researcher]", p.Node("writer").AdditionalInput)
 	}
+  if !p.Node("writer").Format {
+    t.Error("writer format = false, want true")
+  }
 	if got := p.InboundCount("coordinator"); got != 1 {
 		t.Errorf("InboundCount(coordinator) = %d, want 1", got)
 	}

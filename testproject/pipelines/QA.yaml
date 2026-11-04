@@ -353,6 +353,7 @@ agents:
     description: Master Test Judge
     runtime: codex
     additional-input: [requirements_loader]
+    format: true
     prompt: |
       Combine all approved tests from:
 

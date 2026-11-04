@@ -65,6 +65,8 @@ type Node struct {
 	Handoff []string `yaml:"handoff,omitempty"`
 	// AdditionalInput lists outputs that this node also requires in its input.
 	AdditionalInput []string `yaml:"additional-input,omitempty"`
+	// Format requests rendered Markdown presentation for this node's output.
+	Format bool `yaml:"format,omitempty"`
 
 	// Stages is only valid for orchestrators.
 	Stages []Stage `yaml:"stages,omitempty"`
