@@ -7,7 +7,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/gitea/signalbox/internal/config"
+	"github.com/kaladinstorm84/SignalBox/internal/config"
 )
 
 // Request is a single agent invocation.

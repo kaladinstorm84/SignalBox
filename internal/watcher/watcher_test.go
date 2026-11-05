@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/gitea/signalbox/internal/config"
+	"github.com/kaladinstorm84/SignalBox/internal/config"
 )
 
 func TestPollStartsPipelineOnlyForChangedOutput(t *testing.T) {

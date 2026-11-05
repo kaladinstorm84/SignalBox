@@ -5,7 +5,7 @@ package main
 import (
 	"os"
 
-	"github.com/gitea/signalbox/internal/cli"
+	"github.com/kaladinstorm84/SignalBox/internal/cli"
 )
 
 func main() {

@@ -12,12 +12,13 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
-	"github.com/gitea/signalbox/internal/config"
-	"github.com/gitea/signalbox/internal/engine"
-	"github.com/gitea/signalbox/internal/pipeline"
-	"github.com/gitea/signalbox/internal/watcher"
+	"github.com/kaladinstorm84/SignalBox/internal/config"
+	"github.com/kaladinstorm84/SignalBox/internal/engine"
+	"github.com/kaladinstorm84/SignalBox/internal/pipeline"
+	"github.com/kaladinstorm84/SignalBox/internal/watcher"
 	"github.com/yuin/goldmark"
 )
 
@@ -33,11 +34,17 @@ type Server struct {
 	loadPipelines func() (map[string]*pipeline.Pipeline, error)
 	watcher       *watcher.Runner
 	watchers      []config.WatcherConfig
+	projectRoot   string
+	settingsMu    sync.Mutex
 }
 
 // New creates a server for the given engine, pipeline loader, and watchers.
-func New(eng *engine.Engine, project string, loadPipelines func() (map[string]*pipeline.Pipeline, error), watcherRunner *watcher.Runner, watchers []config.WatcherConfig) *Server {
-	return &Server{eng: eng, project: project, loadPipelines: loadPipelines, watcher: watcherRunner, watchers: watchers}
+func New(eng *engine.Engine, project string, loadPipelines func() (map[string]*pipeline.Pipeline, error), watcherRunner *watcher.Runner, watchers []config.WatcherConfig, projectRoot ...string) *Server {
+	s := &Server{eng: eng, project: project, loadPipelines: loadPipelines, watcher: watcherRunner, watchers: watchers}
+	if len(projectRoot) > 0 {
+		s.projectRoot = projectRoot[0]
+	}
+	return s
 }
 
 func (s *Server) refreshPipelines() error {
@@ -60,12 +67,15 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /", http.FileServerFS(ui))
 
 	mux.HandleFunc("GET /api/meta", s.handleMeta)
+	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
+	mux.HandleFunc("PUT /api/settings", s.handleSaveSettings)
 	mux.HandleFunc("GET /api/pipelines", s.handlePipelines)
 	mux.HandleFunc("GET /api/executions", s.handleListExecutions)
 	mux.HandleFunc("POST /api/executions", s.handleStartExecution)
 	mux.HandleFunc("GET /api/executions/{id}", s.handleGetExecution)
 	mux.HandleFunc("POST /api/executions/{id}/approve", s.handleApprove)
 	mux.HandleFunc("POST /api/executions/{id}/retry", s.handleRetry)
+	mux.HandleFunc("POST /api/executions/{id}/restart", s.handleRestartInterruptedRun)
 	mux.HandleFunc("POST /api/executions/{id}/cancel", s.handleCancel)
 	mux.HandleFunc("POST /api/executions/{id}/rerun", s.handleRerun)
 	mux.HandleFunc("DELETE /api/executions/{id}", s.handleDeleteExecution)
@@ -130,12 +140,16 @@ type pipelineView struct {
 }
 
 type nodeView struct {
-	ID          string      `json:"id"`
-	Type        string      `json:"type"`
-	Description string      `json:"description,omitempty"`
-	Runtime     string      `json:"runtime,omitempty"`
-	Handoff     []string    `json:"handoff,omitempty"`
-	Stages      []stageView `json:"stages,omitempty"`
+	ID             string         `json:"id"`
+	Type           string         `json:"type"`
+	Description    string         `json:"description,omitempty"`
+	Runtime        string         `json:"runtime,omitempty"`
+	Language       string         `json:"language,omitempty"`
+	CodeSource     string         `json:"code_source,omitempty"`
+	TimeoutSeconds int            `json:"timeout_seconds,omitempty"`
+	Codes          map[string]int `json:"codes,omitempty"`
+	Handoff        []string       `json:"handoff,omitempty"`
+	Stages         []stageView    `json:"stages,omitempty"`
 }
 
 type stageView struct {
@@ -156,11 +170,15 @@ func (s *Server) handlePipelines(w http.ResponseWriter, r *http.Request) {
 		pv := pipelineView{Name: p.Name, Description: p.Description, Entry: p.Entry}
 		for _, n := range p.Nodes {
 			nv := nodeView{
-				ID:          n.ID,
-				Type:        string(n.Type),
-				Description: n.Description,
-				Runtime:     n.Runtime,
-				Handoff:     n.Handoff,
+				ID:             n.ID,
+				Type:           string(n.Type),
+				Description:    n.Description,
+				Runtime:        n.Runtime,
+				Language:       n.Language,
+				CodeSource:     n.CodeSource,
+				TimeoutSeconds: n.TimeoutSeconds,
+				Codes:          n.Codes,
+				Handoff:        n.Handoff,
 			}
 			for _, st := range n.Stages {
 				nv.Stages = append(nv.Stages, stageView{ID: st.ID, Agents: st.Agents})
@@ -272,6 +290,31 @@ func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("execution %s: retrying run %s", execID, req.RunID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleRestartInterruptedRun(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid JSON body: %w", err))
+		return
+	}
+	if req.RunID == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("run_id is required"))
+		return
+	}
+	if err := s.refreshPipelines(); err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("reloading pipelines: %w", err))
+		return
+	}
+	newID, err := s.eng.RestartFromInterrupted(r.PathValue("id"), req.RunID)
+	if err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	log.Printf("started execution %s from interrupted run %s", newID, req.RunID)
+	writeJSON(w, http.StatusCreated, map[string]string{"id": newID})
 }
 
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {

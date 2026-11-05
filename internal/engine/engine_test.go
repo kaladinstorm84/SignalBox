@@ -2,15 +2,19 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/gitea/signalbox/internal/config"
-	"github.com/gitea/signalbox/internal/pipeline"
-	"github.com/gitea/signalbox/internal/runtime"
+	"github.com/kaladinstorm84/SignalBox/internal/config"
+	"github.com/kaladinstorm84/SignalBox/internal/pipeline"
+	"github.com/kaladinstorm84/SignalBox/internal/runtime"
 )
 
 func newTestEngine(t *testing.T, pipelineYAML string, handlers map[string]func(ctx context.Context, req runtime.Request) (string, error)) *Engine {
@@ -51,17 +55,161 @@ func waitDone(t *testing.T, eng *Engine, id string) *Execution {
 	return exec
 }
 
+func TestCodeStepReceivesDataRetriesAndHandsOffInsideStage(t *testing.T) {
+	if _, err := exec.LookPath("python"); err != nil {
+		t.Skip("Python is required for this integration test")
+	}
+	root := t.TempDir()
+	source := filepath.Join(root, "verify.py")
+	if err := os.WriteFile(source, []byte("import sys\nsys.stderr.write('Validation failed')\nsys.exit(1)\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := pipeline.Parse([]byte("name: p\nentry: coordinator\nagents:\n  - id: coordinator\n    type: orchestrator\n    stages:\n      - id: validation\n        agents: [verify]\n  - id: verify\n    type: code\n    language: python\n    code-source: verify.py\n    timeout_seconds: 5\n    handoff: [consumer]\n  - id: consumer\n    runtime: consumer\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := runtime.NewRegistry(map[string]config.RuntimeConfig{"mock": {Type: "mock"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var consumerInput string
+	registry.Register(&runtime.Mock{RuntimeName: "consumer", Handler: func(_ context.Context, req runtime.Request) (string, error) {
+		consumerInput = req.Input
+		return "validated", nil
+	}})
+	eng, err := NewWithLimit(map[string]*pipeline.Pipeline{"p": p}, registry, nil, 1, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := eng.Start("p", `{"message":"story data","items":[1,2]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := waitForRetry(t, eng, id)
+	if failed.NodeID != "verify" || failed.StageID != "validation" || !strings.Contains(failed.Error, "Validation failed") {
+		t.Fatalf("failed code run = %+v", failed)
+	}
+	code := "import json, sys\nfrom pathlib import Path\npayload = json.load(sys.stdin)\npayload['verified'] = True\npayload['root_file_found'] = Path('verify.py').is_file()\nprint(json.dumps(payload))\n"
+	if err := os.WriteFile(source, []byte(code), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.Retry(id, failed.ID); err != nil {
+		t.Fatal(err)
+	}
+	execution := waitDone(t, eng, id)
+	if execution.Status != StatusCompleted {
+		t.Fatalf("status = %s (%s)", execution.Status, execution.Error)
+	}
+	var output struct {
+		Message       string `json:"message"`
+		Verified      bool   `json:"verified"`
+		RootFileFound bool   `json:"root_file_found"`
+	}
+	if err := json.Unmarshal([]byte(consumerInput), &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.Message != "story data" || !output.Verified || !output.RootFileFound {
+		t.Fatalf("consumer data = %+v", output)
+	}
+}
+
+func TestCodeExitMappings(t *testing.T) {
+	if _, err := exec.LookPath("python"); err != nil {
+		t.Skip("Python is required for this integration test")
+	}
+	cases := []struct {
+		name              string
+		code              string
+		want              Status
+		workerCalls       int
+		withoutCheckpoint bool
+	}{
+		{name: "nonzero success", code: "print('verified')\nraise SystemExit(7)\n", want: StatusCompleted, workerCalls: 1},
+		{name: "terminal fail", code: "import sys\nprint('Invalid test data', file=sys.stderr)\nraise SystemExit(1)\n", want: StatusFailed, workerCalls: 1},
+		{name: "rework retry", code: "import sys\ntext = sys.stdin.read()\nif 'fix requirement' not in text:\n    print('Needs corrections')\n    print('fix requirement', file=sys.stderr)\n    raise SystemExit(2)\nprint('verified')\nraise SystemExit(7)\n", want: StatusCompleted, workerCalls: 2},
+	}
+	fallback := cases[2]
+	fallback.name = "rework retry without checkpoint"
+	fallback.withoutCheckpoint = true
+	cases = append(cases, fallback)
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "verify.py"), []byte(test.code), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			definition := "name: p\nentry: coordinator\nagents:\n  - id: coordinator\n    type: orchestrator\n    stages:\n      - id: validation\n        agents: [checkpoint]\n  - id: checkpoint\n    type: approval\n    handoff: [worker]\n  - id: worker\n    runtime: worker\n    handoff: [verify]\n  - id: verify\n    type: code\n    language: python\n    code-source: verify.py\n    codes:\n      success: 7\n      fail: 1\n      retry: 2\n    handoff: [consumer]\n  - id: consumer\n    runtime: consumer\n"
+			if test.withoutCheckpoint {
+				definition = strings.Replace(definition, "agents: [checkpoint]", "agents: [worker]", 1)
+				definition = strings.Replace(definition, "  - id: checkpoint\n    type: approval\n    handoff: [worker]\n", "", 1)
+			}
+			p, err := pipeline.Parse([]byte(definition))
+			if err != nil {
+				t.Fatal(err)
+			}
+			registry, err := runtime.NewRegistry(map[string]config.RuntimeConfig{"mock": {Type: "mock"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var inputs []string
+			registry.Register(&runtime.Mock{RuntimeName: "worker", Handler: func(_ context.Context, req runtime.Request) (string, error) {
+				inputs = append(inputs, req.Input)
+				return req.Input, nil
+			}})
+			consumerCalls := 0
+			registry.Register(&runtime.Mock{RuntimeName: "consumer", Handler: func(_ context.Context, req runtime.Request) (string, error) {
+				consumerCalls++
+				return req.Input, nil
+			}})
+			eng, err := NewWithLimit(map[string]*pipeline.Pipeline{"p": p}, registry, nil, 1, root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id, err := eng.Start("p", "original draft")
+			if err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			approved := test.withoutCheckpoint
+			for !approved && time.Now().Before(deadline) {
+				waiting := eng.WaitingApprovals(id)
+				if len(waiting) > 0 {
+					if err := eng.Approve(id, waiting[0].ID, true, "tester", ""); err != nil {
+						t.Fatal(err)
+					}
+					approved = true
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if !approved {
+				t.Fatal("checkpoint never became available")
+			}
+			execution := waitDone(t, eng, id)
+			if execution.Status != test.want || len(inputs) != test.workerCalls {
+				t.Fatalf("status/calls = %s/%d, want %s/%d (%s)", execution.Status, len(inputs), test.want, test.workerCalls, execution.Error)
+			}
+			if test.want == StatusFailed {
+				if consumerCalls != 0 || !strings.Contains(execution.Error, "Invalid test data") {
+					t.Fatalf("failed code continued downstream or lost its error: %d / %q", consumerCalls, execution.Error)
+				}
+			} else if consumerCalls != 1 {
+				t.Fatalf("consumer calls = %d, want 1", consumerCalls)
+			}
+			if test.workerCalls == 2 {
+				if !strings.Contains(inputs[1], "original draft") || !strings.Contains(inputs[1], "--- rejection notes from verify ---\nNeeds corrections\n\nfix requirement") {
+					t.Fatalf("missing code rejection feedback: %q", inputs[1])
+				}
+				if execution.Runs[0].Stages[0].Status != StatusCompleted {
+					t.Fatal("stage did not complete after code rework")
+				}
+			}
+		})
+	}
+}
+
 func TestLinearChain(t *testing.T) {
-	eng := newTestEngine(t, `
-name: p
-entry: a
-agents:
-  - id: a
-    runtime: upper
-    handoff: [b]
-  - id: b
-    runtime: suffix
-`, map[string]func(ctx context.Context, req runtime.Request) (string, error){
+	eng := newTestEngine(t, "name: p\nentry: a\nagents:\n  - id: a\n    runtime: upper\n    handoff: [b]\n  - id: b\n    runtime: suffix\n", map[string]func(ctx context.Context, req runtime.Request) (string, error){
 		"upper":  func(_ context.Context, req runtime.Request) (string, error) { return strings.ToUpper(req.Input), nil },
 		"suffix": func(_ context.Context, req runtime.Request) (string, error) { return req.Input + "!", nil },
 	})
@@ -75,6 +223,85 @@ agents:
 	}
 	if len(exec.FinalOutputs) != 1 || exec.FinalOutputs[0].Output != "HELLO!" {
 		t.Fatalf("final outputs = %+v", exec.FinalOutputs)
+	}
+}
+
+func TestRuntimeCallsWaitAtConcurrencyLimit(t *testing.T) {
+	p, err := pipeline.Parse([]byte(`
+name: p
+entry: start
+agents:
+  - id: start
+    runtime: seed
+    handoff: [a, b, c]
+  - id: a
+    runtime: worker
+  - id: b
+    runtime: worker
+  - id: c
+    runtime: worker
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := runtime.NewRegistry(map[string]config.RuntimeConfig{"mock": {Type: "mock"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.Register(&runtime.Mock{RuntimeName: "seed", Handler: func(_ context.Context, _ runtime.Request) (string, error) {
+		return "seeded", nil
+	}})
+	started := make(chan struct{}, 3)
+	release := make(chan struct{}, 3)
+	var mu sync.Mutex
+	active, maximum := 0, 0
+	registry.Register(&runtime.Mock{RuntimeName: "worker", Handler: func(_ context.Context, _ runtime.Request) (string, error) {
+		mu.Lock()
+		active++
+		if active > maximum {
+			maximum = active
+		}
+		mu.Unlock()
+		started <- struct{}{}
+		<-release
+		mu.Lock()
+		active--
+		mu.Unlock()
+		return "done", nil
+	}})
+	eng, err := NewWithLimit(map[string]*pipeline.Pipeline{"p": p}, registry, nil, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := eng.Start("p", "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("runtime calls did not start")
+		}
+	}
+	select {
+	case <-started:
+		t.Fatal("third runtime call bypassed the concurrency limit")
+	case <-time.After(50 * time.Millisecond):
+	}
+	release <- struct{}{}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("queued runtime call did not start after a slot became available")
+	}
+	release <- struct{}{}
+	release <- struct{}{}
+	waitDone(t, eng, id)
+	mu.Lock()
+	defer mu.Unlock()
+	if maximum != 2 {
+		t.Fatalf("maximum concurrent calls = %d, want 2", maximum)
 	}
 }
 
@@ -177,6 +404,96 @@ agents:
 		if r.NodeID == "b" {
 			t.Fatal("agent b should never have run after rejection")
 		}
+	}
+}
+
+func TestApprovalRejectionReworksFromLastApprovedGate(t *testing.T) {
+	var publisherInputs []string
+	eng := newTestEngine(t, `
+name: multi
+entry: coordinator
+agents:
+  - id: coordinator
+    type: orchestrator
+    stages:
+      - id: review_stage
+        agents: [triage]
+  - id: triage
+    runtime: triage
+    handoff: [review_1]
+  - id: review_1
+    type: approval
+    handoff: [publisher]
+  - id: publisher
+    runtime: publisher
+    handoff: [review_2]
+  - id: review_2
+    type: approval
+`, map[string]func(ctx context.Context, req runtime.Request) (string, error){
+		"triage": func(_ context.Context, _ runtime.Request) (string, error) { return "draft from triage", nil },
+		"publisher": func(_ context.Context, req runtime.Request) (string, error) {
+			publisherInputs = append(publisherInputs, req.Input)
+			return fmt.Sprintf("revision %d", len(publisherInputs)), nil
+		},
+	})
+	id, err := eng.Start("multi", "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForApproval := func(except string) *NodeRun {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			for _, run := range eng.WaitingApprovals(id) {
+				if run.NodeID == "review_1" || run.NodeID == "review_2" {
+					if run.ID != except {
+						return run
+					}
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatal("approval did not become available")
+		return nil
+	}
+	review1 := waitForApproval("")
+	if review1.NodeID != "review_1" {
+		t.Fatalf("first approval = %q, want review_1", review1.NodeID)
+	}
+	if err := eng.Approve(id, review1.ID, true, "reviewer", "approved first draft"); err != nil {
+		t.Fatal(err)
+	}
+	review2 := waitForApproval(review1.ID)
+	if review2.NodeID != "review_2" {
+		t.Fatalf("second approval = %q, want review_2", review2.NodeID)
+	}
+	const note = "Please correct the missing details."
+	if err := eng.Approve(id, review2.ID, false, "reviewer", note); err != nil {
+		t.Fatal(err)
+	}
+	review2Retry := waitForApproval(review2.ID)
+	if review2Retry.NodeID != "review_2" {
+		t.Fatalf("approval after rework = %q, want review_2", review2Retry.NodeID)
+	}
+	if len(publisherInputs) != 2 || publisherInputs[0] != "draft from triage" {
+		t.Fatalf("publisher inputs = %q", publisherInputs)
+	}
+	if !strings.Contains(publisherInputs[1], "draft from triage") || !strings.Contains(publisherInputs[1], "--- rejection notes from review_2 ---\n"+note) {
+		t.Fatalf("rework input = %q", publisherInputs[1])
+	}
+	exec, err := eng.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exec.Status != StatusRunning {
+		t.Fatalf("execution status after rejection = %s, want running", exec.Status)
+	}
+	if err := eng.Approve(id, review2Retry.ID, true, "reviewer", "approved revision"); err != nil {
+		t.Fatal(err)
+	}
+	exec = waitDone(t, eng, id)
+	if exec.Status != StatusCompleted {
+		t.Fatalf("final status = %s (%s)", exec.Status, exec.Error)
 	}
 }
 
@@ -721,6 +1038,93 @@ func TestStoreRoundTripAndInterrupted(t *testing.T) {
 	}
 	if got.Runs[0].Status != StatusInterrupted {
 		t.Fatalf("run status = %s, want interrupted", got.Runs[0].Status)
+	}
+}
+
+func TestRestartFromInterruptedRunReusesInputAndCompletedOutputs(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := pipeline.Parse([]byte(`
+name: p
+entry: start
+agents:
+  - id: start
+    runtime: mock
+    handoff: [requirements_loader, interrupted_call, completed_sibling]
+  - id: requirements_loader
+    runtime: requirements
+  - id: interrupted_call
+    runtime: retry
+    additional-input: [requirements_loader]
+    handoff: [judge]
+  - id: completed_sibling
+    runtime: sibling
+    handoff: [judge]
+  - id: judge
+    runtime: judge
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := &Execution{
+		ID:        "20261105-000000-aaaa",
+		Pipeline:  "p",
+		Input:     "original task",
+		Status:    StatusRunning,
+		CreatedAt: time.Now().UTC(),
+		Runs: []*NodeRun{
+			{ID: "start-run", NodeID: "start", Type: pipeline.TypeStandard, Status: StatusCompleted, Output: "start output"},
+			{ID: "requirements-run", NodeID: "requirements_loader", Type: pipeline.TypeStandard, Status: StatusCompleted, Output: "saved requirements"},
+			{ID: "sibling-run", NodeID: "completed_sibling", Type: pipeline.TypeStandard, Status: StatusCompleted, Output: "sibling output"},
+			{ID: "interrupted-run", NodeID: "interrupted_call", Type: pipeline.TypeStandard, Status: StatusRunning, Input: "saved call input"},
+		},
+	}
+	if err := store.Save(previous); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := runtime.NewRegistry(map[string]config.RuntimeConfig{"mock": {Type: "mock"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retryInput string
+	registry.Register(&runtime.Mock{RuntimeName: "retry", Handler: func(_ context.Context, req runtime.Request) (string, error) {
+		retryInput = req.Input
+		return "retried output", nil
+	}})
+	registry.Register(&runtime.Mock{RuntimeName: "sibling", Handler: func(_ context.Context, _ runtime.Request) (string, error) {
+		t.Error("completed sibling was replayed")
+		return "unexpected", nil
+	}})
+	var judgeInput string
+	registry.Register(&runtime.Mock{RuntimeName: "judge", Handler: func(_ context.Context, req runtime.Request) (string, error) {
+		judgeInput = req.Input
+		return "judged", nil
+	}})
+	eng, err := New(map[string]*pipeline.Pipeline{"p": p}, registry, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newID, err := eng.RestartFromInterrupted(previous.ID, "interrupted-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := waitDone(t, eng, newID)
+	if exec.Status != StatusCompleted {
+		t.Fatalf("recovery status = %s (%s)", exec.Status, exec.Error)
+	}
+	if exec.Input != "original task" {
+		t.Fatalf("recovery execution input = %q", exec.Input)
+	}
+	if len(exec.Runs) != 2 || exec.Runs[0].NodeID != "interrupted_call" || exec.Runs[1].NodeID != "judge" {
+		t.Fatalf("recovery runs = %+v, want interrupted_call then judge", exec.Runs)
+	}
+	if !strings.Contains(retryInput, "saved call input") || !strings.Contains(retryInput, "--- additional input from requirements_loader ---\nsaved requirements") {
+		t.Fatalf("retry input missing saved call input or requirements: %q", retryInput)
+	}
+	if judgeInput != "retried output" {
+		t.Fatalf("judge input = %q, want retried output", judgeInput)
 	}
 }
 

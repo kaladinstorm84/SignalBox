@@ -27,6 +27,7 @@ const (
 	// TypeApproval is a human gate. Execution pauses until a person approves
 	// or rejects via the web UI (or the terminal in `signalbox run`).
 	TypeApproval NodeType = "approval"
+	TypeCode     NodeType = "code"
 )
 
 // Stage is one phase of an orchestrator. The orchestrator dispatches its
@@ -66,7 +67,11 @@ type Node struct {
 	// AdditionalInput lists outputs that this node also requires in its input.
 	AdditionalInput []string `yaml:"additional-input,omitempty"`
 	// Format requests rendered Markdown presentation for this node's output.
-	Format bool `yaml:"format,omitempty"`
+	Format         bool           `yaml:"format,omitempty"`
+	Language       string         `yaml:"language,omitempty"`
+	CodeSource     string         `yaml:"code-source,omitempty"`
+	TimeoutSeconds int            `yaml:"timeout_seconds,omitempty"`
+	Codes          map[string]int `yaml:"codes,omitempty"`
 
 	// Stages is only valid for orchestrators.
 	Stages []Stage `yaml:"stages,omitempty"`
@@ -242,9 +247,9 @@ func (p *Pipeline) validate() error {
 			n.Type = TypeStandard
 		}
 		switch n.Type {
-		case TypeStandard, TypeOrchestrator, TypeApproval:
+		case TypeStandard, TypeOrchestrator, TypeApproval, TypeCode:
 		default:
-			return fmt.Errorf("pipeline %q: agent %q has unknown type %q (want standard, orchestrator, or approval)", p.Name, n.ID, n.Type)
+			return fmt.Errorf("pipeline %q: agent %q has unknown type %q (want standard, orchestrator, approval, or code)", p.Name, n.ID, n.Type)
 		}
 		p.byID[n.ID] = n
 	}
@@ -374,6 +379,9 @@ func (p *Pipeline) checkStageClosures() error {
 }
 
 func (p *Pipeline) validateNode(n *Node) error {
+	if n.Type != TypeCode && (n.Language != "" || n.CodeSource != "" || n.TimeoutSeconds != 0 || n.Codes != nil) {
+		return fmt.Errorf("agent %q: language, code-source, timeout_seconds, and codes are only supported on code nodes", n.ID)
+	}
 	seenAdditional := map[string]bool{}
 	for _, id := range n.AdditionalInput {
 		if _, ok := p.byID[id]; !ok {
@@ -411,6 +419,37 @@ func (p *Pipeline) validateNode(n *Node) error {
 	}
 
 	switch n.Type {
+	case TypeCode:
+		if n.Codes != nil {
+			if len(n.Codes) != 3 {
+				return fmt.Errorf("code agent %q: codes must define success, fail, and retry", n.ID)
+			}
+			seenCodes := map[int]bool{}
+			for _, outcome := range []string{"success", "fail", "retry"} {
+				code, ok := n.Codes[outcome]
+				if !ok || code < 0 {
+					return fmt.Errorf("code agent %q: codes.%s must be a non-negative exit code", n.ID, outcome)
+				}
+				if seenCodes[code] {
+					return fmt.Errorf("code agent %q: exit codes must be distinct", n.ID)
+				}
+				seenCodes[code] = true
+			}
+		}
+		if n.CodeSource == "" {
+			return fmt.Errorf("code agent %q is missing code-source", n.ID)
+		}
+		switch n.Language {
+		case "python", "javascript", "powershell":
+		default:
+			return fmt.Errorf("code agent %q: language must be python, javascript, or powershell", n.ID)
+		}
+		if n.Runtime != "" || n.Prompt != "" || len(n.Stages) > 0 {
+			return fmt.Errorf("code agent %q may not define runtime, prompt, or stages", n.ID)
+		}
+		if n.TimeoutSeconds < 0 {
+			return fmt.Errorf("code agent %q: timeout_seconds must not be negative", n.ID)
+		}
 	case TypeStandard:
 		if n.Runtime == "" {
 			return fmt.Errorf("standard agent %q is missing a runtime", n.ID)

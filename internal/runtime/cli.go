@@ -3,12 +3,13 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
 	"time"
 
-	"github.com/gitea/signalbox/internal/config"
+	"github.com/kaladinstorm84/SignalBox/internal/config"
 )
 
 // cliRuntime shells out to a local agent CLI (codex, claude, copilot, or any
@@ -21,12 +22,24 @@ type cliRuntime struct {
 	promptMode string // "arg" or "stdin"
 	stdinArgs  []string
 	timeout    time.Duration
+	dir        string
 }
 
 // maxArgPrompt keeps arg-mode prompts well inside the 32,767-character
 // Windows command-line limit, leaving room for the command, other arguments
 // and quoting.
 const maxArgPrompt = 24000
+
+type ProcessExitError struct {
+	ExitCode int
+	Stdout   string
+	Stderr   string
+	cause    error
+	message  string
+}
+
+func (e *ProcessExitError) Error() string { return e.message }
+func (e *ProcessExitError) Unwrap() error { return e.cause }
 
 // Presets for the known agent CLIs. All of them support a non-interactive
 // single-prompt mode; the user can override command/args in signalbox.yaml.
@@ -105,6 +118,7 @@ func (c *cliRuntime) Invoke(ctx context.Context, req Request) (string, error) {
 	}
 
 	cmd := exec.CommandContext(ctx, c.command, args...)
+	cmd.Dir = c.dir
 	if stdin != nil {
 		cmd.Stdin = stdin
 	}
@@ -120,7 +134,15 @@ func (c *cliRuntime) Invoke(ctx context.Context, req Request) (string, error) {
 		if detail == "" {
 			detail = strings.TrimSpace(stdout.String())
 		}
-		return "", fmt.Errorf("%s failed: %w: %s", c.command, err, truncate(detail, 800))
+		failure := fmt.Errorf("%s failed: %w: %s", c.command, err, truncate(detail, 800))
+		var exitError *exec.ExitError
+		if ctx.Err() == nil && errors.As(err, &exitError) {
+			return "", &ProcessExitError{
+				ExitCode: exitError.ExitCode(), Stdout: strings.TrimSpace(stdout.String()), Stderr: strings.TrimSpace(stderr.String()),
+				cause: err, message: failure.Error(),
+			}
+		}
+		return "", failure
 	}
 	return strings.TrimSpace(stdout.String()), nil
 }

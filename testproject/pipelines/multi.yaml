@@ -1,0 +1,30 @@
+name: multi
+description: >-
+  Demo flow:test multiple reviews
+entry: triage
+
+agents:
+  # A standard agent accepts a handoff (when several agents hand off to it,
+  # it waits for all of them and runs once) and hands off to one or more
+  # agents, or to a single orchestrator.
+  - id: triage
+    type: standard
+    runtime: mock
+    description: Classifies the incoming request and frames the task.
+    prompt: |
+      You are the triage agent. Restate the request as a clear task brief.
+    handoff: [review_1]
+  - id: review_1
+    type: approval
+    description: Human review of the draft before publishing.
+    handoff: [publisher]
+  - id: publisher
+    type: standard
+    runtime: mock
+    description: Publishes the approved draft.
+    handoff: [review_2]
+    prompt: |
+      You are the publisher agent. edit the draft before publishing.
+  - id: review_2
+    type: approval
+    description: Human review of the published draft.

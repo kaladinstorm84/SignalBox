@@ -48,9 +48,9 @@ agents:
 	if len(p.Node("writer").AdditionalInput) != 1 || p.Node("writer").AdditionalInput[0] != "researcher" {
 		t.Errorf("writer additional input = %v, want [researcher]", p.Node("writer").AdditionalInput)
 	}
-  if !p.Node("writer").Format {
-    t.Error("writer format = false, want true")
-  }
+	if !p.Node("writer").Format {
+		t.Error("writer format = false, want true")
+	}
 	if got := p.InboundCount("coordinator"); got != 1 {
 		t.Errorf("InboundCount(coordinator) = %d, want 1", got)
 	}
@@ -72,6 +72,31 @@ agents:
     handoff: [ghost]
 `,
 			wantErr: "unknown agent",
+		},
+		{
+			name:    "code missing source",
+			yaml:    "name: p\nagents:\n  - id: verify\n    type: code\n    language: python\n",
+			wantErr: "missing code-source",
+		},
+		{
+			name:    "code unsupported language",
+			yaml:    "name: p\nagents:\n  - id: verify\n    type: code\n    language: unknown\n    code-source: verify.txt\n",
+			wantErr: "language must be",
+		},
+		{
+			name:    "duplicate code outcomes",
+			yaml:    "name: p\nagents:\n  - id: verify\n    type: code\n    language: python\n    code-source: verify.py\n    codes: {success: 0, fail: 1, retry: 1}\n",
+			wantErr: "must be distinct",
+		},
+		{
+			name:    "incomplete code outcomes",
+			yaml:    "name: p\nagents:\n  - id: verify\n    type: code\n    language: python\n    code-source: verify.py\n    codes: {success: 0}\n",
+			wantErr: "must define success, fail, and retry",
+		},
+		{
+			name:    "code may not use runtime",
+			yaml:    "name: p\nagents:\n  - id: verify\n    type: code\n    language: python\n    code-source: verify.py\n    runtime: mock\n",
+			wantErr: "may not define runtime",
 		},
 		{
 			name: "missing runtime on standard agent",

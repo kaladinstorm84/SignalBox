@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,11 +13,74 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gitea/signalbox/internal/config"
-	"github.com/gitea/signalbox/internal/engine"
-	"github.com/gitea/signalbox/internal/pipeline"
-	"github.com/gitea/signalbox/internal/runtime"
+	"github.com/kaladinstorm84/SignalBox/internal/config"
+	"github.com/kaladinstorm84/SignalBox/internal/engine"
+	"github.com/kaladinstorm84/SignalBox/internal/pipeline"
+	"github.com/kaladinstorm84/SignalBox/internal/runtime"
 )
+
+func TestProjectSettingsReadValidateSaveAndConflict(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, config.FileName)
+	const original = "# Preserve this comment\nversion: 1\nproject: demo\nruntimes:\n  mock:\n    type: mock\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "pipelines"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "pipelines", "demo.yaml"), []byte("name: demo\nagents:\n  - id: worker\n    runtime: mock\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler := New(nil, "demo", nil, nil, nil, root).Handler()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/settings", nil))
+	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("GET settings = %d, headers = %v", response.Code, response.Header())
+	}
+	var document settingsDocument
+	if err := json.Unmarshal(response.Body.Bytes(), &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.Content != original {
+		t.Fatalf("loaded content = %q", document.Content)
+	}
+	save := func(content, version string) *httptest.ResponseRecorder {
+		t.Helper()
+		body, err := json.Marshal(settingsDocument{Content: content, Version: version})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPut, "/api/settings", bytes.NewReader(body)))
+		return response
+	}
+	if response := save("runtimes: [", document.Version); response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid YAML status = %d", response.Code)
+	}
+	unchanged, err := os.ReadFile(path)
+	if err != nil || string(unchanged) != original {
+		t.Fatalf("invalid save changed the file: %q (%v)", unchanged, err)
+	}
+	updated := original + "max_concurrent_calls: 2\n"
+	if response := save(updated, document.Version); response.Code != http.StatusOK {
+		t.Fatalf("valid save = %d: %s", response.Code, response.Body.String())
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil || string(saved) != updated {
+		t.Fatalf("saved file = %q (%v)", saved, err)
+	}
+	if response := save(original, document.Version); response.Code != http.StatusConflict {
+		t.Fatalf("stale save status = %d", response.Code)
+	}
+	request := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader("{}"))
+	request.Header.Set("Origin", "https://unrelated.example")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin save status = %d", response.Code)
+	}
+}
 
 func TestListPipelinesReloadsFromDisk(t *testing.T) {
 	dir := t.TempDir()
@@ -317,6 +381,87 @@ agents:
 	}
 	if strings.Contains(run.OutputHTML, "<script") {
 		t.Fatalf("unsafe raw HTML was rendered: %s", run.OutputHTML)
+	}
+}
+
+func TestRestartInterruptedRunEndpoint(t *testing.T) {
+	store, err := engine.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := pipeline.Parse([]byte(`
+name: demo
+entry: worker
+agents:
+  - id: worker
+    runtime: mock
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(&engine.Execution{
+		ID:        "20261105-000001-bbbb",
+		Pipeline:  "demo",
+		Input:     "original task",
+		Status:    engine.StatusRunning,
+		CreatedAt: time.Now().UTC(),
+		Runs: []*engine.NodeRun{
+			{ID: "worker-run", NodeID: "worker", Type: pipeline.TypeStandard, Status: engine.StatusRunning, Input: "saved call input"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := runtime.NewRegistry(map[string]config.RuntimeConfig{"mock": {Type: "mock"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.Register(&runtime.Mock{RuntimeName: "mock", Handler: func(_ context.Context, req runtime.Request) (string, error) {
+		if req.Input != "saved call input" {
+			t.Errorf("retry input = %q", req.Input)
+		}
+		return "recovered", nil
+	}})
+	eng, err := engine.New(map[string]*pipeline.Pipeline{"demo": p}, registry, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := New(eng, "test", func() (map[string]*pipeline.Pipeline, error) {
+		return map[string]*pipeline.Pipeline{"demo": p}, nil
+	}, nil, nil).Handler()
+	post := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/executions/20261105-000001-bbbb/restart", strings.NewReader(body)))
+		return response
+	}
+	if response := post(`{}`); response.Code != http.StatusBadRequest {
+		t.Fatalf("missing run_id status = %d", response.Code)
+	}
+	response := post(`{"run_id":"worker-run"}`)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("restart status = %d: %s", response.Code, response.Body.String())
+	}
+	var started struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &started); err != nil {
+		t.Fatal(err)
+	}
+	done, err := eng.Wait(started.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("restarted execution did not finish")
+	}
+	exec, err := eng.Get(started.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exec.Status != engine.StatusCompleted || exec.Runs[0].Input != "saved call input" {
+		t.Fatalf("restarted execution = %+v", exec)
 	}
 }
 

@@ -50,7 +50,7 @@ func (s *Store) Delete(id string) error {
 
 // LoadAll reads every persisted execution. Any execution that was still in
 // flight (e.g. the server was stopped mid-run) is marked interrupted, along
-// with its unfinished runs, since in-flight state cannot be resumed.
+// with its unfinished runs, so standard calls can be restarted from saved input.
 func (s *Store) LoadAll() ([]*Execution, error) {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
