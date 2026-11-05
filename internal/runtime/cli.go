@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -23,6 +24,12 @@ type cliRuntime struct {
 	stdinArgs  []string
 	timeout    time.Duration
 	dir        string
+	// kind is the runtime type (codex, claude, copilot, or cli).
+	kind string
+	// modelArg is the flag that receives a per-agent model override.
+	modelArg string
+	// mcpServers are the servers registered in signalbox.yaml.
+	mcpServers map[string]config.MCPServerConfig
 }
 
 // maxArgPrompt keeps arg-mode prompts well inside the 32,767-character
@@ -55,11 +62,16 @@ var cliPresets = map[string]struct {
 	"copilot": {command: "copilot", args: []string{"-p"}},
 }
 
+// presetModelArg is the model flag understood by each preset CLI.
+const presetModelArg = "--model"
+
 func newCLI(name string, rc config.RuntimeConfig) (Runtime, error) {
 	command := rc.Command
 	args := rc.Args
 	var stdinArgs []string
+	modelArg := rc.ModelArg
 	if preset, ok := cliPresets[rc.Type]; ok {
+		modelArg = presetModelArg
 		if command == "" {
 			command = preset.command
 		}
@@ -89,6 +101,8 @@ func newCLI(name string, rc config.RuntimeConfig) (Runtime, error) {
 		promptMode: mode,
 		stdinArgs:  stdinArgs,
 		timeout:    timeout,
+		kind:       rc.Type,
+		modelArg:   modelArg,
 	}, nil
 }
 
@@ -100,10 +114,16 @@ func (c *cliRuntime) Invoke(ctx context.Context, req Request) (string, error) {
 		prompt = req.SystemPrompt + "\n\n---\n\n" + req.Input
 	}
 
+	extra, env, cleanup, err := c.integrationArgs(req)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	args := append([]string{}, c.args...)
+	args := c.baseArgs(extra)
 	var stdin *bytes.Reader
 	switch {
 	case c.promptMode == "stdin":
@@ -119,6 +139,9 @@ func (c *cliRuntime) Invoke(ctx context.Context, req Request) (string, error) {
 
 	cmd := exec.CommandContext(ctx, c.command, args...)
 	cmd.Dir = c.dir
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	if stdin != nil {
 		cmd.Stdin = stdin
 	}

@@ -49,7 +49,7 @@ func (s *Server) handleListPipelineFiles(w http.ResponseWriter, r *http.Request)
 	for _, entry := range entries {
 		if entry.Type().IsRegular() && validPipelineFilename(entry.Name()) {
 			file := pipelineFile{Filename: entry.Name()}
-			if p, err := pipeline.Load(filepath.Join(cfg.PipelinesPath(), entry.Name())); err == nil {
+			if p, err := pipeline.Load(filepath.Join(cfg.PipelinesPath(), entry.Name()), pipelineOptions(cfg)); err == nil {
 				file.Name = p.Name
 			}
 			files = append(files, file)
@@ -119,26 +119,25 @@ func (s *Server) handleSavePipelineFile(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	p, err := pipeline.Parse([]byte(proposed.Content))
+	dir := cfg.PipelinesPath()
+	opts := pipelineOptions(cfg)
+	p, err := pipeline.ParseFile([]byte(proposed.Content), filepath.Join(dir, filename), opts)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	for _, node := range p.Nodes {
-		if node.Runtime != "" {
-			if _, ok := cfg.Runtimes[node.Runtime]; !ok {
-				writeErr(w, http.StatusBadRequest, fmt.Errorf("agent %q references undefined runtime %q", node.ID, node.Runtime))
-				return
-			}
-		}
-		if node.Type == pipeline.TypeCode {
-			if _, err := runtime.NewCode(&node, cfg.Root); err != nil {
-				writeErr(w, http.StatusBadRequest, err)
+	if err := runtime.ValidatePipeline(cfg, p); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if required := p.RequiredParamsWithoutDefault(); len(required) > 0 {
+		for _, watcher := range cfg.Watchers {
+			if watcher.Pipeline == p.Name {
+				writeErr(w, http.StatusBadRequest, fmt.Errorf("watcher %q starts pipeline %q, which would require param(s) %s; watchers use defaults, so give them defaults", watcher.Name, p.Name, strings.Join(required, ", ")))
 				return
 			}
 		}
 	}
-	dir := cfg.PipelinesPath()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -152,7 +151,7 @@ func (s *Server) handleSavePipelineFile(w http.ResponseWriter, r *http.Request) 
 		if !entry.Type().IsRegular() || !validPipelineFilename(entry.Name()) || strings.EqualFold(entry.Name(), filename) {
 			continue
 		}
-		other, err := pipeline.Load(filepath.Join(dir, entry.Name()))
+		other, err := pipeline.Load(filepath.Join(dir, entry.Name()), opts)
 		if err == nil && other.Name == p.Name {
 			writeErr(w, http.StatusConflict, fmt.Errorf("pipeline name %q is already used by %s", p.Name, entry.Name()))
 			return
@@ -183,7 +182,7 @@ func (s *Server) handleSavePipelineFile(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		if err == nil {
-			if previous, parseErr := pipeline.Parse(current); parseErr == nil && previous.Name != p.Name {
+			if previous, parseErr := pipeline.ParseFile(current, path, opts); parseErr == nil && previous.Name != p.Name {
 				for _, watcher := range cfg.Watchers {
 					if watcher.Pipeline == previous.Name {
 						writeErr(w, http.StatusBadRequest, fmt.Errorf("watcher %q still references pipeline %q; update its target before renaming this pipeline", watcher.Name, previous.Name))
@@ -205,6 +204,10 @@ func (s *Server) handleSavePipelineFile(w http.ResponseWriter, r *http.Request) 
 		status = http.StatusCreated
 	}
 	writeJSON(w, status, settingsDocument{Content: proposed.Content, Version: settingsVersion([]byte(proposed.Content))})
+}
+
+func pipelineOptions(cfg *config.Config) pipeline.Options {
+	return pipeline.Options{Root: cfg.Root, AllowExternal: cfg.AllowExternalImports}
 }
 
 func createPipelineFile(path string, content []byte) error {

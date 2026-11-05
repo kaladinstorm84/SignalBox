@@ -1,0 +1,37 @@
+# Shared agent library imported by pipelines/review-kit.yaml.
+#
+# This file is not a pipeline (it has no name or entry) and lives outside the
+# pipelines directory so it is not loaded on its own. Pipelines import it with
+# `imports: [{from: ../shared/review-kit.yaml, ...}]` and pick the agents and
+# templates they want.
+
+templates:
+  # Common settings for every reviewer: runtime, retries, and context.
+  - id: reviewer_base
+    runtime: codex
+    retry: { count: 1, backoff: 2s }
+    context: { strategy: recent, window: 2 }
+
+  # An automated reviewer gate. Pipelines extend it and add a focus and
+  # reject-to target of their own.
+  - id: gate_reviewer
+    extends: reviewer_base
+    type: llm_gate
+    max_reworks: 1
+    prompt: |
+      Review the submitted change. Approve only if it has no blocking problems
+      in your area; otherwise reject with concrete, actionable feedback.
+
+agents:
+  # A complete agent pipelines can import as-is.
+  - id: changelog_writer
+    extends: reviewer_base
+    description: Writes a changelog entry for the approved change (shared).
+    prompt: |
+      Write a concise changelog entry (Added / Changed / Fixed) for the
+      approved change. One bullet per user-visible effect.
+
+  - id: unused_helper
+    runtime: codex
+    description: Not imported by review-kit.yaml; shows that only selected agents are pulled in.
+    prompt: Summarise the input.

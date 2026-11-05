@@ -1,0 +1,59 @@
+name: briefing-params
+description: >-
+  Demonstrates pipeline parameters. The same pipeline produces different
+  briefings depending on the values chosen when the run starts: the audience
+  (an enum), a required topic, an integer depth, a boolean that toggles a risk
+  section, and an optional model override for the writer (empty = runtime
+  default). Values are shown on the execution page and reused by reruns.
+params:
+  topic:
+    required: true
+    description: The subject of the briefing.
+  audience:
+    type: string
+    values: [engineers, executives, customers]
+    default: engineers
+    description: Who the briefing is written for.
+  depth:
+    type: integer
+    default: "3"
+    description: How many key points to cover.
+  include_risks:
+    type: boolean
+    default: "true"
+    description: Whether to add a risks section.
+  writer_model:
+    default: ""
+    description: Optional model for the writer agent (e.g. gpt-5-codex). Leave empty for the runtime default.
+entry: researcher
+
+agents:
+  - id: researcher
+    runtime: codex
+    description: Gathers ${{ params.depth }} key points about ${{ params.topic }}.
+    prompt: |
+      Research ${{ params.topic }}. Using the run input as extra context, list
+      the ${{ params.depth }} most important points a reader from the
+      "${{ params.audience }}" audience needs to know. Note anything uncertain.
+    handoff: [writer]
+
+  - id: writer
+    runtime: codex
+    model: ${{ params.writer_model }}
+    description: Writes the briefing for ${{ params.audience }}.
+    prompt: |
+      Write a one-page briefing on ${{ params.topic }} for ${{ params.audience }}
+      from the research notes. Cover exactly ${{ params.depth }} points.
+      Include a "Risks" section: ${{ params.include_risks }}.
+    handoff: [editor]
+
+  - id: editor
+    type: llm_gate
+    runtime: codex
+    description: Checks the briefing suits ${{ params.audience }} before it is published.
+    prompt: |
+      Approve the briefing only if it is written for ${{ params.audience }},
+      covers ${{ params.depth }} points about ${{ params.topic }}, and
+      (when "${{ params.include_risks }}" is true) has a Risks section.
+    reject-to: writer
+    max_reworks: 1

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -34,7 +36,34 @@ type RuntimeConfig struct {
 	PromptMode string `yaml:"prompt_mode,omitempty"`
 	// TimeoutSeconds bounds a single runtime invocation. Default 600.
 	TimeoutSeconds int `yaml:"timeout_seconds,omitempty"`
+	// ModelArg is the flag a generic cli runtime uses to receive an agent's
+	// model override (for example --model). Presets already know theirs.
+	ModelArg string `yaml:"model_arg,omitempty"`
 }
+
+// MCPConfig registers MCP servers agents may opt in to. Nothing is passed to
+// an agent CLI unless Enabled is true and the agent lists the server.
+type MCPConfig struct {
+	Enabled bool                       `yaml:"enabled,omitempty"`
+	Servers map[string]MCPServerConfig `yaml:"servers,omitempty"`
+}
+
+// MCPServerConfig describes a stdio MCP server. EnvFrom maps the variable the
+// server receives to the SignalBox process environment variable holding its
+// value, so secrets never appear in configuration or execution history.
+type MCPServerConfig struct {
+	Command string            `yaml:"command"`
+	Args    []string          `yaml:"args,omitempty"`
+	EnvFrom map[string]string `yaml:"env_from,omitempty"`
+	// Tools is the allow-list of tools agents may be granted.
+	Tools []string `yaml:"tools"`
+}
+
+var (
+	mcpNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	mcpToolPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
+	envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+)
 
 // ServerConfig controls `signalbox serve`.
 type ServerConfig struct {
@@ -63,6 +92,9 @@ type Config struct {
 	Runtimes           map[string]RuntimeConfig `yaml:"runtimes"`
 	Server             ServerConfig             `yaml:"server,omitempty"`
 	Watchers           []WatcherConfig          `yaml:"watchers,omitempty"`
+	// AllowExternalImports permits pipeline imports outside the project root.
+	AllowExternalImports bool      `yaml:"allow_external_imports,omitempty"`
+	MCP                  MCPConfig `yaml:"mcp,omitempty"`
 
 	// Root is the directory containing signalbox.yaml (not serialised).
 	Root string `yaml:"-"`
@@ -140,6 +172,35 @@ func (c *Config) validate() error {
 		}
 		if r.Type == "cli" && r.Command == "" {
 			return fmt.Errorf("runtime %q of type cli requires a command", name)
+		}
+		if r.ModelArg != "" && (r.Type != "cli" || !strings.HasPrefix(r.ModelArg, "-") || strings.ContainsAny(r.ModelArg, " \t\r\n")) {
+			return fmt.Errorf("runtime %q: model_arg is only for cli runtimes and must be a single flag such as --model", name)
+		}
+	}
+	for name, server := range c.MCP.Servers {
+		if !mcpNamePattern.MatchString(name) {
+			return fmt.Errorf("mcp server name %q must be 1-64 letters, digits, '_' or '-'", name)
+		}
+		if strings.TrimSpace(server.Command) == "" {
+			return fmt.Errorf("mcp server %q is missing a command", name)
+		}
+		if len(server.Tools) == 0 {
+			return fmt.Errorf("mcp server %q must list the tools agents may use", name)
+		}
+		seen := map[string]bool{}
+		for _, tool := range server.Tools {
+			if !mcpToolPattern.MatchString(tool) {
+				return fmt.Errorf("mcp server %q tool %q must be 1-128 letters, digits, '_', '.' or '-' (wildcards are not allowed)", name, tool)
+			}
+			if seen[tool] {
+				return fmt.Errorf("mcp server %q lists tool %q more than once", name, tool)
+			}
+			seen[tool] = true
+		}
+		for target, source := range server.EnvFrom {
+			if !envNamePattern.MatchString(target) || !envNamePattern.MatchString(source) {
+				return fmt.Errorf("mcp server %q env_from entries must map variable names to environment variable names", name)
+			}
 		}
 	}
 	watcherNames := map[string]bool{}

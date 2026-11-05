@@ -30,7 +30,7 @@ Usage:
   signalbox init [dir] [--force]     Create signalbox.yaml and a default pipeline
   signalbox validate                 Validate the config and all pipelines
   signalbox serve [--addr host:port] Serve the tracking & launch web UI
-  signalbox run <pipeline> [--input text]  Run a pipeline in the terminal
+  signalbox run <pipeline> [--input text] [--param k=v]...  Run a pipeline in the terminal
   signalbox chunks list|add|done|remove <execution> ...  Manage execution chunks
   signalbox version                  Print the version
 `
@@ -127,7 +127,7 @@ func cmdValidate(args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := runtime.NewRegistry(cfg.Runtimes); err != nil {
+	if _, err := runtime.NewRegistryForConfig(cfg); err != nil {
 		return err
 	}
 	fmt.Printf("config  %s: OK (%d runtimes)\n", config.FileName, len(cfg.Runtimes))
@@ -173,11 +173,13 @@ func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	input := fs.String("input", "", "input handed to the entry agent (reads stdin if omitted)")
 	autoApprove := fs.Bool("yes", false, "automatically approve all approval gates (non-interactive runs)")
+	params := paramFlag{}
+	fs.Var(params, "param", "pipeline parameter as name=value (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: signalbox run <pipeline> [--input text] [--yes]")
+		return fmt.Errorf("usage: signalbox run <pipeline> [--input text] [--param name=value]... [--yes]")
 	}
 	pipelineName := fs.Arg(0)
 	// The flag package stops at the first positional argument, so re-parse
@@ -211,7 +213,7 @@ func cmdRun(args []string) error {
 		return fmt.Errorf("no input: pass --input or pipe text on stdin")
 	}
 
-	execID, err := eng.Start(pipelineName, in)
+	execID, err := eng.StartWithParams(pipelineName, in, params)
 	if err != nil {
 		return err
 	}
@@ -366,7 +368,7 @@ func loadProject() (*config.Config, map[string]*pipeline.Pipeline, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	pipelines, errs := pipeline.LoadDir(cfg.PipelinesPath())
+	pipelines, errs := pipeline.LoadDir(cfg.PipelinesPath(), pipeline.Options{Root: cfg.Root, AllowExternal: cfg.AllowExternalImports})
 	if len(errs) > 0 {
 		msgs := make([]string, len(errs))
 		for i, e := range errs {
@@ -378,32 +380,14 @@ func loadProject() (*config.Config, map[string]*pipeline.Pipeline, error) {
 		return nil, nil, fmt.Errorf("no pipelines found in %s", cfg.PipelinesPath())
 	}
 
-	// Every runtime referenced by a pipeline must exist in the config.
-	for _, p := range pipelines {
-		for _, n := range p.Nodes {
-			if n.Type == pipeline.TypeCode {
-				if _, err := runtime.NewCode(&n, cfg.Root); err != nil {
-					return nil, nil, err
-				}
-			}
-			if n.Runtime == "" {
-				continue
-			}
-			if _, ok := cfg.Runtimes[n.Runtime]; !ok {
-				return nil, nil, fmt.Errorf("pipeline %q: agent %q references runtime %q which is not defined in %s", p.Name, n.ID, n.Runtime, config.FileName)
-			}
-		}
-	}
-	for _, watcher := range cfg.Watchers {
-		if _, ok := pipelines[watcher.Pipeline]; !ok {
-			return nil, nil, fmt.Errorf("watcher %q references unknown pipeline %q", watcher.Name, watcher.Pipeline)
-		}
+	if err := runtime.ValidateProject(cfg, pipelines); err != nil {
+		return nil, nil, err
 	}
 	return cfg, pipelines, nil
 }
 
 func buildEngine(cfg *config.Config, pipelines map[string]*pipeline.Pipeline, persist bool) (*engine.Engine, error) {
-	registry, err := runtime.NewRegistry(cfg.Runtimes)
+	registry, err := runtime.NewRegistryForConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -415,4 +399,22 @@ func buildEngine(cfg *config.Config, pipelines map[string]*pipeline.Pipeline, pe
 		}
 	}
 	return engine.NewWithLimit(pipelines, registry, store, cfg.MaxConcurrentCalls, cfg.Root)
+}
+
+// paramFlag collects repeatable --param name=value flags.
+type paramFlag map[string]string
+
+func (p paramFlag) String() string { return "" }
+
+func (p paramFlag) Set(value string) error {
+	name, v, ok := strings.Cut(value, "=")
+	name = strings.TrimSpace(name)
+	if !ok || name == "" {
+		return fmt.Errorf("expected name=value, got %q", value)
+	}
+	if _, dup := p[name]; dup {
+		return fmt.Errorf("param %q given more than once", name)
+	}
+	p[name] = v
+	return nil
 }

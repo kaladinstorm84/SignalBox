@@ -1016,3 +1016,86 @@ agents:
 		t.Fatalf("execution JSON missing session state: %s", exec.Body.String())
 	}
 }
+
+func TestParamsStartRerunAndPipelineView(t *testing.T) {
+	p, err := pipeline.Parse([]byte(`
+name: demo
+params:
+  topic: {required: true, description: What to discuss}
+  depth: {type: integer, default: "2"}
+entry: a
+agents:
+  - id: a
+    runtime: mock
+    model: m1
+    prompt: Talk about ${{ params.topic }} at depth ${{ params.depth }}.
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := runtime.NewRegistry(map[string]config.RuntimeConfig{"mock": {Type: "mock"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng, err := engine.New(map[string]*pipeline.Pipeline{"demo": p}, registry, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := New(eng, "test", func() (map[string]*pipeline.Pipeline, error) {
+		return map[string]*pipeline.Pipeline{"demo": p}, nil
+	}, nil, nil).Handler()
+	do := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(method, path, strings.NewReader(body)))
+		return response
+	}
+	waitID := func(response *httptest.ResponseRecorder) *engine.Execution {
+		t.Helper()
+		if response.Code != http.StatusCreated {
+			t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+		}
+		var created struct{ ID string }
+		if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+			t.Fatal(err)
+		}
+		done, err := eng.Wait(created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		<-done
+		exec, err := eng.Get(created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return exec
+	}
+
+	if response := do(http.MethodPost, "/api/executions", `{"pipeline":"demo","input":"x"}`); response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "topic") {
+		t.Fatalf("missing param = %d: %s", response.Code, response.Body.String())
+	}
+	if response := do(http.MethodPost, "/api/executions", `{"pipeline":"demo","params":{"topic":"t","depth":"deep"}}`); response.Code != http.StatusBadRequest {
+		t.Fatalf("bad integer = %d", response.Code)
+	}
+	first := waitID(do(http.MethodPost, "/api/executions", `{"pipeline":"demo","input":"x","params":{"topic":"queues"}}`))
+	if first.Params["topic"] != "queues" || first.Params["depth"] != "2" || first.Runs[0].Model != "m1" {
+		t.Fatalf("execution = %+v / run %+v", first.Params, first.Runs[0])
+	}
+	rerun := waitID(do(http.MethodPost, "/api/executions/"+first.ID+"/rerun", ""))
+	if rerun.Params["topic"] != "queues" {
+		t.Fatalf("rerun params = %v", rerun.Params)
+	}
+
+	response := do(http.MethodGet, "/api/pipelines", "")
+	var views []map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &views); err != nil {
+		t.Fatal(err)
+	}
+	params, _ := json.Marshal(views[0]["params"])
+	if string(params) != `[{"default":"2","name":"depth","type":"integer"},{"description":"What to discuss","name":"topic","required":true,"type":"string"}]` {
+		t.Fatalf("params view = %s", params)
+	}
+	if node := views[0]["nodes"].([]any)[0].(map[string]any); node["model"] != "m1" {
+		t.Fatalf("node view = %v", node)
+	}
+}

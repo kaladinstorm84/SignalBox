@@ -231,6 +231,151 @@ execution view shows how many characters each run's context added, so you
 can measure the effect on your own pipelines. The `context-strategies` demo
 pipeline uses all four strategies, `window`, and `max_chars`.
 
+### Parameters
+
+A pipeline can declare `params` and reference them as `${{ params.name }}`.
+Values are chosen when a run starts (the **New run** form, `signalbox run
+--param name=value`, or `"params"` in `POST /api/executions`), so one pipeline
+can serve several variants.
+
+```yaml
+params:
+  topic:
+    required: true
+    description: The subject of the briefing.
+  audience:
+    values: [engineers, executives]   # enum; rendered as a dropdown
+    default: engineers
+  depth: {type: integer, default: "3"}
+  writer_model: ""                    # shorthand: string with this default
+```
+
+- Types are `string` (default), `integer`, `number`, and `boolean`. `values`
+  restricts the value to a list. A param is either `required` or has a
+  `default`, not both. A param with no default and not required is empty.
+- References are substituted into the pipeline description, agent
+  `description`, `prompt`, and `model`, `handoff` `input` templates, stage
+  prompts, and chunk `initial` titles. Unknown references are validation
+  errors; nothing else (IDs, runtimes, routes) can be parameterised.
+- Values are validated before the run starts; unknown names, missing required
+  values, and wrong types are rejected. Values are substituted as plain text.
+- The resolved values are saved with the execution and shown on its page.
+  **Rerun** and **Retry from here** reuse them. They are stored in plain
+  text, so do not pass secrets as params.
+- Watchers start runs with default values, so a watcher cannot target a
+  pipeline with a required param that has no default.
+
+Demo: `briefing-params`.
+
+### Imports and templates
+
+Agents can be shared between pipelines. `templates` are partial agent
+definitions; an agent (or another template) inherits from them with
+`extends` (a name or a list, applied in order). `imports` pull templates and
+agents from another YAML file.
+
+```yaml
+imports:
+  - from: ../shared/review-kit.yaml   # relative to this file
+    templates: [gate_reviewer]        # omit to import all templates
+    agents: [changelog_writer]        # omit to import all agents
+templates:
+  - id: strict_reviewer
+    extends: gate_reviewer
+    retry: {count: 2}
+agents:
+  - id: security_review
+    extends: strict_reviewer
+    prompt: Review for security problems only.
+    reject-to: implementer
+```
+
+- Merging: maps (such as `retry` and `context`) deep-merge, and scalars and
+  lists in the child replace the parent's. A child that sets
+  `context: {strategy: none}` still inherits the parent's `window`, which
+  fails validation, so set `window: 0` (and `max_chars: 0`, if inherited)
+  explicitly when overriding.
+- Imported files hold `templates` and/or `agents` and may import others.
+  Shared files should live outside `pipelines_dir` (for example `shared/`), so
+  they are not loaded as pipelines. Local agents come first, followed by
+  imported agents in import order.
+- Errors are reported for import or `extends` cycles (with the chain), more
+  than 10 levels of nesting, duplicate agent or template IDs across files,
+  unknown templates or selected agents, and non-YAML files.
+- Imports must stay inside the project directory (symlinks are resolved)
+  unless `allow_external_imports: true` is set in `signalbox.yaml`.
+- The **Pipelines** page lists each pipeline's imported files. A change to a
+  shared file is picked up the next time pipelines reload.
+
+Demo: `review-kit` with `shared/review-kit.yaml`.
+
+### Model overrides
+
+`standard`, `llm_gate`, and `orchestrator` agents can set `model` (it may use
+a param). The `codex`, `claude`, and `copilot` runtimes pass it as
+`--model`, `openai` uses it instead of the runtime's `model`, and `mock`
+ignores it. A `cli` runtime needs `model_arg` (for example `model_arg:
+--model`) or validation fails. Session participants use their own `model`.
+The model is shown on each run card.
+
+### MCP servers
+
+Agents on `codex`, `claude`, and `copilot` runtimes can be given Model Context
+Protocol servers. This is opt-in at two levels. The project registers servers
+and the tools they may expose:
+
+```yaml
+# signalbox.yaml
+mcp:
+  enabled: true
+  servers:
+    github:
+      command: github-mcp-server
+      args: [stdio]
+      env_from:
+        GITHUB_PERSONAL_ACCESS_TOKEN: GITHUB_TOKEN   # server var: SignalBox env var
+      tools: [search_issues, get_issue]
+```
+
+Then each agent names the servers (and optionally a subset of tools) it needs:
+
+```yaml
+agents:
+  - id: triager
+    runtime: claude
+    mcp:
+      - github                                  # all tools allowed above
+      - server: docs
+        tools: [search]
+```
+
+- SignalBox does not run MCP servers itself. For each call it passes only the
+  granted servers and tools to the agent CLI:
+  - **codex**: `-c mcp_servers.<name>.*` overrides with `enabled_tools`.
+  - **claude**: `--mcp-config <file> --strict-mcp-config --allowedTools
+    mcp__<name>__<tool>,...`.
+  - **copilot**: `--additional-mcp-config @<file> --allow-tool
+    '<name>(<tool>)',...`.
+- Validation fails if MCP is not enabled, a server is not registered, a tool
+  is not in the server's `tools`, the runtime is not codex/claude/copilot, or
+  a wildcard is used. Session participants can use MCP; orchestrators cannot.
+- **Security:**
+  - MCP servers run as the user running SignalBox, with that user's access.
+  - Secrets are never written in YAML: `env_from` names an environment
+    variable that SignalBox reads at call time (a missing variable fails the
+    call without showing values).
+  - codex receives secret values through its environment (`env_vars`).
+    claude and copilot receive them in a temporary JSON file, readable only
+    by the current user and deleted after the call.
+  - Runs record which servers and tools were granted, never environment
+    values.
+  - Only claude is told to ignore other MCP configuration
+    (`--strict-mcp-config`). codex and copilot still load the user's own
+    global MCP servers alongside the granted ones.
+
+Demo: `repo-explorer-mcp`, using the read-only filesystem server registered
+in `testproject/signalbox.yaml` (requires Node.js for `npx`).
+
 ### Sessions and chunks
 
 A `session` node runs a conversation between **participants**: ordinary
@@ -446,7 +591,8 @@ and restart the executable. Pipeline YAML is reloaded for new UI runs, but
 runtime definitions and other project settings require a server restart.
 
 `signalbox run` prompts for approvals on the terminal; pass `--yes` to
-auto-approve every gate (useful in scripts/CI). `signalbox serve --addr
+auto-approve every gate (useful in scripts/CI). Pass pipeline parameters with
+a repeatable `--param name=value`. `signalbox serve --addr
 127.0.0.1:8485` overrides the configured listen address; `signalbox version`
 prints the build version.
 
@@ -616,6 +762,14 @@ runtimes:
     type: codex           # codex exec "<prompt>"
   copilot:
     type: copilot         # copilot -p "<prompt>"
+  custom:
+    type: cli
+    command: my-agent
+    model_arg: --model    # lets agents set model: on a cli runtime
+allow_external_imports: false   # imports must stay inside the project
+mcp:                            # see "MCP servers"
+  enabled: false
+  servers: {}
 ```
 
 `max_concurrent_calls` limits simultaneous runtime invocations across all
@@ -659,20 +813,20 @@ output stable between polls unless a new pipeline run is intended.
 | Method & path | Purpose |
 |---------------|---------|
 | `GET /api/meta` | Project name |
-| `GET /api/pipelines` | Loaded pipeline definitions |
+| `GET /api/pipelines` | Loaded pipeline definitions, including `params`, imported `sources`, and each agent's `model` and `mcp` |
 | `GET /api/pipeline-files` | YAML filenames and pipeline names where valid, including invalid files for repair |
 | `GET /api/pipeline-files/{filename}` | Raw pipeline YAML and file version |
 | `PUT /api/pipeline-files/{filename}` | Validate and create/edit YAML: `{"content": "...", "version": "..."}`; use an empty version to create a new file |
 | `GET /api/settings` | Project configuration YAML and file version |
 | `PUT /api/settings` | Validate and save project YAML: `{"content": "...", "version": "..."}` |
 | `GET /api/executions?page=1&page_size=20` | Paginated execution summaries (newest first); page sizes are multiples of 10 from 10 to 100. Returns `executions`, `page`, `page_size`, `total`, and `total_pages`. |
-| `POST /api/executions` | Start a run: `{"pipeline": "default", "input": "..."}` |
+| `POST /api/executions` | Start a run: `{"pipeline": "default", "input": "...", "params": {"topic": "..."}}` (`params` optional; 400 if invalid) |
 | `GET /api/executions/{id}` | Full execution detail |
 | `POST /api/executions/{id}/approve` | Resolve a gate: `{"run_id": "...", "approved": true, "approved_by": "...", "comment": "..."}` |
 | `POST /api/executions/{id}/retry` | Retry a failed agent call awaiting retry: `{"run_id": "..."}` |
 | `POST /api/executions/{id}/restart` | Start a new execution from an interrupted standard-agent, code, `llm_gate`, or session call: `{"run_id": "..."}` |
 | `POST /api/executions/{id}/cancel` | Cancel a running execution |
-| `POST /api/executions/{id}/rerun` | Start a new execution with the same pipeline and input; returns `{"id": "..."}` |
+| `POST /api/executions/{id}/rerun` | Start a new execution with the same pipeline, input, and params; returns `{"id": "..."}` |
 | `DELETE /api/executions/{id}` | Delete a finished execution (409 while it is still running) |
 | `GET /api/executions/{id}/chunks` | List the execution's chunks |
 | `POST /api/executions/{id}/chunks` | Add a chunk: `{"title": "...", "by": "..."}`; returns the chunk (409 once the execution has finished) |

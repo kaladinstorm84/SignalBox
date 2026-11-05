@@ -80,7 +80,11 @@ func (o *openAI) Invoke(ctx context.Context, req Request) (string, error) {
 	}
 	messages = append(messages, chatMessage{Role: "user", Content: req.Input})
 
-	body, err := json.Marshal(chatRequest{Model: o.model, Messages: messages})
+	model := o.model
+	if req.Model != "" {
+		model = req.Model
+	}
+	body, err := json.Marshal(chatRequest{Model: model, Messages: messages})
 	if err != nil {
 		return "", err
 	}
