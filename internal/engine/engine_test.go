@@ -407,6 +407,159 @@ agents:
 	}
 }
 
+func TestRejectionOnlyBranch(t *testing.T) {
+	for _, inStage := range []bool{false, true} {
+		for _, reject := range []bool{false, true} {
+			t.Run(fmt.Sprintf("stage=%v/reject=%v", inStage, reject), func(t *testing.T) {
+				entry, coordinator := "presenter", ""
+				if inStage {
+					entry = "coordinator"
+					coordinator = "  - id: coordinator\n    type: orchestrator\n    stages:\n      - id: work\n        agents: [presenter]\n"
+				}
+				definition := "name: p\nentry: " + entry + "\nagents:\n" + coordinator + "  - id: presenter\n    runtime: presenter\n    handoff: [review]\n  - id: review\n    type: approval\n    reject-to: reformatter\n  - id: reformatter\n    runtime: reformatter\n    handoff: [left, right]\n  - id: left\n    runtime: left\n    handoff: [merge]\n  - id: right\n    runtime: right\n    handoff: [merge]\n  - id: merge\n    runtime: merge\n    handoff: [review]\n"
+				var mu sync.Mutex
+				calls := map[string][]string{}
+				handlers := map[string]func(context.Context, runtime.Request) (string, error){}
+				for _, name := range []string{"presenter", "reformatter", "left", "right", "merge"} {
+					handlers[name] = func(_ context.Context, req runtime.Request) (string, error) {
+						mu.Lock()
+						defer mu.Unlock()
+						calls[name] = append(calls[name], req.Input)
+						return name + ": " + req.Input, nil
+					}
+				}
+				eng := newTestEngine(t, definition, handlers)
+				id, err := eng.Start("p", "initial task")
+				if err != nil {
+					t.Fatal(err)
+				}
+				waitReview := func(except string) *NodeRun {
+					t.Helper()
+					for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+						for _, run := range eng.WaitingApprovals(id) {
+							if run.NodeID == "review" && run.ID != except {
+								return run
+							}
+						}
+						time.Sleep(10 * time.Millisecond)
+					}
+					t.Fatal("review was not reached")
+					return nil
+				}
+				review := waitReview("")
+				if reject {
+					for _, note := range []string{"Fix the wording", "Add a heading"} {
+						payload := review.Input
+						if err := eng.Approve(id, review.ID, false, "tester", note); err != nil {
+							t.Fatal(err)
+						}
+						review = waitReview(review.ID)
+						mu.Lock()
+						inputs := calls["reformatter"]
+						input := inputs[len(inputs)-1]
+						mu.Unlock()
+						if input != appendRejectionNote(payload, "review", note) {
+							t.Fatalf("reformatter input = %q, want current review payload and notes", input)
+						}
+					}
+				}
+				if err := eng.Approve(id, review.ID, true, "tester", "approved"); err != nil {
+					t.Fatal(err)
+				}
+				execution := waitDone(t, eng, id)
+				if execution.Status != StatusCompleted {
+					t.Fatalf("status = %s (%s)", execution.Status, execution.Error)
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if len(calls["presenter"]) != 1 {
+					t.Fatal("normal presenter was replayed")
+				}
+				want := 0
+				if reject {
+					want = 2
+				}
+				for _, name := range []string{"reformatter", "left", "right", "merge"} {
+					if len(calls[name]) != want {
+						t.Fatalf("%s calls = %d, want %d", name, len(calls[name]), want)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestApprovalRejectToOverridesCheckpoint(t *testing.T) {
+	for _, inStage := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stage=%v", inStage), func(t *testing.T) {
+			entry, coordinator := "checkpoint", ""
+			if inStage {
+				entry = "coordinator"
+				coordinator = "  - id: coordinator\n    type: orchestrator\n    stages:\n      - id: work\n        agents: [checkpoint]\n"
+			}
+			definition := "name: p\nentry: " + entry + "\nagents:\n" + coordinator + "  - id: checkpoint\n    type: approval\n    handoff: [left, right]\n  - id: left\n    runtime: left\n    handoff: [writer]\n  - id: right\n    runtime: right\n    handoff: [writer]\n  - id: writer\n    runtime: writer\n    handoff: [presenter]\n  - id: presenter\n    runtime: presenter\n    handoff: [review]\n  - id: review\n    type: approval\n    reject-to: writer\n"
+			var mu sync.Mutex
+			calls := map[string][]string{}
+			handlers := map[string]func(context.Context, runtime.Request) (string, error){}
+			for _, name := range []string{"left", "right", "writer", "presenter"} {
+				handlers[name] = func(_ context.Context, req runtime.Request) (string, error) {
+					mu.Lock()
+					defer mu.Unlock()
+					calls[name] = append(calls[name], req.Input)
+					return name + " output", nil
+				}
+			}
+			eng := newTestEngine(t, definition, handlers)
+			id, err := eng.Start("p", "task")
+			if err != nil {
+				t.Fatal(err)
+			}
+			waitApproval := func(nodeID, except string) *NodeRun {
+				t.Helper()
+				deadline := time.Now().Add(5 * time.Second)
+				for time.Now().Before(deadline) {
+					for _, run := range eng.WaitingApprovals(id) {
+						if run.NodeID == nodeID && run.ID != except {
+							return run
+						}
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				t.Fatalf("approval %s was not reached", nodeID)
+				return nil
+			}
+			checkpoint := waitApproval("checkpoint", "")
+			if err := eng.Approve(id, checkpoint.ID, true, "reviewer", ""); err != nil {
+				t.Fatal(err)
+			}
+			review := waitApproval("review", "")
+			for _, note := range []string{"Correct the wording", "Add missing detail"} {
+				if err := eng.Approve(id, review.ID, false, "reviewer", note); err != nil {
+					t.Fatal(err)
+				}
+				review = waitApproval("review", review.ID)
+			}
+			if err := eng.Approve(id, review.ID, true, "reviewer", "approved"); err != nil {
+				t.Fatal(err)
+			}
+			execution := waitDone(t, eng, id)
+			if execution.Status != StatusCompleted {
+				t.Fatalf("status = %s (%s)", execution.Status, execution.Error)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(calls["left"]) != 1 || len(calls["right"]) != 1 || len(calls["writer"]) != 3 || len(calls["presenter"]) != 3 {
+				t.Fatalf("wrong replayed calls: %+v", calls)
+			}
+			for _, text := range []string{"left output", "right output", "Correct the wording", "Add missing detail"} {
+				if !strings.Contains(calls["writer"][2], text) {
+					t.Fatalf("rework input missing %q: %q", text, calls["writer"][2])
+				}
+			}
+		})
+	}
+}
+
 func TestApprovalRejectionReworksFromLastApprovedGate(t *testing.T) {
 	var publisherInputs []string
 	eng := newTestEngine(t, `

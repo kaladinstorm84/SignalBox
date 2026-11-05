@@ -45,6 +45,7 @@ type liveExec struct {
 	outputsChanged chan struct{}
 	recoveryInputs map[string]string
 	recoveryJoins  map[string]int
+	reworks        map[string]*reworkState
 	// joins holds fan-in nodes outside any stage still waiting for inputs.
 	joins map[string][]deliveredInput
 }
@@ -76,6 +77,12 @@ type orchInstance struct {
 type deliveredInput struct {
 	from  string
 	input string
+}
+
+type reworkState struct {
+	counts   map[string]int
+	joins    map[string][]deliveredInput
+	returnTo string
 }
 
 // stageState tracks the chains currently running on behalf of one
@@ -460,11 +467,15 @@ func (eng *Engine) Wait(execID string) (<-chan struct{}, error) {
 
 // deliverLocked routes a handoff payload to a node. Caller holds eng.mu.
 // octx is non-nil when the delivery happens inside an orchestrator stage.
-func (eng *Engine) deliverLocked(le *liveExec, nodeID, input, from string, octx *stageState) {
+func (eng *Engine) deliverLocked(le *liveExec, nodeID, input, from string, octx *stageState, rework ...*reworkState) {
 	if le.exec.Status.Terminal() {
 		return
 	}
 	node := le.p.Node(nodeID)
+	var work *reworkState
+	if len(rework) > 0 {
+		work = rework[0]
+	}
 
 	if node.Type == pipeline.TypeOrchestrator {
 		oi := le.orchs[nodeID]
@@ -511,6 +522,10 @@ func (eng *Engine) deliverLocked(le *liveExec, nodeID, input, from string, octx 
 	if octx == nil && le.recoveryJoins != nil {
 		expected = le.recoveryJoins[nodeID]
 	}
+	if work != nil {
+		expected = work.counts[nodeID]
+		joins = &work.joins
+	}
 	if expected > 1 {
 		if *joins == nil {
 			*joins = map[string][]deliveredInput{}
@@ -528,10 +543,13 @@ func (eng *Engine) deliverLocked(le *liveExec, nodeID, input, from string, octx 
 		}
 		from = strings.Join(froms, ", ")
 	}
+	eng.dispatchNodeLocked(le, node, input, from, octx, work)
+}
 
+func (eng *Engine) dispatchNodeLocked(le *liveExec, node *pipeline.Node, input, from string, octx *stageState, rework ...*reworkState) {
 	run := &NodeRun{
 		ID:         newRunID(),
-		NodeID:     nodeID,
+		NodeID:     node.ID,
 		Type:       node.Type,
 		Format:     node.Format,
 		Status:     StatusPending,
@@ -542,6 +560,12 @@ func (eng *Engine) deliverLocked(le *liveExec, nodeID, input, from string, octx 
 		run.StageID = octx.sr.StageID
 		run.OrchRunID = octx.sr.ownerRunID
 		octx.outstanding++
+	}
+	if len(rework) > 0 && rework[0] != nil {
+		if le.reworks == nil {
+			le.reworks = map[string]*reworkState{}
+		}
+		le.reworks[run.ID] = rework[0]
 	}
 	le.exec.Runs = append(le.exec.Runs, run)
 	le.liveRuns++
@@ -646,7 +670,9 @@ func (eng *Engine) finishRunRejected(le *liveExec, run *NodeRun, node *pipeline.
 	if node.Type == pipeline.TypeCode {
 		run.Error = note
 	}
-	if !le.exec.Status.Terminal() && eng.reworkAfterRejectionLocked(le, run, node, octx, note) {
+	reworked := !le.exec.Status.Terminal() && eng.reworkAfterRejectionLocked(le, run, node, octx, note)
+	delete(le.reworks, run.ID)
+	if reworked {
 		eng.releaseStageLocked(octx)
 		eng.endRunLocked(le)
 		eng.persistLocked(le)
@@ -668,12 +694,38 @@ func (eng *Engine) finishRunRejected(le *liveExec, run *NodeRun, node *pipeline.
 
 func (eng *Engine) reworkAfterRejectionLocked(le *liveExec, rejected *NodeRun, node *pipeline.Node, octx *stageState, note string) bool {
 	runs := le.exec.Runs
+	inheritedWork := le.reworks[rejected.ID]
 	rejectedIndex := len(runs)
 	for i, run := range runs {
 		if run.ID == rejected.ID {
 			rejectedIndex = i
 			break
 		}
+	}
+	if node.RejectTo != "" {
+		input, from := rejected.Input, node.ID
+		scope := pipeline.TopScope
+		if octx != nil {
+			scope = octx.scope
+		}
+		if le.p.JoinCount(scope, node.RejectTo) > 0 {
+			found := false
+			for i := rejectedIndex - 1; i >= 0; i-- {
+				previous := runs[i]
+				if previous.NodeID != node.RejectTo || previous.Status != StatusCompleted || previous.StageID != rejected.StageID || previous.OrchRunID != rejected.OrchRunID {
+					continue
+				}
+				input, from = previous.Input, previous.FromNodeID
+				found = true
+				break
+			}
+			if !found {
+				return false
+			}
+		}
+		work := &reworkState{counts: joinCountsFrom(le.p, node.RejectTo), returnTo: node.ID}
+		eng.dispatchNodeLocked(le, le.p.Node(node.RejectTo), appendRejectionNote(input, node.ID, note), from, octx, work)
+		return true
 	}
 
 	for i := rejectedIndex - 1; i >= 0; i-- {
@@ -687,7 +739,7 @@ func (eng *Engine) reworkAfterRejectionLocked(le *liveExec, rejected *NodeRun, n
 		}
 		input := appendRejectionNote(previous.Output, node.ID, note)
 		for _, target := range checkpoint.Handoff {
-			eng.deliverLocked(le, target, input, checkpoint.ID, octx)
+			eng.deliverLocked(le, target, input, checkpoint.ID, octx, inheritedWork)
 		}
 		return true
 	}
@@ -701,7 +753,7 @@ func (eng *Engine) reworkAfterRejectionLocked(le *liveExec, rejected *NodeRun, n
 			if previous.NodeID != upstreamID || previous.Status != StatusCompleted || previous.StageID != rejected.StageID || previous.OrchRunID != rejected.OrchRunID {
 				continue
 			}
-			eng.deliverLocked(le, previous.NodeID, appendRejectionNote(previous.Input, node.ID, note), previous.FromNodeID, octx)
+			eng.deliverLocked(le, previous.NodeID, appendRejectionNote(previous.Input, node.ID, note), previous.FromNodeID, octx, inheritedWork)
 			dispatched = true
 			break
 		}
@@ -743,6 +795,11 @@ func handoffReaches(p *pipeline.Pipeline, source, target string) bool {
 func (eng *Engine) finishRunOK(le *liveExec, run *NodeRun, handoffs []string, output string, octx *stageState) {
 	eng.mu.Lock()
 	defer eng.mu.Unlock()
+	work := le.reworks[run.ID]
+	delete(le.reworks, run.ID)
+	if work != nil && work.returnTo == run.NodeID {
+		work = nil
+	}
 	now := time.Now().UTC()
 	run.Output = output
 	run.Status = StatusCompleted
@@ -753,7 +810,7 @@ func (eng *Engine) finishRunOK(le *liveExec, run *NodeRun, handoffs []string, ou
 	if !le.exec.Status.Terminal() {
 		if len(handoffs) > 0 {
 			for _, target := range handoffs {
-				eng.deliverLocked(le, target, output, run.NodeID, octx)
+				eng.deliverLocked(le, target, output, run.NodeID, octx, work)
 			}
 		} else if octx != nil {
 			octx.sr.Outputs = append(octx.sr.Outputs, StageOutput{
@@ -778,6 +835,7 @@ func (eng *Engine) finishRunOK(le *liveExec, run *NodeRun, handoffs []string, ou
 func (eng *Engine) finishRunErr(le *liveExec, run *NodeRun, node *pipeline.Node, octx *stageState, err error) {
 	eng.mu.Lock()
 	defer eng.mu.Unlock()
+	delete(le.reworks, run.ID)
 	now := time.Now().UTC()
 	run.FinishedAt = &now
 	if le.ctx != nil && le.ctx.Err() != nil && le.exec.Status.Terminal() {

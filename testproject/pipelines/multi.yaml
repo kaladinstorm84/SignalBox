@@ -25,6 +25,21 @@ agents:
     handoff: [review_2]
     prompt: |
       You are the publisher agent. edit the draft before publishing.
+  - id: reformatter
+    type: standard
+    runtime: mock
+    description: Reformats the draft as requested.
+    handoff: [publisher2]
+    prompt: |
+      You are the reformatter agent. Reformat the draft as requested.
+  - id: publisher2
+    type: standard
+    runtime: mock
+    description: Publishes the reformatted draft.
+    handoff: [review_2]
+    prompt: |
+      You are the publisher agent. edit the draft before publishing.
   - id: review_2
     type: approval
+    reject-to: reformatter
     description: Human review of the published draft.

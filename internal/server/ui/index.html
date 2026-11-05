@@ -613,9 +613,11 @@ const TRACK_COLOURS = [INK, '#2fb44a', '#f08a24', '#2f6fd0'];
 const DIAGRAM_FONT = "'Arial Narrow','Helvetica Neue',Arial,sans-serif";
 const D = {curve: 34, gap: 20, lead: 54, pad: 28, top: 92, rowGap: 6, cell: 22};
 const measureCtx = document.createElement('canvas').getContext('2d');
+let diagramSerial = 0;
 function textWidth(text, font) { measureCtx.font = font; return measureCtx.measureText(text).width; }
 
 function flowDiagram(p, execution = null) {
+  const diagramID = `flow-${++diagramSerial}`;
   const byId = Object.fromEntries(p.nodes.map(n => [n.id, n]));
   const runStatusByNode = {};
   if (execution) for (const run of execution.runs || []) {
@@ -646,11 +648,12 @@ function flowDiagram(p, execution = null) {
     }
   };
 
-  const chain = (id, inBranch) => {
+  const chain = (id, inBranch, stopAtSeen = false) => {
     const items = [];
     let join = null;
     while (id) {
       const n = byId[id];
+      if (n && seen.has(id) && stopAtSeen) { join = id; break; }
       if (!n || seen.has(id)) { items.push({kind: 'ref', id, missing: !n}); break; }
       seen.add(id);
       numbered.push(n);
@@ -661,17 +664,19 @@ function flowDiagram(p, execution = null) {
       const next = n.handoff || [];
       if (next.length === 0) break;
       if (next.length === 1) {
+        if (stopAtSeen && seen.has(next[0])) { join = next[0]; break; }
         if (inBranch && isJoin(next[0])) { join = next[0]; break; }
         id = next[0];
         continue;
       }
-      const raw = next.map(t => chain(t, true));
+      const raw = next.map(t => chain(t, true, stopAtSeen));
       const shared = [...new Set(raw.map(b => b.join))];
       // Every branch meets at one agent in this scope: draw it on this line.
       const branches = shared.length === 1 && shared[0] && byId[shared[0]].type !== 'orchestrator' ? raw : merge(raw);
       items.push({kind: 'par', tracks: branches.map(b => b.seq)});
       const joins = [...new Set(branches.map(b => b.join))];
       if (joins.length === 1 && joins[0]) {
+        if (stopAtSeen && seen.has(joins[0])) { join = joins[0]; break; }
         if (inBranch && byId[joins[0]].type === 'orchestrator') { join = joins[0]; break; }
         id = joins[0];
         continue;
@@ -718,6 +723,7 @@ function flowDiagram(p, execution = null) {
   };
 
   const out = [];
+  const nodePositions = new Map();
   const text = (x, y, s, cls, anchor = 'start') =>
     out.push(`<text x="${x}" y="${y}" class="${cls}" text-anchor="${anchor}">${esc(s)}</text>`);
   const joint = (x, y) => out.push(`<path class="joint" d="M${x} ${y - 4}V${y + 4}" />`);
@@ -757,6 +763,15 @@ function flowDiagram(p, execution = null) {
     const n = it.n || {id: it.id, type: 'ref'};
     const label = n.id.toUpperCase();
     const mid = x + it.w / 2;
+    if (n.type !== 'ref') {
+      nodePositions.set(n.id, {
+        x: mid + (n.type === 'approval' ? 9 : 0),
+        y: y - (n.type === 'approval' ? 18 : 0),
+        halfWidth: n.type === 'orchestrator' ? it.w / 2 : n.type === 'approval' ? 13 : 17,
+        labelLeft: mid - it.tw / 2,
+        labelRight: mid + it.tw / 2,
+      });
+    }
     const status = runStatusByNode[n.id] || '';
     const tip = n.type === 'ref' ? (it.missing ? `${n.id} (not defined)` : `continues at ${n.id}`) : `${it.num}. ${n.id} · ${n.type}${n.description ? ' — ' + n.description : ''}${status ? ' · ' + status : ''}`;
     out.push(`<g class="node" data-node-id="${esc(n.id)}"><title>${esc(tip)}</title>`);
@@ -790,12 +805,24 @@ function flowDiagram(p, execution = null) {
   };
 
   const root = chain(p.entry, false).seq;
+  const reworkBranches = [];
+  for (let index = 0; index < numbered.length; index++) {
+    const node = numbered[index];
+    if (node.reject_to && !seen.has(node.reject_to)) {
+      const branch = chain(node.reject_to, true, true);
+      reworkBranches.push({from: node.id, seq: branch.seq, join: branch.join});
+    }
+  }
   measure(root);
+  reworkBranches.forEach(branch => measure(branch.seq));
   const x0 = D.pad + D.lead;
-  const lineW = Math.ceil(x0 + root.w + D.lead + D.pad);
+  const lineW = Math.ceil(x0 + Math.max(root.w, ...reworkBranches.map(branch => branch.seq.w)) + D.lead + D.pad);
   const stripW = numbered.length * D.cell;
   const width = Math.max(lineW, D.pad * 2 + 300 + stripW + 40);
-  const y = Math.ceil(D.top + root.up);
+  const rejectionCount = p.nodes.filter(node => node.reject_to).length;
+  const rejectionLaneHeight = rejectionCount ? 28 + rejectionCount * 24 : 0;
+  const reworkHeight = reworkBranches.reduce((total, branch) => total + branch.seq.up + branch.seq.down + 52, 0);
+  const y = Math.ceil(D.top + rejectionLaneHeight + reworkHeight + root.up);
 
   out.push(`<path d="M${D.pad} ${y}H${x0}" stroke="${INK}" stroke-width="4" />`);
   out.push(`<path d="M${D.pad + 8} ${y + 14}h22m-6 -4l6 4l-6 4" stroke="${INK}" stroke-width="1.2" />`);
@@ -803,6 +830,37 @@ function flowDiagram(p, execution = null) {
   const xe = x0 + root.w;
   out.push(`<path d="M${xe} ${y}H${xe + D.lead - 14}" stroke="${INK}" stroke-width="4" />`,
     `<path d="M${xe + D.lead - 14} ${y - 9}V${y + 9}M${xe + D.lead - 14} ${y - 9}h-6M${xe + D.lead - 14} ${y + 9}h-6" stroke="${INK}" stroke-width="2.4" />`);
+
+  let contentBottom = y + root.down;
+  let reworkTop = D.top + rejectionLaneHeight;
+  for (const branch of reworkBranches) {
+    const source = nodePositions.get(branch.from);
+    const branchX = Math.max(x0, Math.min((source?.x || x0) - branch.seq.w - D.gap, width - D.pad - branch.seq.w));
+    const branchY = reworkTop + 24 + branch.seq.up;
+    out.push(`<g class="rework-track" data-rework-for="${esc(branch.from)}">`);
+    draw(branch.seq, branchX, branchY, 1);
+    out.push('</g>');
+    const join = nodePositions.get(branch.join);
+    if (join) {
+      const endX = branchX + branch.seq.w;
+      const targetX = join.x + join.halfWidth + 3;
+      const outerX = Math.max(endX, targetX) + 22;
+      out.push(`<path class="return-route" d="M${endX} ${branchY}H${outerX}V${join.y}H${targetX}" marker-end="url(#${diagramID}-return)"><title>Return to ${esc(branch.join)}</title></path>`);
+    }
+    reworkTop = branchY + branch.seq.down + 28;
+  }
+  const rejectionRoutes = p.nodes.filter(node => node.reject_to && nodePositions.has(node.id) && nodePositions.has(node.reject_to));
+  rejectionRoutes.forEach((node, index) => {
+    const source = nodePositions.get(node.id);
+    const target = nodePositions.get(node.reject_to);
+    const startX = source.x + source.halfWidth + 3;
+    const endX = target.x - target.halfWidth - 3;
+    const sourceSideX = Math.max(startX + 14, source.labelRight + 12);
+    const targetSideX = Math.min(endX - 14, target.labelLeft - 12);
+    const laneY = D.top + index * 24;
+    out.push(`<path class="reject-route" data-reject-from="${esc(node.id)}" data-reject-to="${esc(node.reject_to)}" d="M${startX} ${source.y}H${sourceSideX}V${laneY}H${targetSideX}V${target.y}H${endX}" marker-end="url(#${diagramID}-reject)"><title>On rejection: ${esc(node.id)} to ${esc(node.reject_to)}</title></path>`);
+    text((startX + endX) / 2, laneY - 5, 'REJECT', 'rejection-note', 'middle');
+  });
 
   // Notes and the numbered strip along the bottom.
   const stages = p.nodes.reduce((a, n) => a + (n.stages || []).length, 0);
@@ -813,7 +871,7 @@ function flowDiagram(p, execution = null) {
     `entry: ${p.entry}`,
     approvals.length ? `approval: ${approvals.join(', ')}` : 'no approval gates',
   ];
-  const base = Math.ceil(y + root.down + 34);
+  const base = Math.ceil(contentBottom + 34);
   notes.forEach((t, i) => text(D.pad, base + 12 + i * 13, t.toUpperCase(), 'note'));
   const sx = width - D.pad - stripW;
   numbered.forEach((n, i) => {
@@ -829,6 +887,10 @@ function flowDiagram(p, execution = null) {
   const code = (words.length === 1 && words[0].length <= 3 ? words[0] : words.map(w => w[0]).join('').slice(0, 3)).toUpperCase();
   const tx = D.pad + Math.max(160, textWidth(p.name.toUpperCase(), `300 26px ${DIAGRAM_FONT}`) + 20) / 2;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(p.name)} pipeline diagram">
+    <defs>
+      <marker id="${diagramID}-reject" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8Z" style="fill:#c62828" /></marker>
+      <marker id="${diagramID}-return" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8Z" style="fill:${INK}" /></marker>
+    </defs>
     <style>
       path { fill: none; }
       text { font: 600 11px ${DIAGRAM_FONT}; fill: ${INK}; }
@@ -840,6 +902,9 @@ function flowDiagram(p, execution = null) {
       .ref { fill: #666; }
       .note { font-size: 8.5px; font-weight: 400; letter-spacing: .3px; }
       .joint { stroke: ${INK}; stroke-width: 1.4; }
+      .reject-route { stroke: #c62828; stroke-width: 2; stroke-dasharray: 6 4; stroke-linejoin: round; }
+      .return-route { stroke: ${INK}; stroke-width: 2; stroke-linejoin: round; }
+      .rejection-note { font-size: 9px; fill: #c62828; }
       .run-lamp { stroke: #151515; stroke-width: .8; }
       .run-lamp.running { fill: #20c55a; stroke: #eaffee; filter: drop-shadow(0 0 3px #20c55a); }
       .run-lamp.completed { fill: #339d52; }

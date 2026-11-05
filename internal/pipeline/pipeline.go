@@ -63,7 +63,8 @@ type Node struct {
 	// branches) or to a single orchestrator. Empty means the chain
 	// terminates here (and, inside an orchestrator stage, hands back to the
 	// orchestrator).
-	Handoff []string `yaml:"handoff,omitempty"`
+	Handoff  []string `yaml:"handoff,omitempty"`
+	RejectTo string   `yaml:"reject-to,omitempty"`
 	// AdditionalInput lists outputs that this node also requires in its input.
 	AdditionalInput []string `yaml:"additional-input,omitempty"`
 	// Format requests rendered Markdown presentation for this node's output.
@@ -88,7 +89,8 @@ type Pipeline struct {
 	byID map[string]*Node
 	// joins maps a scope key (TopScope or StageScope) to the number of
 	// deliveries each non-orchestrator node receives within that scope.
-	joins map[string]map[string]int
+	joins  map[string]map[string]int
+	scopes map[string]map[string]bool
 }
 
 // TopScope is the scope key for nodes running outside any orchestrator stage.
@@ -112,6 +114,7 @@ func (p *Pipeline) JoinCount(scope, id string) int {
 // node in a scope runs exactly once, so each counted edge delivers once.
 func (p *Pipeline) computeJoins() {
 	p.joins = map[string]map[string]int{}
+	p.scopes = map[string]map[string]bool{}
 	count := func(scope string, roots []string, throughOrchs bool) {
 		counts := map[string]int{}
 		seen := map[string]bool{}
@@ -136,6 +139,25 @@ func (p *Pipeline) computeJoins() {
 			}
 		}
 		p.joins[scope] = counts
+		members := map[string]bool{}
+		queue = append([]string{}, roots...)
+		for len(queue) > 0 {
+			id := queue[0]
+			queue = queue[1:]
+			if members[id] {
+				continue
+			}
+			members[id] = true
+			node := p.byID[id]
+			if node.Type == TypeOrchestrator && !throughOrchs {
+				continue
+			}
+			queue = append(queue, node.Handoff...)
+			if node.RejectTo != "" {
+				queue = append(queue, node.RejectTo)
+			}
+		}
+		p.scopes[scope] = members
 	}
 	count(TopScope, []string{p.Entry}, true)
 	for i := range p.Nodes {
@@ -271,6 +293,10 @@ func (p *Pipeline) validate() error {
 	if err := p.checkDependencyCycle(); err != nil {
 		return fmt.Errorf("pipeline %q: %w", p.Name, err)
 	}
+	p.computeJoins()
+	if err := p.checkRejectionTargets(); err != nil {
+		return fmt.Errorf("pipeline %q: %w", p.Name, err)
+	}
 	if err := p.checkStageClosures(); err != nil {
 		return fmt.Errorf("pipeline %q: %w", p.Name, err)
 	}
@@ -280,7 +306,41 @@ func (p *Pipeline) validate() error {
 	if err := p.checkReachability(); err != nil {
 		return fmt.Errorf("pipeline %q: %w", p.Name, err)
 	}
-	p.computeJoins()
+	return nil
+}
+
+func (p *Pipeline) checkRejectionTargets() error {
+	for scope, members := range p.scopes {
+		for id := range members {
+			if p.joins[scope][id] > 0 {
+				continue
+			}
+			for _, normalCounts := range p.joins {
+				if normalCounts[id] > 0 {
+					return fmt.Errorf("rejection route to %q must stay in the same stage/scope", id)
+				}
+			}
+		}
+	}
+	for _, node := range p.Nodes {
+		if node.RejectTo == "" {
+			continue
+		}
+		seen := map[string]bool{}
+		queue := []string{node.RejectTo}
+		for len(queue) > 0 {
+			id := queue[0]
+			queue = queue[1:]
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			queue = append(queue, p.byID[id].Handoff...)
+		}
+		if !seen[node.ID] {
+			return fmt.Errorf("approval %q: reject-to %q must lead back to this approval via handoffs", node.ID, node.RejectTo)
+		}
+	}
 	return nil
 }
 
@@ -302,6 +362,9 @@ func (p *Pipeline) checkAdditionalInputStageOrder() error {
 				}
 				seen[id] = true
 				queue = append(queue, p.byID[id].Handoff...)
+				if p.byID[id].RejectTo != "" {
+					queue = append(queue, p.byID[id].RejectTo)
+				}
 			}
 			stageNodes[stageIndex] = seen
 		}
@@ -321,7 +384,7 @@ func (p *Pipeline) checkAdditionalInputStageOrder() error {
 }
 
 // checkReachability requires every node to be reachable from the entry via
-// handoff or stage edges. An unreachable node would never run, and an
+// handoff, stage, or rejection edges. An unreachable node would never run, and an
 // orchestrator expecting a handoff from it would wait forever.
 func (p *Pipeline) checkReachability() error {
 	seen := map[string]bool{}
@@ -335,6 +398,9 @@ func (p *Pipeline) checkReachability() error {
 		seen[id] = true
 		n := p.byID[id]
 		queue = append(queue, n.Handoff...)
+		if n.RejectTo != "" {
+			queue = append(queue, n.RejectTo)
+		}
 		for _, s := range n.Stages {
 			queue = append(queue, s.Agents...)
 		}
@@ -372,6 +438,9 @@ func (p *Pipeline) checkStageClosures() error {
 					return fmt.Errorf("orchestrator %q: stage %q leads to orchestrator %q via handoffs; chains inside a stage must hand back to their own orchestrator", orch.ID, s.ID, id)
 				}
 				queue = append(queue, n.Handoff...)
+				if n.RejectTo != "" {
+					queue = append(queue, n.RejectTo)
+				}
 			}
 		}
 	}
@@ -379,6 +448,18 @@ func (p *Pipeline) checkStageClosures() error {
 }
 
 func (p *Pipeline) validateNode(n *Node) error {
+	if n.RejectTo != "" {
+		if n.Type != TypeApproval {
+			return fmt.Errorf("agent %q: reject-to is only supported on approval nodes", n.ID)
+		}
+		target, ok := p.byID[n.RejectTo]
+		if !ok {
+			return fmt.Errorf("approval %q: reject-to references unknown agent %q", n.ID, n.RejectTo)
+		}
+		if target.ID == n.ID || target.Type == TypeOrchestrator {
+			return fmt.Errorf("approval %q: reject-to must reference another non-orchestrator node", n.ID)
+		}
+	}
 	if n.Type != TypeCode && (n.Language != "" || n.CodeSource != "" || n.TimeoutSeconds != 0 || n.Codes != nil) {
 		return fmt.Errorf("agent %q: language, code-source, timeout_seconds, and codes are only supported on code nodes", n.ID)
 	}

@@ -422,11 +422,18 @@ agents:
       No automation generation is permitted.
       No Playwright generation is permitted.
     handoff: [human_review]
-
+  - id: reformatter
+    type: standard
+    description: Reformats the consolidated test plan for consistency.
+    runtime: codex
+    prompt: |
+      Reformat the input test plan for consistent style and presentation.
+    handoff: [human_review]
   # SignalBox supports approve/reject, not a separate REQUEST_CHANGES outcome.
   # To request changes, reject with a comment and start a revised run.
   - id: human_review
     type: approval
+    reject-to: reformatter
     description: >-
       Review the coverage summary, gaps, risks, prioritized tests, and open
       questions. Approve or reject; to request changes, reject with a comment
