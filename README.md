@@ -158,6 +158,79 @@ The test project's `discovery` pipeline demonstrates conditional handoffs,
 payload templates, an `llm_gate` with bounded rework, and runtime retries. The
 `Full Pipeline QA` pipeline puts an `llm_gate` after each planner.
 
+### Context strategies
+
+By default a node receives only its handoff input (plus any
+`additional-input`). A `context` block appends selected **earlier outputs from
+the same execution** to the text sent to the runtime:
+
+```yaml
+- id: editor
+  type: llm_gate
+  runtime: codex
+  context:
+    strategy: all        # none | all | recent | own
+    max_chars: 12000     # optional budget; 0 or omitted means no limit
+- id: analyst
+  runtime: codex
+  context:
+    strategy: recent
+    window: 2            # recent: default 1; own: default 0 (every earlier output)
+```
+
+| Strategy | Context contains |
+|----------|------------------|
+| `none` (default) | Nothing. The input is exactly as before. |
+| `all` | Every eligible earlier output, oldest first. `window` is not accepted. |
+| `recent` | The latest `window` eligible outputs (default 1). |
+| `own` | This node's own earlier outputs in the execution, for example drafts that a gate rejected (latest `window` if set). |
+
+Exact rules:
+
+- **Eligible outputs** come from completed `standard`, `code`, `session`,
+  `orchestrator`, and `manual_edit` runs with non-empty output. Approval and
+  `llm_gate` runs are excluded, because they pass their input through
+  unchanged. Failed, running, and canceled runs are excluded.
+- Outputs are ordered by completion time. An output that already appears
+  verbatim in the node's input (its handoff payload, a joined input, or an
+  additional input) is **skipped**, so context never repeats what the node
+  already receives. `window` applies after skipping.
+- **`max_chars`** counts characters (Unicode code points) of the included
+  outputs, not the headers. The budget is spent newest-first: newer outputs
+  are kept whole, at most one older output is truncated (its beginning is
+  kept), and anything older is dropped.
+- The context is appended after the input in this format:
+
+  ```
+  <input>
+
+  --- context (recent): 2 of 4 earlier outputs ---
+
+  --- context from researcher (truncated to 1200 of 5000 characters) ---
+  <first 1200 characters>
+  [... 3800 characters truncated]
+
+  --- context from writer ---
+  <output>
+  ```
+
+  "2 of 4" means two of the four eligible outputs left after skipping. If
+  nothing is selected, nothing is appended.
+- Context is assembled once, when the run starts, and saved with the run
+  (strategy, the included entries with their character counts, and the
+  text). Manual retries and **Retry from here** reuse the saved context.
+  Context is never part of the run's saved input, so gates and approvals
+  pass their original payload downstream.
+- `context` is supported on `standard`, `code` (the context is appended to
+  stdin), `llm_gate`, and `session` nodes. On a session, it is added to every
+  turn's input. Session participants cannot set it; set it on the session.
+  `additional-input` is unchanged and works alongside context.
+
+SignalBox makes no token-savings claims for these strategies. The
+execution view shows how many characters each run's context added, so you
+can measure the effect on your own pipelines. The `context-strategies` demo
+pipeline uses all four strategies, `window`, and `max_chars`.
+
 ### Sessions and chunks
 
 A `session` node runs a conversation between **participants**: ordinary
@@ -441,6 +514,9 @@ prints the build version.
   with one ring per participant and list the participants below it.
   Executions with chunks show a **Chunks** table; while the execution is
   running you can add chunks, mark them done, or remove them.
+- Runs with a `context` strategy show a **context** section listing the
+  included earlier outputs, any truncation, and the exact appended text. The
+  Pipelines table and diagram tooltips show each node's strategy.
 
 Execution history is persisted in `.signalbox/executions.db`, so it survives
 restarts (in-flight runs are marked `interrupted`). Existing JSON records in

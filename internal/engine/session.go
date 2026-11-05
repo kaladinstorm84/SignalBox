@@ -123,7 +123,7 @@ func (eng *Engine) sessionTurn(le *liveExec, run *NodeRun, node *pipeline.Node, 
 	}
 	req := runtime.Request{
 		SystemPrompt: sessionSystemPrompt(node, participant, round, summary),
-		Input:        sessionTurnInput(run.Input, run.Session, le.exec.Chunks, node.ChunksEnabled()),
+		Input:        sessionTurnInput(runtimeInput(run), run.Session, le.exec.Chunks, node.ChunksEnabled()),
 	}
 	eng.persistLocked(le)
 	eng.mu.Unlock()

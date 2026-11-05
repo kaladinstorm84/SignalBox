@@ -178,6 +178,7 @@
   .chunk-table td, .chunk-table th { padding: 6px 8px; }
   .chunk-table .done td:nth-child(3) { text-decoration: line-through; color: var(--muted); }
   .chunk-add { display: flex; gap: 8px; margin-top: 10px; }
+  .context-entries { margin: 4px 0 6px; padding-left: 18px; font-size: 13px; }
   .chunk-add input { flex: 1; }
   pre.out {
     background: var(--bg3); border: 1px solid var(--border); border-radius: 5px; padding: 10px 12px;
@@ -586,6 +587,7 @@ function renderRun(x, r) {
         <span class="muted">${r.session ? 'Starts a new execution that resumes this session; completed turns and chunks are kept.' : 'Starts a new execution from this call using its saved input.'}</span>
       </div>` : ''}
     ${r.input ? `<details data-key="${esc(r.id)}:input"><summary>input</summary><pre class="out">${esc(r.input)}</pre></details>` : ''}
+    ${r.context ? renderContext(r) : ''}
     ${r.session ? renderSession(r) : ''}
     ${stages}
     ${r.output ? `<details data-key="${esc(r.id)}:output" ${!r.stages ? 'open' : ''}><summary>${r.format ? 'formatted output' : 'output'}</summary>${outputContent}</details>` : ''}
@@ -611,6 +613,28 @@ function renderRun(x, r) {
         </div>
       </div>` : ''}
   </div>`;
+}
+
+function contextLabel(c) {
+  if (!c || !c.strategy || c.strategy === 'none') return '';
+  const window = c.window ? `, window ${c.window}` : '';
+  return `context: ${c.strategy}${window}${c.max_chars ? `, ≤${c.max_chars} chars` : ''}`;
+}
+
+function renderContext(r) {
+  const c = r.context;
+  const entries = c.entries || [];
+  const summary = `context · ${esc(c.strategy)} · ${entries.length} of ${c.available} earlier output${c.available === 1 ? '' : 's'} · ${c.chars} chars`;
+  const rows = entries.map(e => `<li><b>${esc(e.node_id)}</b> <span class="muted">${e.truncated ? `${e.chars} of ${e.original_chars} chars (truncated)` : `${e.chars} chars`}</span></li>`).join('');
+  const notes = [
+    c.skipped ? `${c.skipped} already in input, skipped` : '',
+    c.max_chars ? `budget ${c.max_chars} chars` : '',
+    c.window ? `window ${c.window}` : '',
+  ].filter(Boolean).join(' · ');
+  return `<details class="context-box" data-key="${esc(r.id)}:context"><summary>${summary}</summary>
+    ${notes ? `<div class="muted" style="margin:4px 0">${esc(notes)}</div>` : ''}
+    ${rows ? `<ul class="context-entries">${rows}</ul><pre class="out">${esc(c.text || '')}</pre>` : '<div class="muted">No earlier outputs were selected.</div>'}
+  </details>`;
 }
 
 function renderSession(r) {
@@ -964,7 +988,8 @@ function flowDiagram(p, execution = null) {
     const sessionTip = n.type === 'session'
       ? ` · participants: ${(n.participants || []).join(', ')} · ${n.turn_order === 'moderator' ? `moderated by ${n.moderator}` : 'round robin'} · up to ${n.max_rounds} rounds · ${n.consensus && n.consensus.method === 'moderator_decides' ? `${n.summary_agent} decides` : `consensus: ${(n.consensus && n.consensus.require) || 'all'} vote`}${n.chunks && n.chunks.enabled ? ' · chunks' : ''}`
       : '';
-    const tip = n.type === 'ref' ? (it.missing ? `${n.id} (not defined)` : `continues at ${n.id}`) : `${it.num}. ${n.id} · ${n.type}${n.description ? ' — ' + n.description : ''}${sessionTip}${status ? ' · ' + status : ''}`;
+    const contextTip = contextLabel(n.context) ? ' · ' + contextLabel(n.context) : '';
+    const tip = n.type === 'ref' ? (it.missing ? `${n.id} (not defined)` : `continues at ${n.id}`) : `${it.num}. ${n.id} · ${n.type}${n.description ? ' — ' + n.description : ''}${sessionTip}${contextTip}${status ? ' · ' + status : ''}`;
     out.push(`<g class="node" data-node-id="${esc(n.id)}"><title>${esc(tip)}</title>`);
     if (n.type === 'orchestrator') {
       out.push(`<rect x="${x}" y="${y - 11}" width="${it.w}" height="22" fill="#c8732a" stroke="#7a3f12" stroke-width="1" />`);
@@ -1422,7 +1447,7 @@ async function showPipelines() {
             <td><b>${esc(n.id)}</b>${n.id === p.entry ? ' <span class="muted">(entry)</span>' : ''}
             ${n.description ? `<div class="muted">${esc(n.description)}</div>` : ''}</td>
             <td><span class="type ${esc(n.type)}">${esc(n.type)}</span></td>
-            <td class="mono">${n.type === 'code' ? `${esc(n.language)}<div class="muted">${esc(n.code_source)}</div>` : n.type === 'session' ? `<div class="muted">${(n.participants || []).map(esc).join(', ')}</div><div class="muted">${n.max_rounds} rounds · ${esc(n.consensus ? n.consensus.method : '')}${n.chunks && n.chunks.enabled ? ' · chunks' : ''}</div>` : esc(n.runtime || '—')}</td>
+            <td class="mono">${n.type === 'code' ? `${esc(n.language)}<div class="muted">${esc(n.code_source)}</div>` : n.type === 'session' ? `<div class="muted">${(n.participants || []).map(esc).join(', ')}</div><div class="muted">${n.max_rounds} rounds · ${esc(n.consensus ? n.consensus.method : '')}${n.chunks && n.chunks.enabled ? ' · chunks' : ''}</div>` : esc(n.runtime || '—')}${contextLabel(n.context) ? `<div class="muted">${esc(contextLabel(n.context))}</div>` : ''}</td>
             <td>${n.stages ? n.stages.map(s => `<div class="muted">stage <b>${esc(s.id)}</b> → ${s.agents.map(esc).join(', ')}</div>`).join('') : ''}
                 ${(n.handoff || []).map(route => typeof route === 'string' ? esc(route) : `${esc(route.to)}${route.condition ? ` (${esc(route.condition)})` : ''}`).join(', ') || (n.stages ? '' : '<span class="muted">terminates</span>')}</td>
           </tr>`).join('')}</tbody></table>

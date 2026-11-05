@@ -903,6 +903,7 @@ agents:
     type: session
     participants: [a, b]
     max_rounds: 1
+    context: {strategy: recent, max_chars: 500}
     chunks:
       enabled: true
     handoff:
@@ -949,12 +950,13 @@ agents:
 	listed := do(http.MethodGet, "/api/pipelines", "")
 	var views []struct {
 		Nodes []struct {
-			ID           string                `json:"id"`
-			Participants []string              `json:"participants"`
-			MaxRounds    int                   `json:"max_rounds"`
-			TurnOrder    string                `json:"turn_order"`
-			Consensus    *pipeline.Consensus   `json:"consensus"`
-			Chunks       *pipeline.ChunkConfig `json:"chunks"`
+			ID           string                  `json:"id"`
+			Participants []string                `json:"participants"`
+			MaxRounds    int                     `json:"max_rounds"`
+			TurnOrder    string                  `json:"turn_order"`
+			Consensus    *pipeline.Consensus     `json:"consensus"`
+			Chunks       *pipeline.ChunkConfig   `json:"chunks"`
+			Context      *pipeline.ContextConfig `json:"context"`
 		} `json:"nodes"`
 	}
 	if err := json.Unmarshal(listed.Body.Bytes(), &views); err != nil {
@@ -962,7 +964,8 @@ agents:
 	}
 	panel := views[0].Nodes[1]
 	if panel.ID != "panel" || len(panel.Participants) != 2 || panel.MaxRounds != 1 || panel.TurnOrder != "round_robin" ||
-		panel.Consensus == nil || panel.Consensus.Keyword != "VOTE: AGREE" || panel.Chunks == nil || !panel.Chunks.Enabled {
+		panel.Consensus == nil || panel.Consensus.Keyword != "VOTE: AGREE" || panel.Chunks == nil || !panel.Chunks.Enabled ||
+		panel.Context == nil || panel.Context.Strategy != "recent" || panel.Context.Window != 1 || panel.Context.MaxChars != 500 {
 		t.Fatalf("session view = %s", listed.Body.String())
 	}
 
