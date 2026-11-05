@@ -328,6 +328,79 @@ agents:
 	}
 }
 
+func TestManualEditEndpointResumesNode(t *testing.T) {
+	p, err := pipeline.Parse([]byte(`
+name: demo
+entry: edit
+agents:
+  - id: edit
+    type: manual_edit
+    handoff: [next]
+  - id: next
+    runtime: mock
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := runtime.NewRegistry(map[string]config.RuntimeConfig{"mock": {Type: "mock"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.Register(&runtime.Mock{RuntimeName: "mock", Handler: func(_ context.Context, req runtime.Request) (string, error) {
+		return req.Input, nil
+	}})
+	eng, err := engine.New(map[string]*pipeline.Pipeline{"demo": p}, registry, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := New(eng, "test", func() (map[string]*pipeline.Pipeline, error) {
+		return map[string]*pipeline.Pipeline{"demo": p}, nil
+	}, nil, nil).Handler()
+	id, err := eng.Start("demo", "original")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var waiting []*engine.NodeRun
+	for deadline := time.Now().Add(5 * time.Second); len(waiting) == 0 && time.Now().Before(deadline); {
+		waiting = eng.WaitingManualEdits(id)
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(waiting) != 1 {
+		t.Fatal("run did not await manual edit")
+	}
+	post := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/executions/"+id+"/manual-edit", strings.NewReader(body)))
+		return response
+	}
+	if response := post(`{}`); response.Code != http.StatusBadRequest {
+		t.Fatalf("missing run_id status = %d", response.Code)
+	}
+	if response := post(`{"run_id":"nope","output":"revised"}`); response.Code != http.StatusConflict {
+		t.Fatalf("unknown run status = %d", response.Code)
+	}
+	if response := post(`{"run_id":"` + waiting[0].ID + `","output":"revised","edited_by":"tester"}`); response.Code != http.StatusOK {
+		t.Fatalf("manual edit status = %d: %s", response.Code, response.Body.String())
+	}
+	done, err := eng.Wait(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("execution did not finish after manual edit")
+	}
+	exec, err := eng.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exec.Status != engine.StatusCompleted || len(exec.FinalOutputs) != 1 || exec.FinalOutputs[0].Output != "revised" {
+		t.Fatalf("execution = %+v", exec)
+	}
+}
+
 func TestStartExecutionReloadsPipelines(t *testing.T) {
 	oldPipeline, err := pipeline.Parse([]byte(`
 name: demo

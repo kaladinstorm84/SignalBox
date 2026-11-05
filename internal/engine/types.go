@@ -10,9 +10,10 @@ import (
 type Status string
 
 const (
-	StatusPending         Status = "pending"
-	StatusRunning         Status = "running"
-	StatusWaitingApproval Status = "waiting_approval"
+	StatusPending           Status = "pending"
+	StatusRunning           Status = "running"
+	StatusWaitingApproval   Status = "waiting_approval"
+	StatusWaitingManualEdit Status = "waiting_manual_edit"
 	// StatusWaitingInputs applies to orchestrators still collecting fan-in
 	// handoffs before their stages begin.
 	StatusWaitingInputs Status = "waiting_inputs"
@@ -85,8 +86,9 @@ type NodeRun struct {
 	// Stages is populated for orchestrator runs.
 	Stages []*StageRun `json:"stages,omitempty"`
 
-	// Approval metadata.
+	// Human review metadata.
 	ApprovedBy string `json:"approved_by,omitempty"`
+	EditedBy   string `json:"edited_by,omitempty"`
 	Comment    string `json:"comment,omitempty"`
 
 	StartedAt  *time.Time `json:"started_at,omitempty"`
@@ -116,12 +118,13 @@ type Execution struct {
 
 // Summary is the list-view projection of an execution.
 type Summary struct {
-	ID         string     `json:"id"`
-	Pipeline   string     `json:"pipeline"`
-	Input      string     `json:"input"`
-	Status     Status     `json:"status"`
-	Waiting    int        `json:"waiting_approvals"`
-	Retrying   int        `json:"waiting_retries"`
-	CreatedAt  time.Time  `json:"created_at"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	ID          string     `json:"id"`
+	Pipeline    string     `json:"pipeline"`
+	Input       string     `json:"input"`
+	Status      Status     `json:"status"`
+	Waiting     int        `json:"waiting_approvals"`
+	ManualEdits int        `json:"waiting_manual_edits"`
+	Retrying    int        `json:"waiting_retries"`
+	CreatedAt   time.Time  `json:"created_at"`
+	FinishedAt  *time.Time `json:"finished_at,omitempty"`
 }

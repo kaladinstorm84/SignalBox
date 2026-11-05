@@ -77,6 +77,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/executions", s.handleStartExecution)
 	mux.HandleFunc("GET /api/executions/{id}", s.handleGetExecution)
 	mux.HandleFunc("POST /api/executions/{id}/approve", s.handleApprove)
+	mux.HandleFunc("POST /api/executions/{id}/manual-edit", s.handleManualEdit)
 	mux.HandleFunc("POST /api/executions/{id}/retry", s.handleRetry)
 	mux.HandleFunc("POST /api/executions/{id}/restart", s.handleRestartInterruptedRun)
 	mux.HandleFunc("POST /api/executions/{id}/cancel", s.handleCancel)
@@ -273,6 +274,32 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 		verdict = "rejected"
 	}
 	log.Printf("execution %s: run %s %s by %s", execID, req.RunID, verdict, req.ApprovedBy)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleManualEdit(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RunID    string `json:"run_id"`
+		Output   string `json:"output"`
+		EditedBy string `json:"edited_by"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid JSON body: %w", err))
+		return
+	}
+	if req.RunID == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("run_id is required"))
+		return
+	}
+	if req.EditedBy == "" {
+		req.EditedBy = "web-ui"
+	}
+	execID := r.PathValue("id")
+	if err := s.eng.SubmitManualEdit(execID, req.RunID, req.Output, req.EditedBy); err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	log.Printf("execution %s: run %s manually edited by %s", execID, req.RunID, req.EditedBy)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
