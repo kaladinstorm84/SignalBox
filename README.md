@@ -48,6 +48,30 @@ Built in Go; ships as a single static binary with the web UI embedded.
 - **Formatted output:** set `format: true` on an agent to render its Markdown
   output in the execution detail view. The raw Markdown remains available in a
   collapsible section; raw HTML in Markdown is not rendered.
+- **Rejection target:** an approval can set `reject-to` to rerun an earlier
+  node, or start a rejection-only branch:
+
+  ```yaml
+  - id: human_review
+    type: approval
+    reject-to: reformatter
+  - id: reformatter
+    runtime: codex
+    prompt: Reformat the reviewed content using the reviewer feedback.
+    handoff: [human_review]
+  ```
+
+  A rejection-only branch does not run before the first review. On each
+  rejection, it receives the latest reviewed payload plus the rejection notes
+  and follows its handoffs back to the approval. These branches can fan out
+  and join without waiting for earlier normal-flow handoffs. An earlier node
+  in the normal flow instead reuses its saved input plus the rejection notes.
+
+  Targets must be non-orchestrator nodes in the same stage/scope, with handoffs
+  leading back to the approval. Normal handoff cycles remain invalid; only
+  rejection routes may loop backward. Diagrams show rejection-only work on a
+  separate track with dashed red rejection arrows. Without `reject-to`, the
+  previous automatic checkpoint behavior remains unchanged.
 
 ### Code Steps
 

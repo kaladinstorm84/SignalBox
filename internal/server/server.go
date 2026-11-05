@@ -149,6 +149,7 @@ type nodeView struct {
 	TimeoutSeconds int            `json:"timeout_seconds,omitempty"`
 	Codes          map[string]int `json:"codes,omitempty"`
 	Handoff        []string       `json:"handoff,omitempty"`
+	RejectTo       string         `json:"reject_to,omitempty"`
 	Stages         []stageView    `json:"stages,omitempty"`
 }
 
@@ -179,6 +180,7 @@ func (s *Server) handlePipelines(w http.ResponseWriter, r *http.Request) {
 				TimeoutSeconds: n.TimeoutSeconds,
 				Codes:          n.Codes,
 				Handoff:        n.Handoff,
+				RejectTo:       n.RejectTo,
 			}
 			for _, st := range n.Stages {
 				nv.Stages = append(nv.Stages, stageView{ID: st.ID, Agents: st.Agents})
