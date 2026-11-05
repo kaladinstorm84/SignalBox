@@ -65,7 +65,7 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	pipelines, errs := pipeline.LoadDir(cfg.PipelinesPath())
+	pipelines, errs := pipeline.LoadDir(cfg.PipelinesPath(), pipeline.Options{Root: cfg.Root, AllowExternal: cfg.AllowExternalImports})
 	if len(errs) > 0 {
 		writeErr(w, http.StatusBadRequest, errs[0])
 		return
@@ -74,27 +74,9 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("no pipelines found in %s", cfg.PipelinesPath()))
 		return
 	}
-	for _, p := range pipelines {
-		for _, node := range p.Nodes {
-			if node.Type == pipeline.TypeCode {
-				if _, err := runtime.NewCode(&node, cfg.Root); err != nil {
-					writeErr(w, http.StatusBadRequest, err)
-					return
-				}
-			}
-			if node.Runtime != "" {
-				if _, ok := cfg.Runtimes[node.Runtime]; !ok {
-					writeErr(w, http.StatusBadRequest, fmt.Errorf("agent %q references undefined runtime %q", node.ID, node.Runtime))
-					return
-				}
-			}
-		}
-	}
-	for _, watcher := range cfg.Watchers {
-		if _, ok := pipelines[watcher.Pipeline]; !ok {
-			writeErr(w, http.StatusBadRequest, fmt.Errorf("watcher %q references unknown pipeline %q", watcher.Name, watcher.Pipeline))
-			return
-		}
+	if err := runtime.ValidateProject(cfg, pipelines); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
 	}
 
 	s.settingsMu.Lock()

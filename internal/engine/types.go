@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/kaladinstorm84/SignalBox/internal/pipeline"
+	"github.com/kaladinstorm84/SignalBox/internal/runtime"
 )
 
 // Status is the lifecycle state of an execution, node run, or stage.
@@ -104,6 +105,12 @@ type NodeRun struct {
 	// retries and restarts.
 	Context *ContextSelection `json:"context,omitempty"`
 
+	// Model is the agent's model override, after parameter substitution.
+	Model string `json:"model,omitempty"`
+	// MCP records the MCP servers and tools granted to the run (never
+	// environment values).
+	MCP []runtime.MCPGrant `json:"mcp,omitempty"`
+
 	StartedAt  *time.Time `json:"started_at,omitempty"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
@@ -195,13 +202,16 @@ type FinalOutput struct {
 
 // Execution is a single run of a pipeline.
 type Execution struct {
-	ID           string        `json:"id"`
-	Pipeline     string        `json:"pipeline"`
-	Input        string        `json:"input"`
-	Status       Status        `json:"status"`
-	Error        string        `json:"error,omitempty"`
-	Runs         []*NodeRun    `json:"runs"`
-	FinalOutputs []FinalOutput `json:"final_outputs,omitempty"`
+	ID       string `json:"id"`
+	Pipeline string `json:"pipeline"`
+	Input    string `json:"input"`
+	// Params are the resolved pipeline parameters, reused by reruns and
+	// restarts. They are stored in plain text, so they must not hold secrets.
+	Params       map[string]string `json:"params,omitempty"`
+	Status       Status            `json:"status"`
+	Error        string            `json:"error,omitempty"`
+	Runs         []*NodeRun        `json:"runs"`
+	FinalOutputs []FinalOutput     `json:"final_outputs,omitempty"`
 	// Chunks are execution-scoped work items managed by sessions and people.
 	Chunks     []Chunk    `json:"chunks,omitempty"`
 	NextChunk  int        `json:"next_chunk,omitempty"`

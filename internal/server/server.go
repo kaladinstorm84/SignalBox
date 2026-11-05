@@ -143,10 +143,17 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 
 // pipelineView is the API projection of a pipeline definition.
 type pipelineView struct {
-	Name        string     `json:"name"`
-	Description string     `json:"description,omitempty"`
-	Entry       string     `json:"entry"`
-	Nodes       []nodeView `json:"nodes"`
+	Name        string      `json:"name"`
+	Description string      `json:"description,omitempty"`
+	Entry       string      `json:"entry"`
+	Params      []paramView `json:"params,omitempty"`
+	Sources     []string    `json:"sources,omitempty"`
+	Nodes       []nodeView  `json:"nodes"`
+}
+
+type paramView struct {
+	Name string `json:"name"`
+	pipeline.Param
 }
 
 type nodeView struct {
@@ -171,6 +178,8 @@ type nodeView struct {
 	SummaryAgent   string                  `json:"summary_agent,omitempty"`
 	Chunks         *pipeline.ChunkConfig   `json:"chunks,omitempty"`
 	Context        *pipeline.ContextConfig `json:"context,omitempty"`
+	Model          string                  `json:"model,omitempty"`
+	MCP            []pipeline.MCPUse       `json:"mcp,omitempty"`
 }
 
 type handoffView struct {
@@ -193,7 +202,10 @@ func (s *Server) handlePipelines(w http.ResponseWriter, r *http.Request) {
 	out := []pipelineView{}
 	for _, name := range pipeline.Names(ps) {
 		p := ps[name]
-		pv := pipelineView{Name: p.Name, Description: p.Description, Entry: p.Entry}
+		pv := pipelineView{Name: p.Name, Description: p.Description, Entry: p.Entry, Sources: p.Sources}
+		for _, param := range p.ParamNames() {
+			pv.Params = append(pv.Params, paramView{Name: param, Param: *p.Params[param]})
+		}
 		for _, n := range p.Nodes {
 			nv := nodeView{
 				ID:             n.ID,
@@ -215,6 +227,8 @@ func (s *Server) handlePipelines(w http.ResponseWriter, r *http.Request) {
 				SummaryAgent:   n.SummaryAgent,
 				Chunks:         n.Chunks,
 				Context:        n.Context,
+				Model:          n.Model,
+				MCP:            n.MCP,
 			}
 			for _, route := range n.Handoff {
 				nv.Handoff = append(nv.Handoff, handoffView{To: route.To, Condition: route.Condition})
@@ -274,8 +288,9 @@ func (s *Server) handleStartExecution(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Pipeline string `json:"pipeline"`
-		Input    string `json:"input"`
+		Pipeline string            `json:"pipeline"`
+		Input    string            `json:"input"`
+		Params   map[string]string `json:"params"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid JSON body: %w", err))
@@ -285,7 +300,7 @@ func (s *Server) handleStartExecution(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("pipeline is required"))
 		return
 	}
-	id, err := s.eng.Start(req.Pipeline, req.Input)
+	id, err := s.eng.StartWithParams(req.Pipeline, req.Input, req.Params)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -437,7 +452,7 @@ func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("reloading pipelines: %w", err))
 		return
 	}
-	id, err := s.eng.Start(src.Pipeline, src.Input)
+	id, err := s.eng.StartWithParams(src.Pipeline, src.Input, src.Params)
 	if err != nil {
 		writeErr(w, http.StatusConflict, err)
 		return

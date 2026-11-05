@@ -151,12 +151,24 @@ func (eng *Engine) SetPipelines(pipelines map[string]*pipeline.Pipeline) {
 }
 
 // Start begins a new execution of the named pipeline and returns its ID.
+// Declared parameters take their defaults.
 func (eng *Engine) Start(pipelineName, input string) (string, error) {
+	return eng.StartWithParams(pipelineName, input, nil)
+}
+
+// StartWithParams begins a new execution with parameter values. Values are
+// validated against the pipeline's declarations before anything runs.
+func (eng *Engine) StartWithParams(pipelineName, input string, params map[string]string) (string, error) {
 	eng.mu.Lock()
-	p, ok := eng.pipelines[pipelineName]
+	template, ok := eng.pipelines[pipelineName]
 	if !ok {
 		eng.mu.Unlock()
 		return "", fmt.Errorf("unknown pipeline %q", pipelineName)
+	}
+	p, resolved, err := template.WithParams(params)
+	if err != nil {
+		eng.mu.Unlock()
+		return "", err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	le := &liveExec{
@@ -164,6 +176,7 @@ func (eng *Engine) Start(pipelineName, input string) (string, error) {
 			ID:        newExecID(),
 			Pipeline:  pipelineName,
 			Input:     input,
+			Params:    resolved,
 			Status:    StatusRunning,
 			CreatedAt: time.Now().UTC(),
 		},
@@ -288,9 +301,13 @@ func (eng *Engine) RestartFromInterrupted(execID, runID string) (string, error) 
 	if !restartableType(interrupted.Type) {
 		return "", fmt.Errorf("run %q is not a retryable agent call", runID)
 	}
-	p, ok := eng.pipelines[source.Pipeline]
+	template, ok := eng.pipelines[source.Pipeline]
 	if !ok {
 		return "", fmt.Errorf("pipeline %q is no longer available", source.Pipeline)
+	}
+	p, params, err := template.WithParams(source.Params)
+	if err != nil {
+		return "", fmt.Errorf("pipeline %q no longer accepts this execution's params: %w", source.Pipeline, err)
 	}
 	node := p.Node(interrupted.NodeID)
 	if node == nil {
@@ -306,6 +323,7 @@ func (eng *Engine) RestartFromInterrupted(execID, runID string) (string, error) 
 			ID:        newExecID(),
 			Pipeline:  source.Pipeline,
 			Input:     source.Input,
+			Params:    params,
 			Status:    StatusRunning,
 			CreatedAt: time.Now().UTC(),
 			Runs:      []*NodeRun{},
@@ -726,8 +744,13 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 	if run.Context == nil && node.ContextStrategy() != pipeline.ContextNone {
 		run.Context = selectContext(node.Context, le.exec.Runs, run)
 	}
+	grantErr := eng.recordIntegrationsLocked(le, run, node)
 	eng.persistLocked(le)
 	eng.mu.Unlock()
+	if grantErr != nil {
+		eng.finishRunErr(le, run, node, octx, grantErr)
+		return
+	}
 
 	if node.Type == pipeline.TypeLLMGate {
 		eng.runLLMGate(le, run, node, octx)
@@ -755,7 +778,7 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 			return
 		}
 		invoke = func() (string, error) {
-			return rt.Invoke(le.ctx, runtime.Request{SystemPrompt: node.Prompt, Input: runtimeInput(run)})
+			return rt.Invoke(le.ctx, agentRequest(run, node.Prompt, runtimeInput(run)))
 		}
 	}
 	out, err := eng.invokeRetrying(le, run, node.Retry, invoke)
@@ -832,7 +855,7 @@ func (eng *Engine) runLLMGate(le *liveExec, run *NodeRun, node *pipeline.Node, o
 	verdictText, err := eng.invokeRetrying(le, run, node.Retry, func() (string, error) {
 		prompt := node.Prompt + "\n\nReturn only one JSON object with exactly two string fields, decision and feedback. " +
 			`decision must be "approve" or "reject". Example: {"decision":"approve","feedback":"..."}.`
-		return rt.Invoke(le.ctx, runtime.Request{SystemPrompt: prompt, Input: runtimeInput(run)})
+		return rt.Invoke(le.ctx, agentRequest(run, prompt, runtimeInput(run)))
 	})
 	if err != nil {
 		eng.finishRunErr(le, run, node, octx, err)
@@ -1448,7 +1471,7 @@ func (eng *Engine) invokeOrchPrompt(le *liveExec, run *NodeRun, node *pipeline.N
 		return "", err
 	}
 	return eng.invokeRetrying(le, run, node.Retry, func() (string, error) {
-		return rt.Invoke(le.ctx, runtime.Request{SystemPrompt: prompt, Input: input})
+		return rt.Invoke(le.ctx, runtime.Request{SystemPrompt: prompt, Input: input, Model: node.Model})
 	})
 }
 

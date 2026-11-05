@@ -112,6 +112,12 @@
 
   .muted { color: var(--muted); }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+  .params-form { margin-top: 14px; padding: 10px 12px 12px; border: 1px dashed rgba(201,163,74,.35); border-radius: 4px; }
+  .params-title { font: 600 11.5px var(--sign); text-transform: uppercase; color: var(--accent2); letter-spacing: .06em; }
+  .params-form label { margin-top: 10px; }
+  .req { color: var(--accent2); }
+  .params-table td { padding: 4px 10px 4px 0; }
+  .integrations { margin-top: 6px; font-size: 12.5px; }
 
   /* Buttons: brass fittings; approve/retry pull "off", reject/cancel to danger. */
   button {
@@ -503,7 +509,7 @@ async function showExecution(id) {
     const pipelineDefinition = (await pipelinePromise).find(p => p.name === x.pipeline);
 
     const runs = (x.runs || []).map(r => renderRun(x, r)).join('');
-    const diagram = pipelineDefinition ? flowDiagram(pipelineDefinition, x) : '';
+    const diagram = pipelineDefinition ? flowDiagram(applyParams(pipelineDefinition, x.params), x) : '';
     const finalList = x.final_outputs || [];
     const finals = finalList.map((f, i) => `
       <div class="runcard"><div class="runhead"><span class="nodeid">${esc(f.node_id)}</span><span class="type final">final output</span>
@@ -524,7 +530,8 @@ async function showExecution(id) {
       </div>
       ${diagram ? `<div class="execution-diagram">${diagram}</div>` : ''}
       ${x.error ? `<div class="err-banner">${esc(x.error)}</div>` : ''}
-      <div class="card"><label style="margin-top:0">Input</label><pre class="out">${esc(x.input)}</pre></div>
+      <div class="card"><label style="margin-top:0">Input</label><pre class="out">${esc(x.input)}</pre>
+      ${x.params && Object.keys(x.params).length ? `<label>Parameters</label><table class="params-table"><tbody>${Object.keys(x.params).sort().map(k => `<tr><td class="mono">${esc(k)}</td><td>${x.params[k] === '' ? '<span class="muted">(empty)</span>' : esc(x.params[k])}</td></tr>`).join('')}</tbody></table>` : ''}</div>
       <h2 style="font-size:16px;margin:20px 0 10px">Agent runs</h2>
       ${runs || '<div class="muted">No runs yet.</div>'}
       ${renderChunks(x, !!pipelineDefinition && pipelineDefinition.nodes.some(n => n.chunks && n.chunks.enabled))}
@@ -575,6 +582,7 @@ function renderRun(x, r) {
       ${r.retries ? `<span class="muted">${r.retries} ${r.retries === 1 ? 'retry' : 'retries'}</span>` : ''}
       <span class="muted" style="margin-left:auto">${fmtTime(r.started_at)}</span>
     </div>
+    ${integrationsLabel(r.model, r.mcp, r.node_id) ? `<div class="muted integrations">${integrationsLabel(r.model, r.mcp, r.node_id)}</div>` : ''}
     ${r.error ? `<div class="err-banner" style="margin:8px 0 0">${esc(r.error)}</div>` : ''}
     ${retryable ? `
       <div class="approve-actions" style="margin-top:8px">
@@ -613,6 +621,41 @@ function renderRun(x, r) {
         </div>
       </div>` : ''}
   </div>`;
+}
+
+// applyParams shows a pipeline's descriptions with an execution's values.
+function applyParams(p, params) {
+  if (!params) return p;
+  const sub = s => s && s.replace(/\$\{\{\s*params\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g, (m, k) => k in params ? params[k] : m);
+  return {...p, description: sub(p.description), nodes: p.nodes.map(n => ({...n, description: sub(n.description), model: sub(n.model)}))};
+}
+
+// integrationsLabel describes a model override and MCP servers/tools. Session
+// runs record grants per participant, so grants for another agent are prefixed.
+function integrationsLabel(model, mcp, nodeId) {
+  const parts = [];
+  if (model) parts.push(`model <span class="mono">${esc(model)}</span>`);
+  (mcp || []).forEach(m => {
+    const tools = m.tools && m.tools.length ? m.tools.map(esc).join(', ') : 'all allowed tools';
+    parts.push(`MCP ${m.agent && nodeId && m.agent !== nodeId ? esc(m.agent) + ' → ' : ''}<span class="mono">${esc(m.server)}</span>: ${tools}`);
+  });
+  return parts.join(' · ');
+}
+
+function paramField(p) {
+  const id = 'param-' + p.name;
+  const def = p.default === undefined ? '' : p.default;
+  const label = `<label for="${esc(id)}">${esc(p.name)}${p.required ? ' <span class="req">*</span>' : ''} <span class="muted">${esc(p.type)}${p.default !== undefined ? ` · default ${p.default === '' ? '(empty)' : esc(p.default)}` : ''}</span></label>
+    ${p.description ? `<div class="muted">${esc(p.description)}</div>` : ''}`;
+  const choices = p.values && p.values.length ? p.values : p.type === 'boolean' ? ['true', 'false'] : null;
+  let control;
+  if (choices) {
+    control = `<select id="${esc(id)}" data-param="${esc(p.name)}">${p.required ? '<option value="">Choose…</option>' : ''}${choices.map(v => `<option value="${esc(v)}" ${v === def ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>`;
+  } else {
+    const numeric = p.type === 'integer' || p.type === 'number';
+    control = `<input id="${esc(id)}" type="${numeric ? 'number' : 'text'}" ${p.type === 'integer' ? 'step="1"' : p.type === 'number' ? 'step="any"' : ''} data-param="${esc(p.name)}" value="${esc(def)}" autocomplete="off">`;
+  }
+  return label + control;
 }
 
 function contextLabel(c) {
@@ -1397,13 +1440,17 @@ async function showNewRun() {
     <div class="card">
       <label>Pipeline</label><select id="pl">${options}</select>
       <div id="pl-info" class="muted" style="margin-top:8px"></div>
+      <div id="pl-params"></div>
       <label>Input</label><textarea id="input" placeholder="The task, question, or payload handed to the entry agent..."></textarea>
       <div style="margin-top:16px"><button id="start">Start execution</button></div>
     </div>`;
   const info = document.getElementById('pl-info');
+  const paramsBox = document.getElementById('pl-params');
   const sel = document.getElementById('pl');
   const describe = () => {
     const p = pipelines.find(q => q.name === sel.value);
+    paramsBox.innerHTML = p && p.params && p.params.length
+      ? `<div class="params-form"><div class="params-title">Parameters</div>${p.params.map(paramField).join('')}</div>` : '';
     if (!p) { info.textContent = ''; return; }
     info.innerHTML = `${p.description ? esc(p.description) + '<br>' : ''}
       <div style="margin-top:6px">${flowDiagram(p)}</div>`;
@@ -1412,10 +1459,14 @@ async function showNewRun() {
   document.getElementById('start').addEventListener('click', async () => {
     const input = document.getElementById('input').value.trim();
     if (!input) { toast('Please provide an input.'); return; }
+    const params = {};
+    for (const el of paramsBox.querySelectorAll('[data-param]')) {
+      if (el.value !== '') params[el.dataset.param] = el.value;
+    }
     try {
       const res = await api('/executions', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({pipeline: sel.value, input}),
+        body: JSON.stringify({pipeline: sel.value, input, params}),
       });
       location.hash = '#/exec/' + encodeURIComponent(res.id);
     } catch (e) { toast('Error: ' + e.message); }
@@ -1437,7 +1488,9 @@ async function showPipelines() {
     ${pipelines.map(p => `
       <div class="card">
         <div class="topline"><div><b style="font-size:16px">${esc(p.name)}</b>
-        ${p.description ? `<div class="muted">${esc(p.description)}</div>` : ''}</div>
+        ${p.description ? `<div class="muted">${esc(p.description)}</div>` : ''}
+        ${p.params && p.params.length ? `<div class="muted">params: ${p.params.map(q => `<span class="mono">${esc(q.name)}</span>${q.required ? '*' : ''}`).join(', ')}</div>` : ''}
+        ${p.sources && p.sources.length ? `<div class="muted">imports: ${p.sources.map(src => `<span class="mono">${esc(src)}</span>`).join(', ')}</div>` : ''}</div>
         <div class="approve-actions" style="margin-top:0">${filenameByName.has(p.name) ? `<button class="secondary" data-edit-file="${esc(filenameByName.get(p.name))}">Edit</button>` : ''}
         <button class="secondary" onclick="location.hash='#/new'">Run</button></div></div>
         <div style="margin-top:10px">${flowDiagram(p)}</div>
@@ -1447,7 +1500,7 @@ async function showPipelines() {
             <td><b>${esc(n.id)}</b>${n.id === p.entry ? ' <span class="muted">(entry)</span>' : ''}
             ${n.description ? `<div class="muted">${esc(n.description)}</div>` : ''}</td>
             <td><span class="type ${esc(n.type)}">${esc(n.type)}</span></td>
-            <td class="mono">${n.type === 'code' ? `${esc(n.language)}<div class="muted">${esc(n.code_source)}</div>` : n.type === 'session' ? `<div class="muted">${(n.participants || []).map(esc).join(', ')}</div><div class="muted">${n.max_rounds} rounds · ${esc(n.consensus ? n.consensus.method : '')}${n.chunks && n.chunks.enabled ? ' · chunks' : ''}</div>` : esc(n.runtime || '—')}${contextLabel(n.context) ? `<div class="muted">${esc(contextLabel(n.context))}</div>` : ''}</td>
+            <td class="mono">${n.type === 'code' ? `${esc(n.language)}<div class="muted">${esc(n.code_source)}</div>` : n.type === 'session' ? `<div class="muted">${(n.participants || []).map(esc).join(', ')}</div><div class="muted">${n.max_rounds} rounds · ${esc(n.consensus ? n.consensus.method : '')}${n.chunks && n.chunks.enabled ? ' · chunks' : ''}</div>` : esc(n.runtime || '—')}${contextLabel(n.context) ? `<div class="muted">${esc(contextLabel(n.context))}</div>` : ''}${integrationsLabel(n.model, n.mcp) ? `<div class="muted">${integrationsLabel(n.model, n.mcp)}</div>` : ''}</td>
             <td>${n.stages ? n.stages.map(s => `<div class="muted">stage <b>${esc(s.id)}</b> → ${s.agents.map(esc).join(', ')}</div>`).join('') : ''}
                 ${(n.handoff || []).map(route => typeof route === 'string' ? esc(route) : `${esc(route.to)}${route.condition ? ` (${esc(route.condition)})` : ''}`).join(', ') || (n.stages ? '' : '<span class="muted">terminates</span>')}</td>
           </tr>`).join('')}</tbody></table>

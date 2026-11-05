@@ -124,6 +124,8 @@ func (eng *Engine) sessionTurn(le *liveExec, run *NodeRun, node *pipeline.Node, 
 	req := runtime.Request{
 		SystemPrompt: sessionSystemPrompt(node, participant, round, summary),
 		Input:        sessionTurnInput(runtimeInput(run), run.Session, le.exec.Chunks, node.ChunksEnabled()),
+		Model:        participant.Model,
+		MCP:          agentGrants(run.MCP, participantID),
 	}
 	eng.persistLocked(le)
 	eng.mu.Unlock()

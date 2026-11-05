@@ -139,6 +139,11 @@ type Node struct {
 	// is an optional final-synthesis prompt applied after the last stage.
 	Prompt string `yaml:"prompt,omitempty"`
 
+	// Model overrides the runtime's default model for this agent's calls.
+	Model string `yaml:"model,omitempty"`
+	// MCP opts this agent in to MCP servers registered in signalbox.yaml.
+	MCP []MCPUse `yaml:"mcp,omitempty"`
+
 	// Handoff lists node IDs that receive this node's output. A standard
 	// agent may hand off to several standard/approval nodes (parallel
 	// branches) or to a single orchestrator. Empty means the chain
@@ -209,6 +214,11 @@ type Pipeline struct {
 	// Entry is the node that receives the initial input.
 	Entry string `yaml:"entry"`
 	Nodes []Node `yaml:"agents"`
+	// Params declares typed values supplied when an execution starts and
+	// referenced as ${{ params.name }}.
+	Params map[string]*Param `yaml:"params,omitempty"`
+	// Sources lists files merged in through imports, in load order.
+	Sources []string `yaml:"-"`
 
 	byID map[string]*Node
 	// joins maps a scope key (TopScope or StageScope) to the number of
@@ -321,29 +331,28 @@ func (p *Pipeline) InboundCount(id string) int {
 	return n
 }
 
-// Load reads and validates a single pipeline YAML file.
-func Load(path string) (*Pipeline, error) {
+// Load reads and validates a single pipeline YAML file. Imports resolve
+// relative to the file and, by default, must stay inside its directory.
+func Load(path string, opts ...Options) (*Pipeline, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return Parse(data)
+	var o Options
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	return ParseFile(data, path, o)
 }
 
-// Parse validates pipeline YAML from memory.
+// Parse validates pipeline YAML from memory. Imports are not available
+// without a file location; use ParseFile.
 func Parse(data []byte) (*Pipeline, error) {
-	var p Pipeline
-	if err := yaml.Unmarshal(data, &p); err != nil {
-		return nil, fmt.Errorf("invalid YAML: %w", err)
-	}
-	if err := p.validate(); err != nil {
-		return nil, err
-	}
-	return &p, nil
+	return parse(data, "", Options{})
 }
 
 // LoadDir loads every *.yaml / *.yml file in dir, keyed by pipeline name.
-func LoadDir(dir string) (map[string]*Pipeline, []error) {
+func LoadDir(dir string, opts ...Options) (map[string]*Pipeline, []error) {
 	out := map[string]*Pipeline{}
 	var errs []error
 	entries, err := os.ReadDir(dir)
@@ -358,7 +367,7 @@ func LoadDir(dir string) (map[string]*Pipeline, []error) {
 		if ext != ".yaml" && ext != ".yml" {
 			continue
 		}
-		p, err := Load(filepath.Join(dir, e.Name()))
+		p, err := Load(filepath.Join(dir, e.Name()), opts...)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", e.Name(), err))
 			continue
@@ -388,6 +397,9 @@ func (p *Pipeline) validate() error {
 	}
 	if len(p.Nodes) == 0 {
 		return fmt.Errorf("pipeline %q has no agents", p.Name)
+	}
+	if err := p.validateParams(); err != nil {
+		return fmt.Errorf("pipeline %q: %w", p.Name, err)
 	}
 	p.byID = map[string]*Node{}
 	for i := range p.Nodes {
@@ -644,7 +656,7 @@ func (p *Pipeline) validateNode(n *Node) error {
 			return fmt.Errorf("agent %q repeats handoff to %q for condition %q", n.ID, route.To, route.Condition)
 		}
 		seenRoutes[key] = true
-		if err := validateHandoffTemplate(route.Input); err != nil {
+		if err := validateHandoffTemplate(stripParamRefs(route.Input)); err != nil {
 			return fmt.Errorf("agent %q handoff to %q: %w", n.ID, route.To, err)
 		}
 	}
@@ -682,6 +694,9 @@ func (p *Pipeline) validateNode(n *Node) error {
 		return fmt.Errorf("llm_gate %q: max_reworks must be between 0 and 10", n.ID)
 	}
 	if err := validateContext(n); err != nil {
+		return err
+	}
+	if err := validateIntegrations(n); err != nil {
 		return err
 	}
 

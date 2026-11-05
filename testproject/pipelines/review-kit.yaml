@@ -1,0 +1,47 @@
+name: review-kit
+description: >-
+  Demonstrates imports, templates, and extends. Reviewer gates are built from a
+  shared template library (../shared/review-kit.yaml); each local reviewer
+  extends the shared gate_reviewer template and only adds its focus. The
+  changelog_writer agent is imported as-is. Maps (retry, context) deep-merge
+  and the child wins on scalars and lists.
+imports:
+  - from: ../shared/review-kit.yaml
+    templates: [gate_reviewer]
+    agents: [changelog_writer]
+
+templates:
+  # A local template layered on the imported one.
+  - id: strict_reviewer
+    extends: gate_reviewer
+    retry: { count: 2 }   # deep-merges: keeps the shared 2s backoff
+
+entry: implementer
+
+agents:
+  - id: implementer
+    runtime: codex
+    description: Proposes a change for the request.
+    prompt: |
+      Propose a small, complete code change for the request. Show the diff and
+      explain the reasoning briefly.
+    handoff: [security_review]
+
+  - id: security_review
+    extends: strict_reviewer
+    description: Security gate (extends strict_reviewer → gate_reviewer → reviewer_base).
+    prompt: |
+      Review the change for security problems only: injection, secrets,
+      unsafe input handling, and missing authorisation checks. Approve if none
+      are blocking.
+    reject-to: implementer
+    handoff: [style_review]
+
+  - id: style_review
+    extends: gate_reviewer
+    description: Readability gate (extends the shared gate_reviewer directly).
+    prompt: |
+      Review the change for readability and consistency with the surrounding
+      code. Approve unless something would confuse the next maintainer.
+    reject-to: implementer
+    handoff: [changelog_writer]

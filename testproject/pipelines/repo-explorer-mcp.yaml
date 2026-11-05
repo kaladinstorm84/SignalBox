@@ -1,0 +1,41 @@
+name: repo-explorer-mcp
+description: >-
+  Demonstrates MCP pass-through and per-agent models. The explorer is granted
+  the read-only tools of the "files" MCP server registered in signalbox.yaml;
+  the reviewer gets a narrower subset; the summariser gets no MCP at all.
+  SignalBox passes only the granted servers and tools to the agent CLI (codex
+  here) and records the grants on each run, never their secrets.
+entry: explorer
+
+agents:
+  - id: explorer
+    runtime: codex
+    description: Maps the project using the files MCP server (all allowed tools).
+    mcp:
+      - files
+    prompt: |
+      Use the files MCP tools to explore the project directory. Produce a
+      short map of its layout and the purpose of each top-level folder,
+      focusing on what the run input asks about.
+    handoff: [reviewer]
+
+  - id: reviewer
+    type: llm_gate
+    runtime: codex
+    description: Spot-checks the map, limited to reading individual files.
+    mcp:
+      - server: files
+        tools: [read_text_file, get_file_info]
+    prompt: |
+      Spot-check two claims from the project map by reading the files they
+      mention. Approve if both are accurate; reject with corrections if not.
+    reject-to: explorer
+    max_reworks: 1
+    handoff: [summariser]
+
+  - id: summariser
+    runtime: codex
+    description: Writes the final summary from the checked map (no MCP tools).
+    prompt: |
+      Turn the checked project map into a five-bullet orientation guide for a
+      new contributor.

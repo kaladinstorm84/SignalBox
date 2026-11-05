@@ -45,3 +45,29 @@ runtimes:
   #   command: my-agent
   #   args: ["--quiet"]
   #   prompt_mode: stdin            # "arg" (default) or "stdin"
+  #   model_arg: --model            # lets agents set model: (codex/claude/copilot use --model)
+
+# Imports may only reference files inside the project directory unless this is
+# set to true.
+# allow_external_imports: false
+
+# MCP pass-through (opt-in). Agents list the servers they need under `mcp:`
+# in a pipeline; only servers registered here, and only the tools listed under
+# `tools`, can be granted. SignalBox hands the granted servers to the agent CLI
+# (codex, claude, or copilot) for that one call; the tools run as the user
+# running SignalBox. Secrets are never written here: env_from maps the
+# server's environment variable to one read from SignalBox's environment.
+# Demo: pipelines/repo-explorer-mcp.yaml (needs Node.js for npx).
+mcp:
+  enabled: true
+  servers:
+    files:
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "--read-only", "."]
+      tools: [list_directory, directory_tree, read_text_file, get_file_info, search_files]
+    # github:
+    #   command: github-mcp-server
+    #   args: ["stdio"]
+    #   env_from:
+    #     GITHUB_PERSONAL_ACCESS_TOKEN: GITHUB_TOKEN   # server var: SignalBox var
+    #   tools: [search_issues, get_issue]
