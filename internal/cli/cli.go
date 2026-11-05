@@ -406,7 +406,7 @@ func buildEngine(cfg *config.Config, pipelines map[string]*pipeline.Pipeline, pe
 	}
 	var store *engine.Store
 	if persist {
-		store, err = engine.NewStore(cfg.StatePath())
+		store, err = engine.NewStore(cfg.StatePath(), *cfg.ExecutionRetention)
 		if err != nil {
 			return nil, err
 		}

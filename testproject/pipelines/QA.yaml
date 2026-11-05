@@ -45,8 +45,10 @@ agents:
       
     handoff: [qa_coordinator]
 
-  # Each pair of planners hands off to its category judge, which waits for
-  # both planners and then hands back to this coordinator. The stage ends
+  # Each planner hands off to its own llm_gate, which sends weak output back
+  # to that planner (up to two reworks) and forwards approved output to the
+  # category judge. The judge waits for both gated planners and then hands
+  # back to this coordinator. The stage ends
   # once all five judges have reported.
   - id: qa_coordinator
     type: orchestrator
@@ -87,6 +89,26 @@ agents:
       
       Each test should be listed separately with a clear description and context.
 
+    handoff: [functional_planner_a_gate]
+
+  - id: functional_planner_a_gate
+    type: llm_gate
+    description: Functional Flow Gate
+    runtime: codex
+    reject-to: functional_planner_a
+    max_reworks: 2
+    prompt: |
+      You are the quality gate for the functional_planner_a test scenarios.
+
+      Approve only if:
+      - Happy paths, core workflows, multi-step user journeys and end-to-end processes are covered
+      - Every test has a Test ID, Scenario, Preconditions, Expected Outcome and Priority
+      - Each test is listed separately with a clear description and context
+      - Tests stay within the feature scope described in the scenarios; nothing is invented or unrelated
+      - There are no duplicate or near-duplicate tests
+
+      Otherwise reject, and in feedback list the specific missing coverage,
+      unclear, duplicate or out-of-scope tests the planner must fix.
     handoff: [functional_judge]
 
   - id: functional_planner_b
@@ -103,6 +125,25 @@ agents:
 
       Each test should be listed separately with a clear description and context.
 
+    handoff: [functional_planner_b_gate]
+
+  - id: functional_planner_b_gate
+    type: llm_gate
+    description: Business Rules Gate
+    runtime: codex
+    reject-to: functional_planner_b
+    max_reworks: 2
+    prompt: |
+      You are the quality gate for the functional_planner_b test scenarios.
+
+      Approve only if:
+      - Business rules, validation logic, state transitions and workflow branching are covered
+      - Each test is listed separately with a clear description and context
+      - Tests stay within the feature scope described in the scenarios; nothing is invented or unrelated
+      - There are no duplicate or near-duplicate tests
+
+      Otherwise reject, and in feedback list the specific missing coverage,
+      unclear, duplicate or out-of-scope tests the planner must fix.
     handoff: [functional_judge]
 
   - id: functional_judge
@@ -144,6 +185,25 @@ agents:
       - Mandatory field failures
 
       Each test should be listed separately with a clear description and context.
+    handoff: [negative_planner_a_gate]
+
+  - id: negative_planner_a_gate
+    type: llm_gate
+    description: Negative Input Gate
+    runtime: codex
+    reject-to: negative_planner_a
+    max_reworks: 2
+    prompt: |
+      You are the quality gate for the negative_planner_a test scenarios.
+
+      Approve only if:
+      - Invalid inputs, empty values, boundary values, invalid formats and mandatory field failures are covered
+      - Each test is listed separately with a clear description and context
+      - Tests stay within the feature scope described in the scenarios; nothing is invented or unrelated
+      - There are no duplicate or near-duplicate tests
+
+      Otherwise reject, and in feedback list the specific missing coverage,
+      unclear, duplicate or out-of-scope tests the planner must fix.
     handoff: [negative_judge]
 
   - id: negative_planner_b
@@ -161,6 +221,25 @@ agents:
 
       Each test should be listed separately with a clear description and context.
 
+    handoff: [negative_planner_b_gate]
+
+  - id: negative_planner_b_gate
+    type: llm_gate
+    description: Failure Mode Gate
+    runtime: codex
+    reject-to: negative_planner_b
+    max_reworks: 2
+    prompt: |
+      You are the quality gate for the negative_planner_b test scenarios.
+
+      Approve only if:
+      - Service failures, timeouts, dependency errors, browser issues and interrupted workflows are covered
+      - Each test is listed separately with a clear description and context
+      - Tests stay within the feature scope described in the scenarios; nothing is invented or unrelated
+      - There are no duplicate or near-duplicate tests
+
+      Otherwise reject, and in feedback list the specific missing coverage,
+      unclear, duplicate or out-of-scope tests the planner must fix.
     handoff: [negative_judge]
 
   - id: negative_judge
@@ -198,6 +277,25 @@ agents:
 
       Each test should be listed separately with a clear description and context.
 
+    handoff: [security_planner_a_gate]
+
+  - id: security_planner_a_gate
+    type: llm_gate
+    description: OWASP Gate
+    runtime: codex
+    reject-to: security_planner_a
+    max_reworks: 2
+    prompt: |
+      You are the quality gate for the security_planner_a test scenarios.
+
+      Approve only if:
+      - Relevant OWASP Top 10 categories, authentication, authorization, session management and input validation are covered
+      - Each test is listed separately with a clear description and context
+      - Tests stay within the feature scope described in the scenarios; nothing is invented or unrelated
+      - There are no duplicate or near-duplicate tests
+
+      Otherwise reject, and in feedback list the specific missing coverage,
+      unclear, duplicate or out-of-scope tests the planner must fix.
     handoff: [Verify]
   - id: Verify
     type: code
@@ -225,6 +323,25 @@ agents:
 
       Ensure that all tests relate to aspects of the original requirements.
 
+    handoff: [security_planner_b_gate]
+
+  - id: security_planner_b_gate
+    type: llm_gate
+    description: Abuse Case Gate
+    runtime: codex
+    reject-to: security_planner_b
+    max_reworks: 2
+    prompt: |
+      You are the quality gate for the security_planner_b test scenarios.
+
+      Approve only if:
+      - Privilege escalation, data leakage, enumeration, abuse scenarios and injection opportunities are covered
+      - Each test is listed separately with a clear description and context
+      - Tests stay within the feature scope described in the scenarios; nothing is invented or unrelated
+      - There are no duplicate or near-duplicate tests
+
+      Otherwise reject, and in feedback list the specific missing coverage,
+      unclear, duplicate or out-of-scope tests the planner must fix.
     handoff: [security_judge]
 
   - id: security_judge
@@ -264,6 +381,26 @@ agents:
       Each test should be listed separately with a clear description and context.
 
       If there are no API aspects to test, return "No API tests applicable."
+    handoff: [api_planner_a_gate]
+
+  - id: api_planner_a_gate
+    type: llm_gate
+    description: API Contract Gate
+    runtime: codex
+    reject-to: api_planner_a
+    max_reworks: 2
+    prompt: |
+      You are the quality gate for the api_planner_a test scenarios.
+
+      Approve only if:
+      - Contracts, request and response schemas, status codes and validation rules are covered
+      - "No API tests applicable." is acceptable only when the requirements genuinely have no API aspects
+      - Each test is listed separately with a clear description and context
+      - Tests stay within the feature scope described in the scenarios; nothing is invented or unrelated
+      - There are no duplicate or near-duplicate tests
+
+      Otherwise reject, and in feedback list the specific missing coverage,
+      unclear, duplicate or out-of-scope tests the planner must fix.
     handoff: [api_judge]
 
   - id: api_planner_b
@@ -284,6 +421,26 @@ agents:
       If there are no API aspects to test, return "No API integration tests applicable."
 
       
+    handoff: [api_planner_b_gate]
+
+  - id: api_planner_b_gate
+    type: llm_gate
+    description: API Integration Gate
+    runtime: codex
+    reject-to: api_planner_b
+    max_reworks: 2
+    prompt: |
+      You are the quality gate for the api_planner_b test scenarios.
+
+      Approve only if:
+      - Service integration, event flows, transactions, consumer/provider behaviour and error propagation are covered
+      - "No API integration tests applicable." is acceptable only when the requirements genuinely have no API aspects
+      - Each test is listed separately with a clear description and context
+      - Tests stay within the feature scope described in the scenarios; nothing is invented or unrelated
+      - There are no duplicate or near-duplicate tests
+
+      Otherwise reject, and in feedback list the specific missing coverage,
+      unclear, duplicate or out-of-scope tests the planner must fix.
     handoff: [api_judge]
 
   - id: api_judge
@@ -318,6 +475,25 @@ agents:
       - CRUD
       - User journeys
       - Test tours
+    handoff: [exploratory_planner_a_gate]
+
+  - id: exploratory_planner_a_gate
+    type: llm_gate
+    description: Risk Exploration Gate
+    runtime: codex
+    reject-to: exploratory_planner_a
+    max_reworks: 2
+    prompt: |
+      You are the quality gate for the exploratory_planner_a test scenarios.
+
+      Approve only if:
+      - Tests apply risk-based testing, SFDPOT, CRUD, user journeys and test tours where relevant
+      - Each test is listed separately with a clear description and context
+      - Tests stay within the feature scope described in the scenarios; nothing is invented or unrelated
+      - There are no duplicate or near-duplicate tests
+
+      Otherwise reject, and in feedback list the specific missing coverage,
+      unclear, duplicate or out-of-scope tests the planner must fix.
     handoff: [exploratory_judge]
 
   - id: exploratory_planner_b
@@ -334,6 +510,25 @@ agents:
       - Complex workflows
       - Human misuse
       - Edge workflows
+    handoff: [exploratory_planner_b_gate]
+
+  - id: exploratory_planner_b_gate
+    type: llm_gate
+    description: Unknown Unknowns Gate
+    runtime: codex
+    reject-to: exploratory_planner_b
+    max_reworks: 2
+    prompt: |
+      You are the quality gate for the exploratory_planner_b test scenarios.
+
+      Approve only if:
+      - Tests target unexpected behaviour, historical defect patterns, complex workflows, human misuse and edge workflows
+      - Each test is listed separately with a clear description and context
+      - Tests stay within the feature scope described in the scenarios; nothing is invented or unrelated
+      - There are no duplicate or near-duplicate tests
+
+      Otherwise reject, and in feedback list the specific missing coverage,
+      unclear, duplicate or out-of-scope tests the planner must fix.
     handoff: [exploratory_judge]
 
   - id: exploratory_judge

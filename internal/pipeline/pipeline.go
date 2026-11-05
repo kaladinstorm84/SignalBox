@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -27,11 +28,51 @@ const (
 	// TypeApproval is a human gate. Execution pauses until a person approves
 	// or rejects via the web UI (or the terminal in `signalbox run`).
 	TypeApproval NodeType = "approval"
+	// TypeLLMGate evaluates its input with a runtime and records an automated
+	// approve/reject decision.
+	TypeLLMGate NodeType = "llm_gate"
 	// TypeManualEdit pauses for a person to edit the incoming payload before
 	// handing it off.
 	TypeManualEdit NodeType = "manual_edit"
 	TypeCode       NodeType = "code"
 )
+
+// HandoffRule is a conditional route. A YAML scalar remains a shorthand for
+// an unconditional handoff, preserving existing pipeline files.
+type HandoffRule struct {
+	To        string `yaml:"to" json:"to"`
+	Condition string `yaml:"condition,omitempty" json:"condition,omitempty"`
+	Input     string `yaml:"input,omitempty" json:"input,omitempty"`
+}
+
+func (h *HandoffRule) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		h.To = node.Value
+		return nil
+	}
+	type plain HandoffRule
+	var rule plain
+	if err := node.Decode(&rule); err != nil {
+		return err
+	}
+	*h = HandoffRule(rule)
+	return nil
+}
+
+// RetryPolicy controls automatic retries for runtime errors. Count is the
+// number of retries after the initial call; Backoff is a Go duration string.
+type RetryPolicy struct {
+	Count   int    `yaml:"count" json:"count"`
+	Backoff string `yaml:"backoff,omitempty" json:"backoff,omitempty"`
+}
+
+// BackoffDuration parses the configured fixed delay between automatic retries.
+func (r RetryPolicy) BackoffDuration() (time.Duration, error) {
+	if r.Backoff == "" {
+		return 0, nil
+	}
+	return time.ParseDuration(r.Backoff)
+}
 
 // Stage is one phase of an orchestrator. The orchestrator dispatches its
 // current context to every agent listed in the stage (in parallel), waits for
@@ -67,8 +108,11 @@ type Node struct {
 	// branches) or to a single orchestrator. Empty means the chain
 	// terminates here (and, inside an orchestrator stage, hands back to the
 	// orchestrator).
-	Handoff  []string `yaml:"handoff,omitempty"`
-	RejectTo string   `yaml:"reject-to,omitempty"`
+	Handoff  []HandoffRule `yaml:"handoff,omitempty"`
+	RejectTo string        `yaml:"reject-to,omitempty"`
+	Retry    *RetryPolicy  `yaml:"retry,omitempty"`
+	// MaxReworks bounds LLM-gate rejection loops. It is only valid on gates.
+	MaxReworks int `yaml:"max_reworks,omitempty" json:"max_reworks,omitempty"`
 	// AdditionalInput lists outputs that this node also requires in its input.
 	AdditionalInput []string `yaml:"additional-input,omitempty"`
 	// Format requests rendered Markdown presentation for this node's output.
@@ -80,6 +124,15 @@ type Node struct {
 
 	// Stages is only valid for orchestrators.
 	Stages []Stage `yaml:"stages,omitempty"`
+}
+
+// HandoffTargets returns every statically configured route target.
+func (n *Node) HandoffTargets() []string {
+	targets := make([]string, len(n.Handoff))
+	for i, route := range n.Handoff {
+		targets[i] = route.To
+	}
+	return targets
 }
 
 // Pipeline is one YAML file in the pipelines directory.
@@ -113,6 +166,15 @@ func (p *Pipeline) JoinCount(scope, id string) int {
 	return p.joins[scope][id]
 }
 
+// JoinCounts returns a mutable copy of expected deliveries for a scope.
+func (p *Pipeline) JoinCounts(scope string) map[string]int {
+	counts := make(map[string]int, len(p.joins[scope]))
+	for id, count := range p.joins[scope] {
+		counts[id] = count
+	}
+	return counts
+}
+
 // computeJoins counts, per scope, the handoff edges into each node from
 // nodes that run in that scope (plus the scope's own dispatches). Every
 // node in a scope runs exactly once, so each counted edge delivers once.
@@ -137,7 +199,7 @@ func (p *Pipeline) computeJoins() {
 			if n.Type == TypeOrchestrator && !throughOrchs {
 				continue
 			}
-			for _, t := range n.Handoff {
+			for _, t := range n.HandoffTargets() {
 				counts[t]++
 				queue = append(queue, t)
 			}
@@ -156,7 +218,7 @@ func (p *Pipeline) computeJoins() {
 			if node.Type == TypeOrchestrator && !throughOrchs {
 				continue
 			}
-			queue = append(queue, node.Handoff...)
+			queue = append(queue, node.HandoffTargets()...)
 			if node.RejectTo != "" {
 				queue = append(queue, node.RejectTo)
 			}
@@ -183,7 +245,7 @@ func (p *Pipeline) Node(id string) *Node {
 func (p *Pipeline) InboundCount(id string) int {
 	n := 0
 	for i := range p.Nodes {
-		for _, t := range p.Nodes[i].Handoff {
+		for _, t := range p.Nodes[i].HandoffTargets() {
 			if t == id {
 				n++
 			}
@@ -273,9 +335,9 @@ func (p *Pipeline) validate() error {
 			n.Type = TypeStandard
 		}
 		switch n.Type {
-		case TypeStandard, TypeOrchestrator, TypeApproval, TypeManualEdit, TypeCode:
+		case TypeStandard, TypeOrchestrator, TypeApproval, TypeLLMGate, TypeManualEdit, TypeCode:
 		default:
-			return fmt.Errorf("pipeline %q: agent %q has unknown type %q (want standard, orchestrator, approval, manual_edit, or code)", p.Name, n.ID, n.Type)
+			return fmt.Errorf("pipeline %q: agent %q has unknown type %q (want standard, orchestrator, approval, llm_gate, manual_edit, or code)", p.Name, n.ID, n.Type)
 		}
 		p.byID[n.ID] = n
 	}
@@ -339,10 +401,10 @@ func (p *Pipeline) checkRejectionTargets() error {
 				continue
 			}
 			seen[id] = true
-			queue = append(queue, p.byID[id].Handoff...)
+			queue = append(queue, p.byID[id].HandoffTargets()...)
 		}
 		if !seen[node.ID] {
-			return fmt.Errorf("approval %q: reject-to %q must lead back to this approval via handoffs", node.ID, node.RejectTo)
+			return fmt.Errorf("gate %q: reject-to %q must lead back to this gate via handoffs", node.ID, node.RejectTo)
 		}
 	}
 	return nil
@@ -365,7 +427,7 @@ func (p *Pipeline) checkAdditionalInputStageOrder() error {
 					continue
 				}
 				seen[id] = true
-				queue = append(queue, p.byID[id].Handoff...)
+				queue = append(queue, p.byID[id].HandoffTargets()...)
 				if p.byID[id].RejectTo != "" {
 					queue = append(queue, p.byID[id].RejectTo)
 				}
@@ -401,7 +463,7 @@ func (p *Pipeline) checkReachability() error {
 		}
 		seen[id] = true
 		n := p.byID[id]
-		queue = append(queue, n.Handoff...)
+		queue = append(queue, n.HandoffTargets()...)
 		if n.RejectTo != "" {
 			queue = append(queue, n.RejectTo)
 		}
@@ -441,7 +503,7 @@ func (p *Pipeline) checkStageClosures() error {
 				if n.Type == TypeOrchestrator {
 					return fmt.Errorf("orchestrator %q: stage %q leads to orchestrator %q via handoffs; chains inside a stage must hand back to their own orchestrator", orch.ID, s.ID, id)
 				}
-				queue = append(queue, n.Handoff...)
+				queue = append(queue, n.HandoffTargets()...)
 				if n.RejectTo != "" {
 					queue = append(queue, n.RejectTo)
 				}
@@ -453,15 +515,15 @@ func (p *Pipeline) checkStageClosures() error {
 
 func (p *Pipeline) validateNode(n *Node) error {
 	if n.RejectTo != "" {
-		if n.Type != TypeApproval {
-			return fmt.Errorf("agent %q: reject-to is only supported on approval nodes", n.ID)
+		if n.Type != TypeApproval && n.Type != TypeLLMGate {
+			return fmt.Errorf("agent %q: reject-to is only supported on approval nodes and llm_gate nodes", n.ID)
 		}
 		target, ok := p.byID[n.RejectTo]
 		if !ok {
-			return fmt.Errorf("approval %q: reject-to references unknown agent %q", n.ID, n.RejectTo)
+			return fmt.Errorf("gate %q: reject-to references unknown agent %q", n.ID, n.RejectTo)
 		}
 		if target.ID == n.ID || target.Type == TypeOrchestrator {
-			return fmt.Errorf("approval %q: reject-to must reference another non-orchestrator node", n.ID)
+			return fmt.Errorf("gate %q: reject-to must reference another non-orchestrator node", n.ID)
 		}
 	}
 	if n.Type != TypeCode && (n.Language != "" || n.CodeSource != "" || n.TimeoutSeconds != 0 || n.Codes != nil) {
@@ -481,12 +543,34 @@ func (p *Pipeline) validateNode(n *Node) error {
 		seenAdditional[id] = true
 	}
 
-	for _, t := range n.Handoff {
-		if _, ok := p.byID[t]; !ok {
-			return fmt.Errorf("agent %q hands off to unknown agent %q", n.ID, t)
+	seenRoutes := map[string]bool{}
+	for i := range n.Handoff {
+		route := &n.Handoff[i]
+		switch route.Condition {
+		case "", "always":
+		case "on_approve", "on_reject":
+			if n.Type != TypeApproval && n.Type != TypeLLMGate {
+				return fmt.Errorf("agent %q: handoff condition %q is only supported on approval and llm_gate nodes", n.ID, route.Condition)
+			}
+		default:
+			return fmt.Errorf("agent %q: unknown handoff condition %q (want always, on_approve, or on_reject)", n.ID, route.Condition)
 		}
-		if t == n.ID {
+		if route.To == "" {
+			return fmt.Errorf("agent %q has a handoff with no target", n.ID)
+		}
+		if _, ok := p.byID[route.To]; !ok {
+			return fmt.Errorf("agent %q hands off to unknown agent %q", n.ID, route.To)
+		}
+		if route.To == n.ID {
 			return fmt.Errorf("agent %q hands off to itself", n.ID)
+		}
+		key := route.Condition + "\x00" + route.To
+		if seenRoutes[key] {
+			return fmt.Errorf("agent %q repeats handoff to %q for condition %q", n.ID, route.To, route.Condition)
+		}
+		seenRoutes[key] = true
+		if err := validateHandoffTemplate(route.Input); err != nil {
+			return fmt.Errorf("agent %q handoff to %q: %w", n.ID, route.To, err)
 		}
 	}
 
@@ -494,13 +578,33 @@ func (p *Pipeline) validateNode(n *Node) error {
 	// orchestrator target must be the only one: its fan-in join semantics
 	// assume the whole output goes to it.
 	orchTargets := 0
-	for _, t := range n.Handoff {
-		if p.byID[t].Type == TypeOrchestrator {
+	for _, route := range n.Handoff {
+		if p.byID[route.To].Type == TypeOrchestrator {
 			orchTargets++
 		}
 	}
 	if orchTargets > 0 && len(n.Handoff) > 1 {
 		return fmt.Errorf("agent %q hands off to an orchestrator alongside other targets; an orchestrator handoff must be the sole target", n.ID)
+	}
+	if n.Retry != nil {
+		switch n.Type {
+		case TypeStandard, TypeCode, TypeLLMGate, TypeOrchestrator:
+		default:
+			return fmt.Errorf("agent %q: retry is only supported on callable nodes", n.ID)
+		}
+		if n.Retry.Count < 0 || n.Retry.Count > 10 {
+			return fmt.Errorf("agent %q: retry.count must be between 0 and 10", n.ID)
+		}
+		backoff, err := n.Retry.BackoffDuration()
+		if err != nil || backoff < 0 || backoff > 5*time.Minute {
+			return fmt.Errorf("agent %q: retry.backoff must be a duration between 0 and 5m", n.ID)
+		}
+	}
+	if n.Type != TypeLLMGate && n.MaxReworks != 0 {
+		return fmt.Errorf("agent %q: max_reworks is only supported on llm_gate nodes", n.ID)
+	}
+	if n.MaxReworks < 0 || n.MaxReworks > 10 {
+		return fmt.Errorf("llm_gate %q: max_reworks must be between 0 and 10", n.ID)
 	}
 
 	switch n.Type {
@@ -546,6 +650,22 @@ func (p *Pipeline) validateNode(n *Node) error {
 		if len(n.Stages) > 0 {
 			return fmt.Errorf("approval %q may not define stages", n.ID)
 		}
+	case TypeLLMGate:
+		if n.Runtime == "" {
+			return fmt.Errorf("llm_gate %q is missing a runtime", n.ID)
+		}
+		if strings.TrimSpace(n.Prompt) == "" {
+			return fmt.Errorf("llm_gate %q is missing a prompt", n.ID)
+		}
+		if len(n.Stages) > 0 {
+			return fmt.Errorf("llm_gate %q may not define stages", n.ID)
+		}
+		if n.MaxReworks > 0 && n.RejectTo == "" {
+			return fmt.Errorf("llm_gate %q: max_reworks requires reject-to", n.ID)
+		}
+		if n.RejectTo != "" && n.MaxReworks == 0 {
+			return fmt.Errorf("llm_gate %q: reject-to requires a positive max_reworks limit", n.ID)
+		}
 	case TypeManualEdit:
 		if n.Runtime != "" || n.Prompt != "" || len(n.Stages) > 0 {
 			return fmt.Errorf("manual_edit %q may not define runtime, prompt, or stages", n.ID)
@@ -590,6 +710,32 @@ func (p *Pipeline) validateNode(n *Node) error {
 	return nil
 }
 
+func validateHandoffTemplate(template string) error {
+	for remaining := template; ; {
+		start := strings.Index(remaining, "{{")
+		if start < 0 {
+			if strings.Contains(remaining, "}}") {
+				return fmt.Errorf("malformed input template")
+			}
+			return nil
+		}
+		if strings.Contains(remaining[:start], "}}") {
+			return fmt.Errorf("malformed input template")
+		}
+		end := strings.Index(remaining[start+2:], "}}")
+		if end < 0 {
+			return fmt.Errorf("malformed input template")
+		}
+		name := strings.TrimSpace(remaining[start+2 : start+2+end])
+		switch name {
+		case "input", "output", "comment":
+		default:
+			return fmt.Errorf("unknown input template value %q (want input, output, or comment)", name)
+		}
+		remaining = remaining[start+2+end+2:]
+	}
+}
+
 // checkDependencyCycle rejects cycles over handoff, stage, and additional
 // input dependencies, since execution would never terminate.
 func (p *Pipeline) checkDependencyCycle() error {
@@ -610,7 +756,7 @@ func (p *Pipeline) checkDependencyCycle() error {
 		color[id] = grey
 		trail = append(trail, id)
 		n := p.byID[id]
-		next := append([]string{}, n.Handoff...)
+		next := append([]string{}, n.HandoffTargets()...)
 		for _, s := range n.Stages {
 			next = append(next, s.Agents...)
 		}

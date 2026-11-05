@@ -58,6 +58,7 @@ type Config struct {
 	Project            string                   `yaml:"project"`
 	PipelinesDir       string                   `yaml:"pipelines_dir,omitempty"`
 	StateDir           string                   `yaml:"state_dir,omitempty"`
+	ExecutionRetention *int                     `yaml:"execution_retention,omitempty"`
 	MaxConcurrentCalls int                      `yaml:"max_concurrent_calls,omitempty"`
 	Runtimes           map[string]RuntimeConfig `yaml:"runtimes"`
 	Server             ServerConfig             `yaml:"server,omitempty"`
@@ -104,6 +105,10 @@ func (c *Config) applyDefaults() {
 	if c.StateDir == "" {
 		c.StateDir = ".signalbox"
 	}
+	if c.ExecutionRetention == nil {
+		retention := 1000
+		c.ExecutionRetention = &retention
+	}
 	if c.MaxConcurrentCalls == 0 {
 		c.MaxConcurrentCalls = DefaultMaxConcurrentCalls
 	}
@@ -118,6 +123,9 @@ func (c *Config) applyDefaults() {
 func (c *Config) validate() error {
 	if c.MaxConcurrentCalls < 1 {
 		return fmt.Errorf("max_concurrent_calls must be at least 1")
+	}
+	if *c.ExecutionRetention < 0 {
+		return fmt.Errorf("execution_retention must not be negative")
 	}
 	if len(c.Runtimes) == 0 {
 		return fmt.Errorf("no runtimes defined")

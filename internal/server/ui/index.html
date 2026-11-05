@@ -412,9 +412,23 @@ document.querySelector('[data-nav="new"]').addEventListener('click', event => {
 // --- executions list ---
 async function showExecutions() {
   setNav('executions');
+  let page = 1;
+  let lastSnapshot = '';
+  const savedPageSize = Number(localStorage.getItem('signalbox.executionPageSize'));
+  let pageSize = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100].includes(savedPageSize) ? savedPageSize : 20;
   const render = async () => {
-    let list;
-    try { list = await api('/executions'); } catch (e) { $main.innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; return; }
+    let result;
+    try {
+      result = await api(`/executions?page=${page}&page_size=${pageSize}`);
+    } catch (e) { $main.innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; return; }
+    if (result.total_pages > 0 && page > result.total_pages) {
+      page = result.total_pages;
+      return render();
+    }
+    const snapshot = JSON.stringify(result);
+    if (snapshot === lastSnapshot && $main.querySelector('#execution-page-size')) return;
+    lastSnapshot = snapshot;
+    const list = result.executions || [];
     const rows = list.map(x => `
       <tr class="row" onclick="location.hash='#/exec/${encodeURIComponent(x.id)}'">
         <td class="mono">${esc(x.id)}</td>
@@ -430,8 +444,25 @@ async function showExecutions() {
       <button onclick="location.hash='#/new'">New run</button></div>
       <div class="card">${list.length
         ? `<table><thead><tr><th>ID</th><th>Pipeline</th><th>Status</th><th>Input</th><th>Started</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
-        : `<div class="empty">No executions yet. Start one from <a href="#/new">New run</a>.</div>`}</div>`;
+        : `<div class="empty">${result.total ? 'No executions on this page.' : 'No executions yet. Start one from <a href="#/new">New run</a>.'}</div>`}
+        <div class="approve-actions" style="justify-content:flex-end">
+          <label for="execution-page-size" style="margin:0">Rows per page</label>
+          <select id="execution-page-size" style="width:auto">${[10,20,30,40,50,60,70,80,90,100].map(size =>
+            `<option value="${size}" ${size === pageSize ? 'selected' : ''}>${size}</option>`).join('')}</select>
+          <span class="muted">${result.total ? `${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, result.total)} of ${result.total}` : '0 executions'}</span>
+          <button class="secondary" ${page <= 1 ? 'disabled' : ''} onclick="changeExecutionPage(-1)">Previous</button>
+          <span class="muted">Page ${result.total_pages ? page : 0} of ${result.total_pages}</span>
+          <button class="secondary" ${page >= result.total_pages ? 'disabled' : ''} onclick="changeExecutionPage(1)">Next</button>
+        </div></div>`;
+    $main.querySelector('#execution-page-size').addEventListener('change', event => {
+      pageSize = Number(event.target.value);
+      page = 1;
+      lastSnapshot = '';
+      localStorage.setItem('signalbox.executionPageSize', String(pageSize));
+      render();
+    });
   };
+  window.changeExecutionPage = delta => { page += delta; render(); };
   await render();
   pollTimer = setInterval(render, 2000);
 }
@@ -505,7 +536,7 @@ function renderRun(x, r) {
   const waiting = r.status === 'waiting_approval';
   const manualEdit = r.status === 'waiting_manual_edit';
   const retryable = r.status === 'waiting_retry';
-  const interrupted = r.status === 'interrupted' && ['standard', 'code'].includes(r.type);
+  const interrupted = r.status === 'interrupted' && ['standard', 'code', 'llm_gate'].includes(r.type);
   const stages = (r.stages || []).map(s => `
     <div class="stage">
       <div class="runhead"><span class="nodeid">stage: ${esc(s.stage_id)}</span>${pill(s.status)}</div>
@@ -542,6 +573,7 @@ function renderRun(x, r) {
     ${stages}
     ${r.output ? `<details data-key="${esc(r.id)}:output" ${!r.stages ? 'open' : ''}><summary>${r.format ? 'formatted output' : 'output'}</summary>${outputContent}</details>` : ''}
     ${r.edited_by ? `<div class="muted" style="margin-top:8px">Edited by ${esc(r.edited_by)}</div>` : ''}
+    ${r.decision_source === 'llm_gate' ? `<div class="muted" style="margin-top:8px">LLM gate ${esc(r.decision || r.status)}${r.gate_reworks ? ` · rework ${r.gate_reworks}` : ''}${r.comment ? ': ' + esc(r.comment) : ''}</div>` : ''}
     ${r.approved_by ? `<div class="muted" style="margin-top:8px">${r.status === 'rejected' ? 'Rejected' : 'Approved'} by ${esc(r.approved_by)}${r.comment ? ': ' + esc(r.comment) : ''}</div>` : ''}
     ${waiting ? `
       <div class="approve-box">
@@ -645,7 +677,7 @@ async function deleteExec(id, button) {
 const INK = '#151515';
 const TRACK_COLOURS = [INK, '#2fb44a', '#f08a24', '#2f6fd0'];
 const DIAGRAM_FONT = "'Arial Narrow','Helvetica Neue',Arial,sans-serif";
-const D = {curve: 34, gap: 20, lead: 54, pad: 28, top: 92, rowGap: 6, cell: 22};
+const D = {curve: 34, gap: 20, lead: 54, pad: 28, top: 92, rowGap: 6, cell: 22, platform: 18};
 const measureCtx = document.createElement('canvas').getContext('2d');
 let diagramSerial = 0;
 function textWidth(text, font) { measureCtx.font = font; return measureCtx.measureText(text).width; }
@@ -664,7 +696,8 @@ function flowDiagram(p, execution = null) {
   const numbered = [];
   const LABEL = `600 11px ${DIAGRAM_FONT}`;
   const inbound = {};
-  p.nodes.forEach(n => (n.handoff || []).forEach(t => { inbound[t] = (inbound[t] || 0) + 1; }));
+  const routes = n => (n.handoff || []).map(route => typeof route === 'string' ? {to: route} : route);
+  p.nodes.forEach(n => routes(n).forEach(route => { inbound[route.to] = (inbound[route.to] || 0) + 1; }));
   const isJoin = id => byId[id] && (byId[id].type === 'orchestrator' || inbound[id] > 1);
 
   // merge folds branches that stop at the same agent join into one track:
@@ -693,17 +726,20 @@ function flowDiagram(p, execution = null) {
       numbered.push(n);
       items.push({kind: 'node', n, num: numbered.length});
       for (const st of n.stages || []) {
-        items.push({kind: 'par', label: st.id, tracks: merge(st.agents.map(a => chain(a, true))).map(b => b.seq)});
+        const tracks = merge(st.agents.map(a => chain(a, true))).map(b => b.seq);
+        // Each parallel group in a stage is drawn between a pair of platforms.
+        tracks.forEach(t => t.items.forEach(item => { if (item.kind === 'par') item.platform = st.id; }));
+        items.push({kind: 'par', label: st.id, tracks});
       }
-      const next = n.handoff || [];
+      const next = routes(n);
       if (next.length === 0) break;
       if (next.length === 1) {
-        if (stopAtSeen && seen.has(next[0])) { join = next[0]; break; }
-        if (inBranch && isJoin(next[0])) { join = next[0]; break; }
-        id = next[0];
+        if (stopAtSeen && seen.has(next[0].to)) { join = next[0].to; break; }
+        if (inBranch && isJoin(next[0].to)) { join = next[0].to; break; }
+        id = next[0].to;
         continue;
       }
-      const raw = next.map(t => chain(t, true, stopAtSeen));
+      const raw = next.map(route => chain(route.to, true, stopAtSeen));
       const shared = [...new Set(raw.map(b => b.join))];
       // Every branch meets at one agent in this scope: draw it on this line.
       const branches = shared.length === 1 && shared[0] && byId[shared[0]].type !== 'orchestrator' ? raw : merge(raw);
@@ -732,7 +768,10 @@ function flowDiagram(p, execution = null) {
     } else if (it.kind === 'seq') {
       it.items.forEach(measure);
       it.w = it.items.reduce((a, c) => a + c.w, 0) + D.gap * Math.max(0, it.items.length - 1);
-      it.up = Math.max(0, ...it.items.map(c => c.up));
+      it.baseUp = Math.max(0, ...it.items.map(c => c.up));
+      // Rejections that loop back along this line get lanes just above it.
+      const localRejects = (it.localRejects || []).length;
+      it.up = it.baseUp + (localRejects ? 10 + localRejects * 16 : 0);
       it.down = Math.max(0, ...it.items.map(c => c.down));
     } else {
       it.tracks.forEach(measure);
@@ -751,12 +790,13 @@ function flowDiagram(p, execution = null) {
       it.c = Math.max(D.curve, spread * 0.55);
       it.k = it.c / spread;
       it.w = it.inner + it.c * 2;
-      it.up = Math.max(...it.tracks.map((t, i) => t.up - it.offsets[i])) + (it.label ? 22 : 0);
-      it.down = Math.max(...it.tracks.map((t, i) => t.down + it.offsets[i]));
+      it.up = Math.max(...it.tracks.map((t, i) => t.up - it.offsets[i])) + (it.label ? 22 : 0) + (it.platform ? D.platform : 0);
+      it.down = Math.max(...it.tracks.map((t, i) => t.down + it.offsets[i])) + (it.platform ? D.platform : 0);
     }
   };
 
   const out = [];
+  let platformCount = 0;
   const nodePositions = new Map();
   const text = (x, y, s, cls, anchor = 'start') =>
     out.push(`<text x="${x}" y="${y}" class="${cls}" text-anchor="${anchor}">${esc(s)}</text>`);
@@ -766,6 +806,7 @@ function flowDiagram(p, execution = null) {
     const colour = TRACK_COLOURS[depth % TRACK_COLOURS.length];
     const width = depth === 0 ? 4 : 3.2;
     if (it.kind === 'seq') {
+      it.lineY = y;
       let cx = x;
       it.items.forEach((c, i) => {
         if (c.kind !== 'par') out.push(`<path d="M${cx} ${y}H${cx + c.w}" stroke="${colour}" stroke-width="${width}" />`);
@@ -791,6 +832,21 @@ function flowDiagram(p, execution = null) {
         joint(x + c + 4, ty); joint(x2 - 4, ty);
       });
       if (it.label) text(x + c + D.gap, y + it.offsets[0] - it.tracks[0].up - 12, it.label.toUpperCase().replace(/_/g, ' '), 'stage');
+      if (it.platform) {
+        const last = it.tracks.length - 1;
+        const tops = [y + it.offsets[0] - it.tracks[0].up - D.platform, y + it.offsets[last] + it.tracks[last].down + 4];
+        const name = it.platform.toUpperCase().replace(/_/g, ' ');
+        tops.forEach((top, side) => {
+          const number = ++platformCount, px = x + c, pw = it.inner, edgeY = side ? top : top + 14;
+          out.push(`<g class="platform"><title>${esc(`Platform ${number}: stage ${it.platform}`)}</title>`,
+            `<rect x="${px}" y="${top}" width="${pw}" height="14" class="platform-slab" />`,
+            `<path d="M${px} ${edgeY}H${px + pw}" class="platform-edge" />`,
+            `<rect x="${px}" y="${top}" width="18" height="14" class="platform-number" />`);
+          text(px + 9, top + 10.5, number, 'platform-num', 'middle');
+          text(px + 24, top + 10.5, name, 'platform-name');
+          out.push('</g>');
+        });
+      }
       it.tracks.forEach((t, i) => draw(t, x + c + D.gap, y + it.offsets[i], depth + 1));
       return;
     }
@@ -847,13 +903,25 @@ function flowDiagram(p, execution = null) {
       reworkBranches.push({from: node.id, seq: branch.seq, join: branch.join});
     }
   }
+  const lineOf = new Map();
+  const mapLines = seq => seq.items.forEach(item => {
+    if (item.kind === 'node') lineOf.set(item.n.id, seq);
+    else if (item.kind === 'par') item.tracks.forEach(mapLines);
+  });
+  mapLines(root);
+  reworkBranches.forEach(branch => mapLines(branch.seq));
+  const localReject = node => node.reject_to && lineOf.has(node.id) && lineOf.get(node.id) === lineOf.get(node.reject_to);
+  p.nodes.filter(localReject).forEach(node => {
+    const seq = lineOf.get(node.id);
+    (seq.localRejects = seq.localRejects || []).push(node.id);
+  });
   measure(root);
   reworkBranches.forEach(branch => measure(branch.seq));
   const x0 = D.pad + D.lead;
   const lineW = Math.ceil(x0 + Math.max(root.w, ...reworkBranches.map(branch => branch.seq.w)) + D.lead + D.pad);
   const stripW = numbered.length * D.cell;
   const width = Math.max(lineW, D.pad * 2 + 300 + stripW + 40);
-  const rejectionCount = p.nodes.filter(node => node.reject_to).length;
+  const rejectionCount = p.nodes.filter(node => node.reject_to && !localReject(node)).length;
   const rejectionLaneHeight = rejectionCount ? 28 + rejectionCount * 24 : 0;
   const reworkHeight = reworkBranches.reduce((total, branch) => total + branch.seq.up + branch.seq.down + 52, 0);
   const y = Math.ceil(D.top + rejectionLaneHeight + reworkHeight + root.up);
@@ -884,14 +952,21 @@ function flowDiagram(p, execution = null) {
     reworkTop = branchY + branch.seq.down + 28;
   }
   const rejectionRoutes = p.nodes.filter(node => node.reject_to && nodePositions.has(node.id) && nodePositions.has(node.reject_to));
-  rejectionRoutes.forEach((node, index) => {
+  let topLane = 0;
+  rejectionRoutes.forEach(node => {
     const source = nodePositions.get(node.id);
     const target = nodePositions.get(node.reject_to);
     const startX = source.x + source.halfWidth + 3;
     const endX = target.x - target.halfWidth - 3;
     const sourceSideX = Math.max(startX + 14, source.labelRight + 12);
     const targetSideX = Math.min(endX - 14, target.labelLeft - 12);
-    const laneY = D.top + index * 24;
+    let laneY;
+    if (localReject(node)) {
+      const seq = lineOf.get(node.id);
+      laneY = seq.lineY - seq.baseUp - 10 - seq.localRejects.indexOf(node.id) * 16;
+    } else {
+      laneY = D.top + topLane++ * 24;
+    }
     out.push(`<path class="reject-route" data-reject-from="${esc(node.id)}" data-reject-to="${esc(node.reject_to)}" d="M${startX} ${source.y}H${sourceSideX}V${laneY}H${targetSideX}V${target.y}H${endX}" marker-end="url(#${diagramID}-reject)"><title>On rejection: ${esc(node.id)} to ${esc(node.reject_to)}</title></path>`);
     text((startX + endX) / 2, laneY - 5, 'REJECT', 'rejection-note', 'middle');
   });
@@ -931,6 +1006,11 @@ function flowDiagram(p, execution = null) {
       .title { font-size: 26px; font-weight: 300; letter-spacing: 1px; }
       .code { font-size: 13px; font-weight: 400; }
       .stage { font-size: 10.5px; letter-spacing: 1.2px; fill: #555; }
+      .platform-slab { fill: #b5703f; stroke: #6e3d1c; stroke-width: 1; }
+      .platform-edge { stroke: #f2c200; stroke-width: 2; }
+      .platform-number { fill: #1d3f7a; stroke: #6e3d1c; stroke-width: 1; }
+      .platform-num { font-size: 9px; fill: #fff; }
+      .platform-name { font-size: 8.5px; letter-spacing: 1px; fill: #fff; }
       .num { font-size: 10px; font-weight: 400; fill: #444; }
       .block { fill: #fff; text-anchor: middle; }
       .ref { fill: #666; }
@@ -1233,7 +1313,7 @@ async function showPipelines() {
             <td><span class="type ${esc(n.type)}">${esc(n.type)}</span></td>
             <td class="mono">${n.type === 'code' ? `${esc(n.language)}<div class="muted">${esc(n.code_source)}</div>` : esc(n.runtime || '—')}</td>
             <td>${n.stages ? n.stages.map(s => `<div class="muted">stage <b>${esc(s.id)}</b> → ${s.agents.map(esc).join(', ')}</div>`).join('') : ''}
-                ${(n.handoff || []).map(esc).join(', ') || (n.stages ? '' : '<span class="muted">terminates</span>')}</td>
+                ${(n.handoff || []).map(route => typeof route === 'string' ? esc(route) : `${esc(route.to)}${route.condition ? ` (${esc(route.condition)})` : ''}`).join(', ') || (n.stages ? '' : '<span class="muted">terminates</span>')}</td>
           </tr>`).join('')}</tbody></table>
       </div>`).join('') || '<div class="empty">No pipelines found.</div>'}`;
   $main.querySelectorAll('[data-edit-file]').forEach(button => button.addEventListener('click', () => {

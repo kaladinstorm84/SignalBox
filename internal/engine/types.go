@@ -90,6 +90,11 @@ type NodeRun struct {
 	ApprovedBy string `json:"approved_by,omitempty"`
 	EditedBy   string `json:"edited_by,omitempty"`
 	Comment    string `json:"comment,omitempty"`
+	// DecisionSource and Decision distinguish automated gate verdicts from
+	// human approvals in persisted history and the UI.
+	DecisionSource string `json:"decision_source,omitempty"`
+	Decision       string `json:"decision,omitempty"`
+	GateReworks    int    `json:"gate_reworks,omitempty"`
 
 	StartedAt  *time.Time `json:"started_at,omitempty"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`

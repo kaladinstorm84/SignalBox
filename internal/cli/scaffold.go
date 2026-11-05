@@ -12,6 +12,9 @@ pipelines_dir: pipelines
 # Directory where execution history is stored.
 state_dir: .signalbox
 
+# Maximum number of terminal executions to retain (0 keeps history forever).
+execution_retention: 1000
+
 # Maximum number of runtime calls running at once; additional calls queue.
 max_concurrent_calls: 4
 

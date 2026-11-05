@@ -8,6 +8,9 @@ pipelines_dir: pipelines
 # Directory where execution history is stored.
 state_dir: .signalbox
 
+# Maximum number of terminal executions to retain (0 keeps history forever).
+execution_retention: 1000
+
 server:
   host: 127.0.0.1
   port: 8484

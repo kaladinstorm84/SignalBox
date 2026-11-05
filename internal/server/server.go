@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -144,17 +145,24 @@ type pipelineView struct {
 }
 
 type nodeView struct {
-	ID             string         `json:"id"`
-	Type           string         `json:"type"`
-	Description    string         `json:"description,omitempty"`
-	Runtime        string         `json:"runtime,omitempty"`
-	Language       string         `json:"language,omitempty"`
-	CodeSource     string         `json:"code_source,omitempty"`
-	TimeoutSeconds int            `json:"timeout_seconds,omitempty"`
-	Codes          map[string]int `json:"codes,omitempty"`
-	Handoff        []string       `json:"handoff,omitempty"`
-	RejectTo       string         `json:"reject_to,omitempty"`
-	Stages         []stageView    `json:"stages,omitempty"`
+	ID             string                `json:"id"`
+	Type           string                `json:"type"`
+	Description    string                `json:"description,omitempty"`
+	Runtime        string                `json:"runtime,omitempty"`
+	Language       string                `json:"language,omitempty"`
+	CodeSource     string                `json:"code_source,omitempty"`
+	TimeoutSeconds int                   `json:"timeout_seconds,omitempty"`
+	Codes          map[string]int        `json:"codes,omitempty"`
+	Handoff        []handoffView         `json:"handoff,omitempty"`
+	RejectTo       string                `json:"reject_to,omitempty"`
+	Retry          *pipeline.RetryPolicy `json:"retry,omitempty"`
+	MaxReworks     int                   `json:"max_reworks,omitempty"`
+	Stages         []stageView           `json:"stages,omitempty"`
+}
+
+type handoffView struct {
+	To        string `json:"to"`
+	Condition string `json:"condition,omitempty"`
 }
 
 type stageView struct {
@@ -183,8 +191,12 @@ func (s *Server) handlePipelines(w http.ResponseWriter, r *http.Request) {
 				CodeSource:     n.CodeSource,
 				TimeoutSeconds: n.TimeoutSeconds,
 				Codes:          n.Codes,
-				Handoff:        n.Handoff,
 				RejectTo:       n.RejectTo,
+				Retry:          n.Retry,
+				MaxReworks:     n.MaxReworks,
+			}
+			for _, route := range n.Handoff {
+				nv.Handoff = append(nv.Handoff, handoffView{To: route.To, Condition: route.Condition})
 			}
 			for _, st := range n.Stages {
 				nv.Stages = append(nv.Stages, stageView{ID: st.ID, Agents: st.Agents})
@@ -197,7 +209,42 @@ func (s *Server) handlePipelines(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListExecutions(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.eng.List())
+	w.Header().Set("Cache-Control", "no-store")
+	page, err := queryInt(r, "page", 1)
+	if err != nil || page < 1 {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("page must be a positive integer"))
+		return
+	}
+	pageSize, err := queryInt(r, "page_size", 20)
+	if err != nil || pageSize < 10 || pageSize > 100 || pageSize%10 != 0 {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("page_size must be a multiple of 10 between 10 and 100"))
+		return
+	}
+	executions, total, err := s.eng.ListPage(page, pageSize)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("listing executions: %w", err))
+		return
+	}
+	totalPages := (total + pageSize - 1) / pageSize
+	writeJSON(w, http.StatusOK, map[string]any{
+		"executions":  executions,
+		"page":        page,
+		"page_size":   pageSize,
+		"total":       total,
+		"total_pages": totalPages,
+	})
+}
+
+func queryInt(r *http.Request, name string, fallback int) (int, error) {
+	value := r.URL.Query().Get(name)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer", name)
+	}
+	return parsed, nil
 }
 
 func (s *Server) handleStartExecution(w http.ResponseWriter, r *http.Request) {

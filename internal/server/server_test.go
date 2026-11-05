@@ -540,10 +540,12 @@ agents:
 }
 
 func TestRestartInterruptedRunEndpoint(t *testing.T) {
-	store, err := engine.NewStore(t.TempDir())
+	stateDir := t.TempDir()
+	store, err := engine.NewStore(stateDir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer store.Close()
 	p, err := pipeline.Parse([]byte(`
 name: demo
 entry: worker
@@ -566,6 +568,14 @@ agents:
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = engine.NewStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
 	registry, err := runtime.NewRegistry(map[string]config.RuntimeConfig{"mock": {Type: "mock"}})
 	if err != nil {
 		t.Fatal(err)
@@ -620,6 +630,79 @@ agents:
 	}
 }
 
+func TestListExecutionsPagination(t *testing.T) {
+	store, err := engine.NewStore(t.TempDir(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for i := 1; i <= 25; i++ {
+		if err := store.Save(&engine.Execution{
+			ID:        fmt.Sprintf("run-%02d", i),
+			Pipeline:  "demo",
+			Input:     "task",
+			Status:    engine.StatusCompleted,
+			CreatedAt: time.Date(2026, 1, 1, 0, 0, i, 0, time.UTC),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	registry, err := runtime.NewRegistry(map[string]config.RuntimeConfig{"mock": {Type: "mock"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng, err := engine.New(nil, registry, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := New(eng, "test", nil, nil, nil).Handler()
+	get := func(query string) *httptest.ResponseRecorder {
+		t.Helper()
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/executions"+query, nil))
+		return response
+	}
+	defaultPage := get("")
+	if defaultPage.Code != http.StatusOK || defaultPage.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("default page response = %d, headers %v", defaultPage.Code, defaultPage.Header())
+	}
+	var defaultResult struct {
+		Executions []engine.Summary `json:"executions"`
+		PageSize   int              `json:"page_size"`
+	}
+	if err := json.Unmarshal(defaultPage.Body.Bytes(), &defaultResult); err != nil {
+		t.Fatal(err)
+	}
+	if len(defaultResult.Executions) != 20 || defaultResult.PageSize != 20 {
+		t.Fatalf("default page size = %d with %d records", defaultResult.PageSize, len(defaultResult.Executions))
+	}
+	response := get("?page=2&page_size=10")
+	if response.Code != http.StatusOK {
+		t.Fatalf("page status = %d: %s", response.Code, response.Body.String())
+	}
+	var result struct {
+		Executions []engine.Summary `json:"executions"`
+		Page       int              `json:"page"`
+		PageSize   int              `json:"page_size"`
+		Total      int              `json:"total"`
+		TotalPages int              `json:"total_pages"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Executions) != 10 || result.Page != 2 || result.PageSize != 10 || result.Total != 25 || result.TotalPages != 3 {
+		t.Fatalf("pagination result = %+v", result)
+	}
+	if result.Executions[0].ID != "run-15" || result.Executions[9].ID != "run-06" {
+		t.Fatalf("page order = %q..%q", result.Executions[0].ID, result.Executions[9].ID)
+	}
+	for _, query := range []string{"?page=0", "?page_size=15", "?page_size=110"} {
+		if response := get(query); response.Code != http.StatusBadRequest {
+			t.Errorf("%s status = %d, want bad request", query, response.Code)
+		}
+	}
+}
+
 func TestRerunAndDeleteExecution(t *testing.T) {
 	p, err := pipeline.Parse([]byte(`
 name: demo
@@ -649,6 +732,7 @@ agents:
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer store.Close()
 	eng, err := engine.New(map[string]*pipeline.Pipeline{"demo": p}, registry, store)
 	if err != nil {
 		t.Fatal(err)
@@ -719,8 +803,8 @@ agents:
 	if response := do(http.MethodPost, "/api/executions/"+id+"/rerun"); response.Code != http.StatusNotFound {
 		t.Fatalf("rerun deleted status = %d", response.Code)
 	}
-	if _, err := os.Stat(filepath.Join(stateDir, "executions", id+".json")); !os.IsNotExist(err) {
-		t.Fatalf("execution file still exists: %v", err)
+	if _, err := os.Stat(filepath.Join(stateDir, "executions.db")); err != nil {
+		t.Fatalf("execution database missing: %v", err)
 	}
 	for _, s := range eng.List() {
 		if s.ID == id {
@@ -737,5 +821,72 @@ agents:
 	}
 	if _, err := reloaded.Get(rerun.ID); err != nil {
 		t.Fatalf("rerun execution missing after restart: %v", err)
+	}
+}
+
+func TestPipelineAPIExposesRoutingGateAndRetryConfiguration(t *testing.T) {
+	p, err := pipeline.Parse([]byte(`
+name: api
+entry: source
+agents:
+  - id: source
+    runtime: mock
+    retry: {count: 1, backoff: 10ms}
+    handoff:
+      - to: quality
+        condition: always
+        input: "{{ output }}"
+  - id: quality
+    type: llm_gate
+    runtime: mock
+    prompt: "Check quality."
+    reject-to: source
+    max_reworks: 1
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := runtime.NewRegistry(map[string]config.RuntimeConfig{"mock": {Type: "mock"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pipelines := map[string]*pipeline.Pipeline{p.Name: p}
+	eng, err := engine.New(pipelines, registry, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := New(eng, "test", func() (map[string]*pipeline.Pipeline, error) {
+		return pipelines, nil
+	}, nil, nil).Handler()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/pipelines", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET pipelines = %d: %s", response.Code, response.Body.String())
+	}
+	var result []struct {
+		Nodes []struct {
+			ID      string `json:"id"`
+			Type    string `json:"type"`
+			Handoff []struct {
+				To        string `json:"to"`
+				Condition string `json:"condition"`
+			} `json:"handoff"`
+			Retry      *pipeline.RetryPolicy `json:"retry"`
+			MaxReworks int                   `json:"max_reworks"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 1 || len(result[0].Nodes) != 2 {
+		t.Fatalf("pipeline API response = %s", response.Body.String())
+	}
+	source, gate := result[0].Nodes[0], result[0].Nodes[1]
+	if source.Retry == nil || source.Retry.Count != 1 || len(source.Handoff) != 1 ||
+		source.Handoff[0].To != "quality" || source.Handoff[0].Condition != "always" {
+		t.Fatalf("source view = %+v", source)
+	}
+	if gate.Type != string(pipeline.TypeLLMGate) || gate.MaxReworks != 1 {
+		t.Fatalf("gate view = %+v", gate)
 	}
 }

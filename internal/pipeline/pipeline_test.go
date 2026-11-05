@@ -50,6 +50,102 @@ func TestRejectionOnlyReachabilityDoesNotAddNormalJoin(t *testing.T) {
 	}
 }
 
+func TestConditionalHandoffParsingAndValidation(t *testing.T) {
+	definition := `
+name: routed
+entry: review
+agents:
+  - id: review
+    type: approval
+    handoff:
+      - to: accepted
+        condition: on_approve
+        input: "Approved {{ output }}; original {{ input }}; note {{ comment }}"
+      - to: rejected
+        condition: on_reject
+        input: "Revise {{ output }}: {{ comment }}"
+  - id: accepted
+    runtime: mock
+  - id: rejected
+    runtime: mock
+`
+	p, err := Parse([]byte(definition))
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := p.Node("review").Handoff
+	if len(routes) != 2 || routes[0].To != "accepted" || routes[0].Condition != "on_approve" ||
+		routes[1].To != "rejected" || routes[1].Condition != "on_reject" {
+		t.Fatalf("routes = %+v", routes)
+	}
+	legacy, err := Parse([]byte("name: old\nagents:\n  - id: a\n    runtime: mock\n    handoff: [b]\n  - id: b\n    runtime: mock\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := legacy.Node("a").Handoff; len(got) != 1 || got[0].To != "b" || got[0].Condition != "" {
+		t.Fatalf("legacy handoff = %+v", got)
+	}
+	for _, test := range []struct {
+		name, replacement, want string
+	}{
+		{name: "unknown condition", replacement: "condition: when_ready", want: "unknown handoff condition"},
+		{name: "unknown template", replacement: "input: '{{ command }}'", want: "unknown input template value"},
+		{name: "malformed template", replacement: "input: '{{ input '", want: "malformed input template"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			invalid := strings.Replace(definition, "condition: on_approve", test.replacement, 1)
+			if test.name != "unknown condition" {
+				invalid = strings.Replace(definition, "input: \"Approved {{ output }}; original {{ input }}; note {{ comment }}\"", test.replacement, 1)
+			}
+			if _, err := Parse([]byte(invalid)); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestRetryPolicyValidation(t *testing.T) {
+	valid := "name: p\nagents:\n  - id: worker\n    runtime: mock\n    retry: {count: 2, backoff: 250ms}\n"
+	p, err := Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Node("worker").Retry.Count != 2 {
+		t.Fatalf("retry policy = %+v", p.Node("worker").Retry)
+	}
+	for _, definition := range []string{
+		strings.Replace(valid, "count: 2", "count: 11", 1),
+		strings.Replace(valid, "250ms", "unknown", 1),
+	} {
+		if _, err := Parse([]byte(definition)); err == nil {
+			t.Fatalf("invalid retry policy was accepted: %s", definition)
+		}
+	}
+	gate := `
+name: gate
+entry: source
+agents:
+  - id: source
+    runtime: mock
+    handoff: [quality]
+  - id: quality
+    type: llm_gate
+    runtime: mock
+    prompt: "Check it."
+`
+	if _, err := Parse([]byte(gate)); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []string{
+		gate + "    reject-to: source\n",
+		strings.Replace(gate, "    prompt: \"Check it.\"", "    prompt: \"Check it.\"\n    max_reworks: 1", 1),
+	} {
+		if _, err := Parse([]byte(invalid)); err == nil {
+			t.Fatalf("unbounded gate rework was accepted: %s", invalid)
+		}
+	}
+}
+
 func TestParseValidPipeline(t *testing.T) {
 	p, err := Parse([]byte(`
 name: demo
