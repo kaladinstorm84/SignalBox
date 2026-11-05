@@ -1,0 +1,34 @@
+{
+  "name": "release-notes",
+  "version": "1.0.0",
+  "description": "Registry demo package: turns a change list into release notes, with an imported template and a lint script packaged alongside it.",
+  "schema_version": 1,
+  "published_at": "2026-11-05T23:31:31Z",
+  "published_by": "demo",
+  "entry": "pipelines/release-notes.yaml",
+  "pipelines_dir": "pipelines",
+  "runtimes": [
+    "mock"
+  ],
+  "params": [
+    "product"
+  ],
+  "files": [
+    {
+      "path": "libs/notes_lint.py",
+      "sha256": "483e7cfd5650163c31fb75f72689f44898a9b52a2ee97fd0a2d5e2613898ec46",
+      "size": 204
+    },
+    {
+      "path": "pipelines/release-notes.yaml",
+      "sha256": "ab42107320a7eb084779b9751dfca3e1c909474edb32a04da4f358b447de527e",
+      "size": 810
+    },
+    {
+      "path": "shared/release-agents.yaml",
+      "sha256": "7a71be2698fee3f0f8bd637403bfc391a4bbc6681dd31bf452f3049d845e6fdd",
+      "size": 311
+    }
+  ],
+  "digest": "sha256:207f2723d079eb69070221cc58182d8028662b98601f5231564a7cdace00977b"
+}

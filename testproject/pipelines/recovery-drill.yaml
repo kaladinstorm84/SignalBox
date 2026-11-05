@@ -1,0 +1,97 @@
+# Demo: stage-level recovery and restart.
+#
+# The "verify" stage runs libs/recovery_checkpoint.py, which fails until the
+# file recovery-drill.fixed exists in the project root. To try it:
+#
+#   1. Run this pipeline. It fails in coordinator / verify.
+#   2. Create the flag file:   New-Item recovery-drill.fixed   (or: touch)
+#   3. Open the failed execution and press "Restart from this stage" on the
+#      verify stage (or: signalbox restart <exec-id> --node coordinator --stage verify).
+#
+# The new execution reuses intake, both scouts, merge and the draft stage
+# (marked "reused") and only reruns verify, the sign-off and the publisher.
+# Edit a prompt below before step 3 to see the changed-definition check: the
+# restart is refused with a list of changes until you confirm or pass --force.
+# Delete recovery-drill.fixed to reset the drill.
+name: recovery-drill
+version: 1.0.0
+description: >-
+  Recovery demo: parallel scouts join into a merge, an orchestrator drafts and
+  then verifies with a script that fails until recovery-drill.fixed exists.
+  Restart the failed stage to reuse all earlier work.
+entry: intake
+
+agents:
+  - id: intake
+    type: standard
+    runtime: mock
+    description: Frames the request for both scouts.
+    prompt: |
+      Restate the request as a short brief for the market and risk scouts.
+    handoff: [scout_market, scout_risk]
+
+  - id: scout_market
+    type: standard
+    runtime: mock
+    description: Market view (runs in parallel with scout_risk).
+    prompt: |
+      List the market facts relevant to the brief.
+    handoff: [merge]
+
+  - id: scout_risk
+    type: standard
+    runtime: mock
+    description: Risk view (runs in parallel with scout_market).
+    prompt: |
+      List the risks and open questions in the brief.
+    handoff: [merge]
+
+  # Waits for both scouts. On restart, the reused scout outputs are replayed
+  # into this join so it does not need to run again.
+  - id: merge
+    type: standard
+    runtime: mock
+    description: Joins both scout reports.
+    prompt: |
+      Merge the market and risk notes into one summary.
+    handoff: [coordinator]
+
+  - id: coordinator
+    type: orchestrator
+    runtime: mock
+    description: Drafts, then verifies the draft.
+    stages:
+      - id: draft
+        agents: [drafter]
+      - id: verify
+        agents: [checkpoint]
+    handoff: [signoff]
+
+  - id: drafter
+    type: standard
+    runtime: mock
+    description: Writes the draft.
+    prompt: |
+      Write a one-page draft from the merged summary.
+
+  - id: checkpoint
+    type: code
+    language: python
+    code-source: libs/recovery_checkpoint.py
+    description: Fails until recovery-drill.fixed exists in the project root.
+    codes:
+      success: 0
+      fail: 1
+      retry: 2
+
+  - id: signoff
+    type: approval
+    description: Human sign-off after verification.
+    handoff: [publisher]
+
+  - id: publisher
+    type: standard
+    runtime: mock
+    description: Publishes the verified draft.
+    prompt: |
+      Format the approved draft for delivery.

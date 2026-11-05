@@ -32,6 +32,10 @@ Usage:
   signalbox serve [--addr host:port] Serve the tracking & launch web UI
   signalbox run <pipeline> [--input text] [--param k=v]...  Run a pipeline in the terminal
   signalbox chunks list|add|done|remove <execution> ...  Manage execution chunks
+  signalbox list | show | start | approve | reject | edit | retry
+            restart | rerun | cancel | delete ...   Manage executions on a running server
+                                     (signalbox help executions for details)
+  signalbox registry search|versions|show|publish|install|installed ...  Share pipelines
   signalbox version                  Print the version
 `
 
@@ -53,10 +57,21 @@ func Main(args []string) int {
 		err = cmdRun(args[1:])
 	case "chunks":
 		err = cmdChunks(args[1:], os.Stdout)
+	case "list", "show", "start", "approve", "reject", "edit", "retry", "restart", "rerun", "cancel", "delete":
+		err = cmdOps(args[0], args[1:], os.Stdout)
+	case "registry":
+		err = cmdRegistry(args[1:], os.Stdout)
 	case "version", "--version", "-v":
 		fmt.Printf("signalbox %s\n", Version)
 	case "help", "--help", "-h":
-		fmt.Print(usage)
+		switch {
+		case len(args) > 1 && args[1] == "executions":
+			fmt.Print(opsUsage)
+		case len(args) > 1 && args[1] == "registry":
+			fmt.Print(registryUsage)
+		default:
+			fmt.Print(usage)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", args[0], usage)
 		return 2

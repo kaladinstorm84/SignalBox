@@ -95,9 +95,43 @@ type Config struct {
 	// AllowExternalImports permits pipeline imports outside the project root.
 	AllowExternalImports bool      `yaml:"allow_external_imports,omitempty"`
 	MCP                  MCPConfig `yaml:"mcp,omitempty"`
+	// Registry is the shared pipeline registry used by `signalbox registry`.
+	Registry RegistryConfig `yaml:"registry,omitempty"`
 
 	// Root is the directory containing signalbox.yaml (not serialised).
 	Root string `yaml:"-"`
+}
+
+// RegistryConfig locates a directory (or file share) pipeline registry.
+type RegistryConfig struct {
+	// Path is absolute, relative to the project root, or a file:// URL.
+	Path string `yaml:"path,omitempty"`
+}
+
+// RegistryPath resolves the configured registry directory, or "" when none
+// is configured.
+func (c *Config) RegistryPath() string {
+	return ResolveRegistryPath(c.Root, c.Registry.Path)
+}
+
+// ResolveRegistryPath turns a registry location into a directory path.
+func ResolveRegistryPath(root, location string) string {
+	location = strings.TrimSpace(location)
+	if location == "" {
+		return ""
+	}
+	if strings.HasPrefix(location, "file://") {
+		location = strings.TrimPrefix(location, "file://")
+		// file:///C:/share -> C:/share on Windows.
+		if len(location) > 2 && location[0] == '/' && location[2] == ':' {
+			location = location[1:]
+		}
+		return filepath.Clean(filepath.FromSlash(location))
+	}
+	if filepath.IsAbs(location) {
+		return filepath.Clean(location)
+	}
+	return filepath.Join(root, location)
 }
 
 // Load reads signalbox.yaml from dir and applies defaults.

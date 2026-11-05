@@ -46,8 +46,6 @@ type liveExec struct {
 	retries        map[string]*pendingRetry
 	orchs          map[string]*orchInstance
 	outputsChanged chan struct{}
-	recoveryInputs map[string]string
-	recoveryJoins  map[string]int
 	reworks        map[string]*reworkState
 	// joins holds fan-in nodes outside any stage still waiting for inputs.
 	joins        map[string][]deliveredInput
@@ -81,6 +79,10 @@ type orchInstance struct {
 	inputsReady chan struct{}
 	readyClosed bool
 	cur         *stageState
+	// startStage and resumeContext let a restarted orchestrator skip stages
+	// that completed in the source execution.
+	startStage    int
+	resumeContext string
 }
 
 type deliveredInput struct {
@@ -173,12 +175,13 @@ func (eng *Engine) StartWithParams(pipelineName, input string, params map[string
 	ctx, cancel := context.WithCancel(context.Background())
 	le := &liveExec{
 		exec: &Execution{
-			ID:        newExecID(),
-			Pipeline:  pipelineName,
-			Input:     input,
-			Params:    resolved,
-			Status:    StatusRunning,
-			CreatedAt: time.Now().UTC(),
+			ID:         newExecID(),
+			Pipeline:   pipelineName,
+			Input:      input,
+			Params:     resolved,
+			Status:     StatusRunning,
+			Definition: fingerprint(p),
+			CreatedAt:  time.Now().UTC(),
 		},
 		p:              p,
 		ctx:            ctx,
@@ -264,141 +267,6 @@ func (eng *Engine) ResolveFailure(execID, runID string, retry bool) error {
 // Retry re-runs a failed agent call that is awaiting retry.
 func (eng *Engine) Retry(execID, runID string) error {
 	return eng.ResolveFailure(execID, runID, true)
-}
-
-// RestartFromInterrupted starts a new execution at a persisted interrupted
-// node, reusing its saved input and completed outputs for additional inputs.
-func (eng *Engine) RestartFromInterrupted(execID, runID string) (string, error) {
-	eng.mu.Lock()
-	defer eng.mu.Unlock()
-
-	sourceLive, ok := eng.execs[execID]
-	var source *Execution
-	if ok {
-		source = sourceLive.exec
-	} else if eng.store != nil {
-		var err error
-		source, err = eng.store.Get(execID)
-		if err != nil {
-			return "", err
-		}
-	} else {
-		return "", fmt.Errorf("unknown execution %q", execID)
-	}
-	if source.Status != StatusInterrupted {
-		return "", fmt.Errorf("execution %q is not interrupted", execID)
-	}
-	var interrupted *NodeRun
-	for _, run := range source.Runs {
-		if run.ID == runID {
-			interrupted = run
-			break
-		}
-	}
-	if interrupted == nil || interrupted.Status != StatusInterrupted {
-		return "", fmt.Errorf("run %q is not interrupted in execution %q", runID, execID)
-	}
-	if !restartableType(interrupted.Type) {
-		return "", fmt.Errorf("run %q is not a retryable agent call", runID)
-	}
-	template, ok := eng.pipelines[source.Pipeline]
-	if !ok {
-		return "", fmt.Errorf("pipeline %q is no longer available", source.Pipeline)
-	}
-	p, params, err := template.WithParams(source.Params)
-	if err != nil {
-		return "", fmt.Errorf("pipeline %q no longer accepts this execution's params: %w", source.Pipeline, err)
-	}
-	node := p.Node(interrupted.NodeID)
-	if node == nil {
-		return "", fmt.Errorf("agent %q is no longer in pipeline %q", interrupted.NodeID, source.Pipeline)
-	}
-	if !restartableType(node.Type) || (node.Type == pipeline.TypeSession) != (interrupted.Type == pipeline.TypeSession) {
-		return "", fmt.Errorf("agent %q is no longer a callable node", node.ID)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	le := &liveExec{
-		exec: &Execution{
-			ID:        newExecID(),
-			Pipeline:  source.Pipeline,
-			Input:     source.Input,
-			Params:    params,
-			Status:    StatusRunning,
-			CreatedAt: time.Now().UTC(),
-			Runs:      []*NodeRun{},
-		},
-		p:              p,
-		ctx:            ctx,
-		cancel:         cancel,
-		done:           make(chan struct{}),
-		approvals:      map[string]chan approvalDecision{},
-		retries:        map[string]*pendingRetry{},
-		orchs:          map[string]*orchInstance{},
-		outputsChanged: make(chan struct{}),
-		recoveryInputs: map[string]string{},
-		recoveryJoins:  joinCountsFrom(p, node.ID),
-		joinExpected:   p.JoinCounts(pipeline.TopScope),
-	}
-	for _, previous := range source.Runs {
-		if previous.Status == StatusCompleted {
-			le.recoveryInputs[previous.NodeID] = previous.Output
-		}
-	}
-	rootRun := &NodeRun{
-		ID:                      newRunID(),
-		NodeID:                  node.ID,
-		Type:                    node.Type,
-		Status:                  StatusPending,
-		Input:                   interrupted.Input,
-		Format:                  node.Format,
-		AdditionalInputResolved: interrupted.AdditionalInputResolved,
-		FromNodeID:              interrupted.FromNodeID,
-		StageID:                 interrupted.StageID,
-	}
-	if interrupted.Session != nil {
-		// Resume the discussion: completed turns are kept and skipped.
-		session := *interrupted.Session
-		session.Turns = append([]SessionTurn(nil), interrupted.Session.Turns...)
-		rootRun.Session = &session
-	}
-	if interrupted.Context != nil {
-		// The new execution has no earlier runs, so reuse the saved context.
-		selection := *interrupted.Context
-		selection.Entries = append([]ContextEntry(nil), interrupted.Context.Entries...)
-		rootRun.Context = &selection
-	}
-	le.exec.Chunks = append([]Chunk(nil), source.Chunks...)
-	le.exec.NextChunk = source.NextChunk
-	le.exec.Runs = append(le.exec.Runs, rootRun)
-	le.liveRuns = 1
-	eng.execs[le.exec.ID] = le
-	if node.Type == pipeline.TypeOrchestrator {
-		ready := make(chan struct{})
-		close(ready)
-		orchestrator := &orchInstance{
-			node:        node,
-			run:         rootRun,
-			inputs:      []deliveredInput{{from: interrupted.FromNodeID, input: interrupted.Input}},
-			inputsReady: ready,
-			readyClosed: true,
-		}
-		le.orchs[node.ID] = orchestrator
-		go eng.runOrchestrator(le, orchestrator)
-	} else {
-		go eng.runNode(le, rootRun, node, nil)
-	}
-	eng.persistLocked(le)
-	return le.exec.ID, nil
-}
-
-// restartableType reports whether runs of a node type can be restarted.
-func restartableType(t pipeline.NodeType) bool {
-	switch t {
-	case pipeline.TypeStandard, pipeline.TypeCode, pipeline.TypeLLMGate, pipeline.TypeSession:
-		return true
-	}
-	return false
 }
 
 // Cancel aborts a running execution.
@@ -637,6 +505,7 @@ func (eng *Engine) deliverLocked(le *liveExec, nodeID, input, from string, octx 
 					Format:     node.Format,
 					Status:     StatusWaitingInputs,
 					FromNodeID: from,
+					Snapshot:   snapshotLocked(le.exec),
 				},
 			}
 			le.orchs[nodeID] = oi
@@ -665,9 +534,6 @@ func (eng *Engine) deliverLocked(le *liveExec, nodeID, input, from string, octx 
 		expected = (*expectedCounts)[nodeID]
 	} else {
 		expected = le.p.JoinCount(scope, nodeID)
-	}
-	if octx == nil && le.recoveryJoins != nil {
-		expected = le.recoveryJoins[nodeID]
 	}
 	if work != nil {
 		expected = work.counts[nodeID]
@@ -702,6 +568,7 @@ func (eng *Engine) dispatchNodeLocked(le *liveExec, node *pipeline.Node, input, 
 		Status:     StatusPending,
 		Input:      input,
 		FromNodeID: from,
+		Snapshot:   snapshotLocked(le.exec),
 	}
 	if octx != nil {
 		run.StageID = octx.sr.StageID
@@ -1391,7 +1258,13 @@ func (eng *Engine) runOrchestrator(le *liveExec, oi *orchInstance) {
 			return
 		}
 	}
-	for _, stage := range node.Stages {
+	if oi.startStage > 0 {
+		stageContext = oi.resumeContext
+	}
+	for index, stage := range node.Stages {
+		if index < oi.startStage {
+			continue
+		}
 		eng.mu.Lock()
 		if le.exec.Status.Terminal() {
 			eng.mu.Unlock()
@@ -1403,6 +1276,7 @@ func (eng *Engine) runOrchestrator(le *liveExec, oi *orchInstance) {
 			StageID:    stage.ID,
 			Status:     StatusRunning,
 			StartedAt:  &started,
+			Snapshot:   snapshotLocked(le.exec),
 			ownerRunID: oi.run.ID,
 		}
 		oi.run.Stages = append(oi.run.Stages, sr)
@@ -1523,11 +1397,7 @@ func collectAdditionalInputs(le *liveExec, node *pipeline.Node, input string) (s
 			break
 		}
 		if !found {
-			output, ok := le.recoveryInputs[sourceID]
-			if !ok {
-				return "", false
-			}
-			outputs[i] = output
+			return "", false
 		}
 	}
 

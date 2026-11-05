@@ -1,0 +1,8 @@
+# Shared templates for the release-notes package (an import packaged with it).
+templates:
+  - id: reader_base
+    type: standard
+    runtime: mock
+    description: Pulls user-facing changes out of the change list.
+    prompt: |
+      Extract the user-facing changes from the input. Ignore refactors and chores.

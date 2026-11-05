@@ -51,6 +51,15 @@ runtimes:
 # set to true.
 # allow_external_imports: false
 
+# Pipeline registry: a directory (or file share) of versioned, hash-verified
+# pipeline packages. Browse it on the Registry page or with
+# `signalbox registry search|show|install|publish`. The demo registry holds
+# release-notes 1.0.0 and 1.1.0; install one, then upgrade to see the lock
+# file (signalbox.lock.json) track it. Paths may be relative, absolute, or
+# file:// (e.g. file:///S:/team/signalbox-registry).
+registry:
+  path: ./registry
+
 # MCP pass-through (opt-in). Agents list the servers they need under `mcp:`
 # in a pipeline; only servers registered here, and only the tools listed under
 # `tools`, can be granted. SignalBox hands the granted servers to the agent CLI

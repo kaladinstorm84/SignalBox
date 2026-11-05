@@ -93,7 +93,7 @@ Acceptance: Recovery tests verify that completed work is not repeated unnecessar
 
 6. - Pipeline chaining.
 
-Allow refernces to sections in other pipelines
+Allow references to sections in other pipelines
 
 
 ## Suggested delivery order

@@ -52,9 +52,12 @@ type StageRun struct {
 	Status  Status        `json:"status"`
 	Outputs []StageOutput `json:"outputs,omitempty"`
 	// Context is the synthesised result carried into the next stage.
-	Context    string     `json:"context,omitempty"`
-	StartedAt  *time.Time `json:"started_at,omitempty"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	Context string `json:"context,omitempty"`
+	// Snapshot is the execution state captured as the stage began, used
+	// when an execution is restarted from this stage.
+	Snapshot   *RunSnapshot `json:"snapshot,omitempty"`
+	StartedAt  *time.Time   `json:"started_at,omitempty"`
+	FinishedAt *time.Time   `json:"finished_at,omitempty"`
 
 	// ownerRunID links back to the orchestrator NodeRun (not serialised).
 	ownerRunID string
@@ -110,6 +113,13 @@ type NodeRun struct {
 	// MCP records the MCP servers and tools granted to the run (never
 	// environment values).
 	MCP []runtime.MCPGrant `json:"mcp,omitempty"`
+
+	// Snapshot is execution state captured when the run was dispatched, so
+	// a later restart from this run can restore it.
+	Snapshot *RunSnapshot `json:"snapshot,omitempty"`
+	// ReusedFrom names the execution that produced this run when it was
+	// carried into a restarted execution instead of being repeated.
+	ReusedFrom string `json:"reused_from,omitempty"`
 
 	StartedAt  *time.Time `json:"started_at,omitempty"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
@@ -213,8 +223,13 @@ type Execution struct {
 	Runs         []*NodeRun        `json:"runs"`
 	FinalOutputs []FinalOutput     `json:"final_outputs,omitempty"`
 	// Chunks are execution-scoped work items managed by sessions and people.
-	Chunks     []Chunk    `json:"chunks,omitempty"`
-	NextChunk  int        `json:"next_chunk,omitempty"`
+	Chunks    []Chunk `json:"chunks,omitempty"`
+	NextChunk int     `json:"next_chunk,omitempty"`
+	// Definition fingerprints the pipeline the execution ran, so restarts
+	// can detect edits made since.
+	Definition *Definition `json:"definition,omitempty"`
+	// Recovery is set when the execution was restarted from another one.
+	Recovery   *Recovery  `json:"recovery,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
