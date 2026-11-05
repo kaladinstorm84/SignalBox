@@ -1,0 +1,91 @@
+name: context-strategies
+description: >-
+  Demonstrates per-node context strategies. Each agent receives its normal
+  handoff input, and its context block chooses which other earlier outputs are
+  appended: none, recent (with a window), all (with a character budget), or own
+  (the node's earlier attempts during gate rework).
+entry: brief
+
+agents:
+  - id: brief
+    type: standard
+    runtime: codex
+    description: Turns the request into a short research brief. No context block, so the input is unchanged.
+    prompt: |
+      Rewrite the user's request as a short research brief: the question, the
+      audience, and three things the final article must cover. Keep it under
+      150 words.
+    handoff: [researcher]
+
+  - id: researcher
+    type: standard
+    runtime: codex
+    description: Researches from the brief alone (explicit strategy none).
+    context:
+      strategy: none
+    prompt: |
+      Research the brief. List the key facts, each with a source or a note
+      that it is unverified. Do not write the article.
+    retry:
+      count: 1
+      backoff: 1s
+    handoff: [analyst]
+
+  - id: analyst
+    type: standard
+    runtime: codex
+    description: >-
+      Receives the research notes as input; recent (window 1) adds the brief,
+      because the research notes it already receives are skipped.
+    context:
+      strategy: recent
+      window: 1
+    prompt: |
+      Your input is research notes, followed by context from earlier steps.
+      Check the notes against the brief in the context. List gaps, risks,
+      and which of the brief's three must-cover items are weak.
+    handoff: [writer]
+
+  - id: writer
+    type: standard
+    runtime: codex
+    description: >-
+      Drafts the article from the analysis. own context shows the writer its
+      earlier rejected drafts when the editor sends work back.
+    context:
+      strategy: own
+      max_chars: 20000
+    prompt: |
+      Write a concise article (about 400 words) that addresses the analysis.
+      If the context contains your earlier drafts and the input contains
+      rejection notes, revise rather than starting from scratch, and fix
+      exactly what the notes ask for.
+    handoff: [editor]
+
+  - id: editor
+    type: llm_gate
+    runtime: codex
+    description: >-
+      Judges the draft against everything produced so far: all context, capped
+      at 12,000 characters (oldest outputs are dropped first).
+    context:
+      strategy: all
+      max_chars: 12000
+    prompt: |
+      Your input is a draft article, followed by context containing the brief,
+      research notes, and analysis. Approve only if the draft covers all three
+      must-cover items from the brief, makes no claim that is absent from the
+      research notes, and addresses the analysis' gaps. Otherwise reject and
+      say exactly what to change.
+    max_reworks: 2
+    reject-to: writer
+    handoff: [publish]
+
+  - id: publish
+    type: standard
+    runtime: codex
+    description: Formats the approved article for publication. No context.
+    format: true
+    prompt: |
+      Format the approved article as clean Markdown with a title and short
+      headings. Do not change its claims.

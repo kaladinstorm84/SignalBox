@@ -344,6 +344,12 @@ func (eng *Engine) RestartFromInterrupted(execID, runID string) (string, error) 
 		session.Turns = append([]SessionTurn(nil), interrupted.Session.Turns...)
 		rootRun.Session = &session
 	}
+	if interrupted.Context != nil {
+		// The new execution has no earlier runs, so reuse the saved context.
+		selection := *interrupted.Context
+		selection.Entries = append([]ContextEntry(nil), interrupted.Context.Entries...)
+		rootRun.Context = &selection
+	}
 	le.exec.Chunks = append([]Chunk(nil), source.Chunks...)
 	le.exec.NextChunk = source.NextChunk
 	le.exec.Runs = append(le.exec.Runs, rootRun)
@@ -717,6 +723,9 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 	now := time.Now().UTC()
 	run.Status = StatusRunning
 	run.StartedAt = &now
+	if run.Context == nil && node.ContextStrategy() != pipeline.ContextNone {
+		run.Context = selectContext(node.Context, le.exec.Runs, run)
+	}
 	eng.persistLocked(le)
 	eng.mu.Unlock()
 
@@ -737,7 +746,7 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 			return
 		}
 		invoke = func() (string, error) {
-			return rt.Invoke(le.ctx, runtime.Request{Input: run.Input})
+			return rt.Invoke(le.ctx, runtime.Request{Input: runtimeInput(run)})
 		}
 	} else {
 		rt, err := eng.registry.Get(node.Runtime)
@@ -746,7 +755,7 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 			return
 		}
 		invoke = func() (string, error) {
-			return rt.Invoke(le.ctx, runtime.Request{SystemPrompt: node.Prompt, Input: run.Input})
+			return rt.Invoke(le.ctx, runtime.Request{SystemPrompt: node.Prompt, Input: runtimeInput(run)})
 		}
 	}
 	out, err := eng.invokeRetrying(le, run, node.Retry, invoke)
@@ -823,7 +832,7 @@ func (eng *Engine) runLLMGate(le *liveExec, run *NodeRun, node *pipeline.Node, o
 	verdictText, err := eng.invokeRetrying(le, run, node.Retry, func() (string, error) {
 		prompt := node.Prompt + "\n\nReturn only one JSON object with exactly two string fields, decision and feedback. " +
 			`decision must be "approve" or "reject". Example: {"decision":"approve","feedback":"..."}.`
-		return rt.Invoke(le.ctx, runtime.Request{SystemPrompt: prompt, Input: run.Input})
+		return rt.Invoke(le.ctx, runtime.Request{SystemPrompt: prompt, Input: runtimeInput(run)})
 	})
 	if err != nil {
 		eng.finishRunErr(le, run, node, octx, err)

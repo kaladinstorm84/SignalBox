@@ -151,6 +151,8 @@ type Node struct {
 	MaxReworks int `yaml:"max_reworks,omitempty" json:"max_reworks,omitempty"`
 	// AdditionalInput lists outputs that this node also requires in its input.
 	AdditionalInput []string `yaml:"additional-input,omitempty"`
+	// Context selects earlier execution outputs to append to runtime input.
+	Context *ContextConfig `yaml:"context,omitempty"`
 	// Format requests rendered Markdown presentation for this node's output.
 	Format         bool           `yaml:"format,omitempty"`
 	Language       string         `yaml:"language,omitempty"`
@@ -678,6 +680,9 @@ func (p *Pipeline) validateNode(n *Node) error {
 	}
 	if n.MaxReworks < 0 || n.MaxReworks > 10 {
 		return fmt.Errorf("llm_gate %q: max_reworks must be between 0 and 10", n.ID)
+	}
+	if err := validateContext(n); err != nil {
+		return err
 	}
 
 	if n.Type != TypeSession && (len(n.Participants) > 0 || n.TurnOrder != "" || n.Moderator != "" || n.MaxRounds != 0 || n.Consensus != nil || n.SummaryAgent != "" || n.Chunks != nil) {

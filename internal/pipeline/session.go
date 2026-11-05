@@ -145,8 +145,8 @@ func (p *Pipeline) checkSessionParticipants() error {
 		if id == p.Entry {
 			return fmt.Errorf("session %q: participant %q may not be the pipeline entry", sessionID, id)
 		}
-		if len(participant.Handoff) > 0 || participant.RejectTo != "" || len(participant.AdditionalInput) > 0 || participant.Retry != nil {
-			return fmt.Errorf("session %q: participant %q may not define handoff, reject-to, additional-input, or retry", sessionID, id)
+		if len(participant.Handoff) > 0 || participant.RejectTo != "" || len(participant.AdditionalInput) > 0 || participant.Retry != nil || participant.Context != nil {
+			return fmt.Errorf("session %q: participant %q may not define handoff, reject-to, additional-input, retry, or context; set context on the session", sessionID, id)
 		}
 	}
 	for i := range p.Nodes {

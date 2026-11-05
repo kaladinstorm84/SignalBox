@@ -150,26 +150,27 @@ type pipelineView struct {
 }
 
 type nodeView struct {
-	ID             string                `json:"id"`
-	Type           string                `json:"type"`
-	Description    string                `json:"description,omitempty"`
-	Runtime        string                `json:"runtime,omitempty"`
-	Language       string                `json:"language,omitempty"`
-	CodeSource     string                `json:"code_source,omitempty"`
-	TimeoutSeconds int                   `json:"timeout_seconds,omitempty"`
-	Codes          map[string]int        `json:"codes,omitempty"`
-	Handoff        []handoffView         `json:"handoff,omitempty"`
-	RejectTo       string                `json:"reject_to,omitempty"`
-	Retry          *pipeline.RetryPolicy `json:"retry,omitempty"`
-	MaxReworks     int                   `json:"max_reworks,omitempty"`
-	Stages         []stageView           `json:"stages,omitempty"`
-	Participants   []string              `json:"participants,omitempty"`
-	TurnOrder      string                `json:"turn_order,omitempty"`
-	Moderator      string                `json:"moderator,omitempty"`
-	MaxRounds      int                   `json:"max_rounds,omitempty"`
-	Consensus      *pipeline.Consensus   `json:"consensus,omitempty"`
-	SummaryAgent   string                `json:"summary_agent,omitempty"`
-	Chunks         *pipeline.ChunkConfig `json:"chunks,omitempty"`
+	ID             string                  `json:"id"`
+	Type           string                  `json:"type"`
+	Description    string                  `json:"description,omitempty"`
+	Runtime        string                  `json:"runtime,omitempty"`
+	Language       string                  `json:"language,omitempty"`
+	CodeSource     string                  `json:"code_source,omitempty"`
+	TimeoutSeconds int                     `json:"timeout_seconds,omitempty"`
+	Codes          map[string]int          `json:"codes,omitempty"`
+	Handoff        []handoffView           `json:"handoff,omitempty"`
+	RejectTo       string                  `json:"reject_to,omitempty"`
+	Retry          *pipeline.RetryPolicy   `json:"retry,omitempty"`
+	MaxReworks     int                     `json:"max_reworks,omitempty"`
+	Stages         []stageView             `json:"stages,omitempty"`
+	Participants   []string                `json:"participants,omitempty"`
+	TurnOrder      string                  `json:"turn_order,omitempty"`
+	Moderator      string                  `json:"moderator,omitempty"`
+	MaxRounds      int                     `json:"max_rounds,omitempty"`
+	Consensus      *pipeline.Consensus     `json:"consensus,omitempty"`
+	SummaryAgent   string                  `json:"summary_agent,omitempty"`
+	Chunks         *pipeline.ChunkConfig   `json:"chunks,omitempty"`
+	Context        *pipeline.ContextConfig `json:"context,omitempty"`
 }
 
 type handoffView struct {
@@ -213,6 +214,7 @@ func (s *Server) handlePipelines(w http.ResponseWriter, r *http.Request) {
 				Consensus:      n.Consensus,
 				SummaryAgent:   n.SummaryAgent,
 				Chunks:         n.Chunks,
+				Context:        n.Context,
 			}
 			for _, route := range n.Handoff {
 				nv.Handoff = append(nv.Handoff, handoffView{To: route.To, Condition: route.Condition})

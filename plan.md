@@ -57,13 +57,16 @@ Resolve CLI overrides and validate required values before starting an execution.
 Persist resolved parameter values with the execution so history is reproducible.
 Imports and agent templates
 
-Support importing shared definitions from local files and inheriting from reusable agent templates.
+Support importing shared definitions from local files and inheriting from reusable agent templates using 'extends:' property (similar to gitlab ci approach)
+
 Resolve imports deterministically, detect cycles and duplicate IDs, and validate the fully resolved pipeline before execution.
 Keep imports within the project root by default; make any external-path behavior explicit.
-Runtime/model improvements
+
+#### Runtime/model improvements
 
 Add provider adapters or model overrides only where there is a concrete supported use case; keep existing named runtime configuration working.
-MCP tools
+
+#### MCP tools
 
 Add MCP configuration and runtime lifecycle management only after defining how servers, tools, credentials, and permissions are controlled.
 Require explicit opt-in and document that configured tools can perform actions as the SignalBox process user.

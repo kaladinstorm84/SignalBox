@@ -99,8 +99,38 @@ type NodeRun struct {
 	// Session is populated for session runs: rounds, turns, and outcome.
 	Session *SessionRun `json:"session,omitempty"`
 
+	// Context records the prior work selected by the node's context
+	// strategy. It is assembled once, when the run starts, and reused by
+	// retries and restarts.
+	Context *ContextSelection `json:"context,omitempty"`
+
 	StartedAt  *time.Time `json:"started_at,omitempty"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
+}
+
+// ContextSelection is the persisted result of applying a context strategy.
+type ContextSelection struct {
+	Strategy string `json:"strategy"`
+	Window   int    `json:"window,omitempty"`
+	MaxChars int    `json:"max_chars,omitempty"`
+	// Available counts eligible earlier outputs before window and budget
+	// limits; Skipped counts outputs omitted because the input already
+	// contains them.
+	Available int            `json:"available"`
+	Skipped   int            `json:"skipped,omitempty"`
+	Entries   []ContextEntry `json:"entries,omitempty"`
+	// Chars is the number of output characters included across entries.
+	Chars int    `json:"chars"`
+	Text  string `json:"text,omitempty"`
+}
+
+// ContextEntry is one earlier output included in a run's context.
+type ContextEntry struct {
+	RunID         string `json:"run_id"`
+	NodeID        string `json:"node_id"`
+	Chars         int    `json:"chars"`
+	OriginalChars int    `json:"original_chars"`
+	Truncated     bool   `json:"truncated,omitempty"`
 }
 
 // Session outcomes, recorded in SessionRun.Outcome and NodeRun.Decision.
