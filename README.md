@@ -3,10 +3,12 @@
 SignalBox is a YAML based AI agent workflow system with human approval stages.
 You describe a pipeline of agents in YAML, point each agent at a runtime
 (Codex, Claude, Copilot, or any OpenAI-compatible API), and SignalBox executes
-the chain — pausing at approval gates until a human signs off in the web UI or
-the terminal.
+the chain, pausing at approval gates for review in the web UI or terminal.
+Pipelines can also execute local code, send rejected work back for revision,
+and start automatically from command-based watchers.
 
-Built in Go; ships as a single static binary with the web UI embedded.
+Built in Go with the web UI embedded in the executable. External agent CLIs
+and script interpreters are installed separately when needed.
 
 ## Concepts
 
@@ -14,9 +16,9 @@ Built in Go; ships as a single static binary with the web UI embedded.
 
 | Type | Behaviour |
 |------|-----------|
-| `standard` | Accepts a handoff (or several ? see joins below), runs its prompt against a runtime, then hands off to one or more agents — or to a single orchestrator. |
+| `standard` | Accepts a handoff (or several; see joins below), runs its prompt against a runtime, then hands off to one or more agents or a single orchestrator. |
 | `orchestrator` | A long-running coordinator. It accepts handoffs from **many** agents (fan-in: it waits until every inbound handoff has arrived), then runs its **stages** in order. Each stage dispatches to agents in parallel and collects the terminal output of every chain it started before moving on. A stage (or the orchestrator itself) can define a `prompt` to synthesise the collected results using the orchestrator's runtime. |
-| `approval` | A human gate. Approval passes the payload through unchanged. Rejection restarts work after the last upstream approved gate in the same stage/scope, with reviewer notes appended to its input. |
+| `approval` | A human gate. Approval passes the payload through unchanged. Rejection follows `reject-to` when specified; otherwise it restarts work after the last upstream approved gate in the same stage/scope, or retries immediate upstream work. Reviewer notes are appended to the rework input. |
 | `code` | Executes a local script with its input on stdin, then hands stdout to downstream nodes. No AI runtime is required. |
 
 ### Handoffs
@@ -27,8 +29,8 @@ Built in Go; ships as a single static binary with the web UI embedded.
 - An agent with no `handoff` terminates its chain. Inside an orchestrator
   stage, a terminating chain hands its output back to the orchestrator;
   outside one, the output becomes a **result** of the execution.
-- Chains of agents and approvals can be nested inside orchestrator stages.
-- **Joins:** when several agents hand off to the same standard or approval
+- Chains of standard, code, and approval nodes can run inside orchestrator stages.
+- **Joins:** when several agents hand off to the same standard, code, or approval
   agent, it waits for all of them and runs once on the combined input (each
   part headed `--- handoff from <agent> ---`). Joins are counted per scope:
   inside a stage, only handoffs from that stage's chains count. For example,
@@ -69,9 +71,11 @@ Built in Go; ships as a single static binary with the web UI embedded.
 
   Targets must be non-orchestrator nodes in the same stage/scope, with handoffs
   leading back to the approval. Normal handoff cycles remain invalid; only
-  rejection routes may loop backward. Diagrams show rejection-only work on a
-  separate track with dashed red rejection arrows. Without `reject-to`, the
-  previous automatic checkpoint behavior remains unchanged.
+  rejection routes may loop backward. Diagrams place rejection-only work and
+  dashed red rejection routes above the normal track, with return connectors
+  back to review. Without `reject-to`, automatic checkpoint behavior remains
+  unchanged. Rejections remain visible in the execution timeline; a later
+  successful review can still complete that execution.
 
 ### Code Steps
 
@@ -154,8 +158,16 @@ command can read its prompt from stdin.
 
 ## Getting started
 
+Building from source requires Go 1.25 or newer. The scaffolded default pipeline
+uses the `mock` runtime, so no AI credentials are needed to try it. For real
+runtimes, install/authenticate the relevant CLI or set the API key environment
+variable configured for the OpenAI-compatible runtime. Code steps require
+their language's interpreter on `PATH`.
+
+### Install from GitHub
+
 ```bash
-go install github.com/kaladinstorm84/SignalBox/cmd/signalbox@latest   # or: go build ./cmd/signalbox
+go install github.com/kaladinstorm84/SignalBox/cmd/signalbox@latest
 
 signalbox init my-project     # creates signalbox.yaml + pipelines/default.yaml
 cd my-project
@@ -164,14 +176,45 @@ signalbox serve               # web UI on http://127.0.0.1:8484
 signalbox run default --input "Hello SignalBox"   # terminal run
 ```
 
+The Go binary installation directory must be on `PATH` to invoke `signalbox`
+directly. `serve` runs until stopped; use another terminal for `run`, or stop
+the server first.
+
+### Build and run locally on Windows
+
+```powershell
+git clone https://github.com/kaladinstorm84/SignalBox.git
+Set-Location SignalBox
+go build -o signalbox.exe ./cmd/signalbox
+.\signalbox.exe init my-project
+Set-Location my-project
+..\signalbox.exe validate
+..\signalbox.exe serve
+```
+
+Open `http://127.0.0.1:8484`. From the project directory, a terminal execution is
+`..\signalbox.exe run default --input "Hello SignalBox"`. From the repository
+root you can also use `go run ./cmd/signalbox` followed by a CLI command. Running
+`go run .` is not supported because the entry point is in `cmd/signalbox`.
+
+After changing Go source or the embedded UI, rebuild from the repository root
+and restart the executable. Pipeline YAML is reloaded for new UI runs, but
+runtime definitions and other project settings require a server restart.
+
 `signalbox run` prompts for approvals on the terminal; pass `--yes` to
-auto-approve every gate (useful in scripts/CI).
+auto-approve every gate (useful in scripts/CI). `signalbox serve --addr
+127.0.0.1:8485` overrides the configured listen address; `signalbox version`
+prints the build version.
 
 ## The web UI (`signalbox serve`)
 
 - **Executions** — live list of every run with status and pending-approval
   badges; click through to a per-agent timeline showing inputs, outputs,
-  orchestrator stages, and errors.
+  orchestrator stages, and errors. The execution page includes a live pipeline
+  diagram, centred status lights, and automatic diagram scrolling to active
+  work. Running nodes are green, failures/retry waits/rejections are red,
+  waiting nodes are amber, completed nodes are green, and canceled/interrupted
+  nodes are gray.
 - **New run** — pick a pipeline, preview its agent flow, and send an input
   into it. Opening New run (or clicking it again) reloads pipeline YAML from
   disk, so added and edited pipelines are available without restarting the server.
@@ -182,34 +225,48 @@ auto-approve every gate (useful in scripts/CI).
   comments and whitespace. Reload reads the current file from disk; a stale
   save is rejected rather than overwriting external edits. Restart the server
   after saving to apply runtime, concurrency, watcher, and server settings.
-- Both pages draw each pipeline as a track diagram: agents that run one after
+- New run, Pipelines, and execution details draw pipelines as track diagrams:
+  agents that run one after
   another sit on a single line, while agents that run in parallel (orchestrator
   stages and handoffs to several agents) split onto parallel tracks that rejoin
   where their outputs are collected, including at an agent that joins several
   branches.
+  Rejection-only branches sit above the main flow, with dashed red rejection
+  arrows and return links to existing review nodes. Diagrams scroll within
+  their containers on smaller screens; navigation stacks above the content
+  on mobile.
 - Approval gates surface directly in the execution view with
   approve/reject buttons and an optional comment.
-  Rejection preserves the rejected review in the timeline and sends work back
-  after the last upstream approved gate in the same stage/scope. If there is
-  no earlier approved gate, the immediate upstream agents are retried. Notes
-  are appended under `--- rejection notes from <gate> ---`. If there is no
-  upstream work to retry (for example, an approval is the entry), rejection
-  still ends the execution.
-- When an agent call fails, that run pauses as `waiting_retry` with a
+  Rejection follows `reject-to` if configured. Otherwise, it sends work back
+  after the last upstream approved gate in the same stage/scope, or retries
+  the immediate upstream agents if there is no earlier approved gate. Notes
+  are appended under `--- rejection notes from <gate> ---`. Without either an
+  explicit route or upstream work to retry (for example, an approval is the
+  entry), rejection ends the execution.
+- When a runtime call fails, that run pauses as `waiting_retry` with a
   **Retry** button; parallel branches keep running, but nothing downstream of
   the failure proceeds. Retry re-invokes the agent with the same input; use
   **Cancel** to give up. `signalbox run` prompts `retry? [y/N]` instead (with
-  `--yes`, failures are not retried and the execution fails).
+  `--yes`, failures are not retried and the execution fails). Code nodes with
+  explicit `codes` mappings instead follow their configured success, terminal
+  fail, or rejection-style retry outcome as described above.
 - **Rerun** starts a new execution with the same pipeline and input, using the
   pipeline definition currently on disk. **Delete** removes a finished
   execution and its history file; cancel a running execution first.
 
 Execution history is persisted as JSON under `.signalbox/executions/`, so it
 survives restarts (in-flight runs are marked `interrupted`).
-Interrupted agent cards offer **Retry from here**, which starts a new execution
-at that call with its saved input. Completed earlier outputs remain available
-to `additional-input` dependencies; completed branches are not rerun. **Rerun**
-continues to start the whole pipeline from its original input.
+Interrupted standard-agent and code-node cards offer **Retry from here**,
+which starts a new execution at that call with its saved input, using the
+current pipeline definition. Completed earlier outputs remain available to
+`additional-input` dependencies; earlier branches are not replayed. This does
+not resume the original orchestrator or its other branches. Interrupted
+approvals and orchestrator runs do not offer this action. **Rerun** starts the
+whole pipeline from its original input instead.
+
+The server has no authentication. Keep it bound to loopback or a trusted
+interface; anyone with access can launch configured commands, approve work,
+and edit project settings. Run only trusted pipeline definitions and scripts.
 
 ## Pipeline YAML
 
@@ -259,9 +316,12 @@ agents:
     prompt: You are the publisher. Format the approved draft for delivery.
 ```
 
-Validation catches unknown handoff targets, cycles, unreachable agents,
-missing runtimes, orchestrators without stages, orchestrator handoffs mixed
-with other targets, and stage chains that leak into another orchestrator.
+Validation catches unknown handoff, additional-input, and rejection targets;
+normal handoff/dependency cycles; unreachable agents (including rejection-only
+reachability); missing runtimes or script files; invalid code exit mappings;
+and invalid cross-stage rejection routes. It also checks orchestrator stages,
+handoff exclusivity, and stage chains that leak into another orchestrator.
+Rejection loops are permitted without weakening normal cycle checks.
 
 ## Project configuration (`signalbox.yaml`)
 
@@ -290,8 +350,12 @@ runtimes:
 ```
 
 `max_concurrent_calls` limits simultaneous runtime invocations across all
-executions, including orchestrator synthesis. Calls above the limit wait for a
-slot; the default is `4` and the value must be positive.
+executions within one SignalBox process, including code steps and orchestrator
+synthesis. Calls above the limit wait for a slot and stop waiting if their
+execution is canceled. Approval waits and manual-retry waits do not occupy a
+call slot. Omitted or `0` selects the default of `4`; negative values are
+invalid. Restart the server after changing the cap. Separate SignalBox
+processes have independent limits.
 
 ### Watchers
 
@@ -321,6 +385,7 @@ output stable between polls unless a new pipeline run is intended.
 
 | Method & path | Purpose |
 |---------------|---------|
+| `GET /api/meta` | Project name |
 | `GET /api/pipelines` | Loaded pipeline definitions |
 | `GET /api/settings` | Project configuration YAML and file version |
 | `PUT /api/settings` | Validate and save project YAML: `{"content": "...", "version": "..."}` |
@@ -329,7 +394,7 @@ output stable between polls unless a new pipeline run is intended.
 | `GET /api/executions/{id}` | Full execution detail |
 | `POST /api/executions/{id}/approve` | Resolve a gate: `{"run_id": "...", "approved": true, "approved_by": "...", "comment": "..."}` |
 | `POST /api/executions/{id}/retry` | Retry a failed agent call awaiting retry: `{"run_id": "..."}` |
-| `POST /api/executions/{id}/restart` | Start a new execution from an interrupted standard-agent call: `{"run_id": "..."}` |
+| `POST /api/executions/{id}/restart` | Start a new execution from an interrupted standard-agent or code call: `{"run_id": "..."}` |
 | `POST /api/executions/{id}/cancel` | Cancel a running execution |
 | `POST /api/executions/{id}/rerun` | Start a new execution with the same pipeline and input; returns `{"id": "..."}` |
 | `DELETE /api/executions/{id}` | Delete a finished execution (409 while it is still running) |
@@ -348,5 +413,6 @@ Layout:
 - `internal/config` — `signalbox.yaml` loading
 - `internal/pipeline` — pipeline YAML schema and validation
 - `internal/engine` — execution engine (handoffs, orchestrator stages, approvals) and JSON persistence
-- `internal/runtime` — runtime adapters (OpenAI API, agent CLIs, mock)
+- `internal/runtime` — runtime adapters (OpenAI API, agent CLIs, mock) and local script execution
 - `internal/server` — HTTP API and embedded web UI
+- `internal/watcher` — command polling and persisted output-change detection
