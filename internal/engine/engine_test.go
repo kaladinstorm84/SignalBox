@@ -1210,6 +1210,7 @@ func TestStoreRoundTripAndInterrupted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer store.Close()
 	now := time.Now().UTC()
 	e := &Execution{
 		ID:        "20260101-000000-aaaa",
@@ -1218,12 +1219,23 @@ func TestStoreRoundTripAndInterrupted(t *testing.T) {
 		Status:    StatusRunning,
 		CreatedAt: now,
 		Runs: []*NodeRun{
-			{ID: "r1", NodeID: "a", Type: pipeline.TypeStandard, Status: StatusRunning},
+			{
+				ID: "r1", NodeID: "a", Type: pipeline.TypeLLMGate, Status: StatusRunning,
+				DecisionSource: "llm_gate", Decision: "reject", Comment: "needs revision", GateReworks: 1,
+			},
 		},
 	}
 	if err := store.Save(e); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
 	loaded, err := store.LoadAll()
 	if err != nil {
 		t.Fatal(err)
@@ -1238,6 +1250,408 @@ func TestStoreRoundTripAndInterrupted(t *testing.T) {
 	if got.Runs[0].Status != StatusInterrupted {
 		t.Fatalf("run status = %s, want interrupted", got.Runs[0].Status)
 	}
+	if got.Runs[0].DecisionSource != "llm_gate" || got.Runs[0].Decision != "reject" ||
+		got.Runs[0].Comment != "needs revision" || got.Runs[0].GateReworks != 1 {
+		t.Fatalf("persisted gate metadata = %+v", got.Runs[0])
+	}
+}
+
+func TestStoreImportsLegacyJSON(t *testing.T) {
+	dir := t.TempDir()
+	legacyDir := filepath.Join(dir, "executions")
+	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	execution := &Execution{
+		ID:        "legacy-run",
+		Pipeline:  "p",
+		Input:     "old input",
+		Status:    StatusRunning,
+		CreatedAt: time.Now().UTC(),
+		Runs: []*NodeRun{
+			{ID: "legacy-node-run", NodeID: "worker", Type: pipeline.TypeStandard, Status: StatusRunning},
+		},
+	}
+	data, err := json.Marshal(execution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyPath := filepath.Join(legacyDir, execution.ID+".json")
+	if err := os.WriteFile(legacyPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	got, err := store.Get(execution.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusInterrupted || got.Runs[0].Status != StatusInterrupted {
+		t.Fatalf("migrated execution statuses = %s / %s", got.Status, got.Runs[0].Status)
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy execution file was not removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "executions.db")); err != nil {
+		t.Fatalf("SQLite database was not created: %v", err)
+	}
+}
+
+func TestStoreRetentionAndPagination(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 1; i <= 8; i++ {
+		execution := &Execution{
+			ID:        fmt.Sprintf("run-%02d", i),
+			Pipeline:  "p",
+			Input:     "input",
+			Status:    StatusCompleted,
+			CreatedAt: base.Add(time.Duration(i) * time.Second),
+		}
+		if err := store.Save(execution); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, total, err := store.ListPage(1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 || len(items) != 2 || items[0].ID != "run-08" || items[1].ID != "run-07" {
+		t.Fatalf("first page = %+v, total %d", items, total)
+	}
+	items, total, err = store.ListPage(2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 || len(items) != 1 || items[0].ID != "run-06" {
+		t.Fatalf("second page = %+v, total %d", items, total)
+	}
+	if err := store.Save(&Execution{
+		ID:        "active",
+		Pipeline:  "p",
+		Status:    StatusRunning,
+		CreatedAt: base.Add(20 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, total, err = store.ListPage(1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 4 {
+		t.Fatalf("retention removed an in-progress execution or kept excess history: total %d", total)
+	}
+}
+
+func TestConditionalHandoffsRenderPayloadAndPreserveJoinSemantics(t *testing.T) {
+	for _, approve := range []bool{true, false} {
+		name := "reject"
+		decision := "reject"
+		selectedNode := "revise"
+		if approve {
+			name, decision, selectedNode = "approve", "approve", "publish"
+		}
+		t.Run(name, func(t *testing.T) {
+			var joinedInput string
+			eng := newTestEngine(t, `
+name: routed
+entry: source
+agents:
+  - id: source
+    runtime: source
+    handoff: [review]
+  - id: review
+    type: approval
+    handoff:
+      - to: publish
+        condition: on_approve
+        input: "output={{ output }} input={{ input }} comment={{ comment }}"
+      - to: revise
+        condition: on_reject
+        input: "output={{ output }} input={{ input }} comment={{ comment }}"
+  - id: publish
+    runtime: publish
+    handoff: [merge]
+  - id: revise
+    runtime: revise
+    handoff: [merge]
+  - id: merge
+    runtime: merge
+`, map[string]func(ctx context.Context, req runtime.Request) (string, error){
+				"source":  func(_ context.Context, _ runtime.Request) (string, error) { return "draft", nil },
+				"publish": func(_ context.Context, req runtime.Request) (string, error) { return req.Input, nil },
+				"revise":  func(_ context.Context, req runtime.Request) (string, error) { return req.Input, nil },
+				"merge": func(_ context.Context, req runtime.Request) (string, error) {
+					joinedInput = req.Input
+					return "merged", nil
+				},
+			})
+			id, err := eng.Start("routed", "task")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var review *NodeRun
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				for _, run := range eng.WaitingApprovals(id) {
+					review = run
+				}
+				if review != nil {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if review == nil {
+				t.Fatal("review did not become available")
+			}
+			const note = "check the details"
+			if err := eng.Approve(id, review.ID, approve, "reviewer", note); err != nil {
+				t.Fatal(err)
+			}
+			execution := waitDone(t, eng, id)
+			if execution.Status != StatusCompleted {
+				t.Fatalf("execution status = %s (%s)", execution.Status, execution.Error)
+			}
+			for _, text := range []string{"output=draft", "input=draft", "comment=" + note} {
+				if !strings.Contains(joinedInput, text) {
+					t.Fatalf("merge input %q missing %q", joinedInput, text)
+				}
+			}
+			if len(execution.Runs) != 4 {
+				t.Fatalf("runs = %d, want source, review, selected route, and merge", len(execution.Runs))
+			}
+			if execution.Runs[2].NodeID != selectedNode {
+				t.Fatalf("selected route = %q, want %q", execution.Runs[2].NodeID, selectedNode)
+			}
+			if execution.Runs[1].DecisionSource != "human" || execution.Runs[1].Decision != decision {
+				t.Fatalf("review decision = %+v", execution.Runs[1])
+			}
+		})
+	}
+}
+
+func TestLLMGateApprovalIsRecordedSeparatelyFromHumanApproval(t *testing.T) {
+	var publishInput string
+	eng := newTestEngine(t, `
+name: gated
+entry: source
+agents:
+  - id: source
+    runtime: source
+    handoff: [quality]
+  - id: quality
+    type: llm_gate
+    runtime: judge
+    prompt: "Check the submitted result."
+    handoff:
+      - to: publish
+        condition: on_approve
+        input: "{{ output }} ({{ comment }})"
+      - to: quarantine
+        condition: on_reject
+  - id: publish
+    runtime: publish
+  - id: quarantine
+    runtime: quarantine
+`, map[string]func(ctx context.Context, req runtime.Request) (string, error){
+		"source": func(_ context.Context, _ runtime.Request) (string, error) { return "verified draft", nil },
+		"judge": func(_ context.Context, req runtime.Request) (string, error) {
+			if req.Input != "verified draft" || !strings.Contains(req.SystemPrompt, "JSON object") {
+				t.Fatalf("gate request = %+v", req)
+			}
+			return `{"decision":"approve","feedback":"checks passed"}`, nil
+		},
+		"publish": func(_ context.Context, req runtime.Request) (string, error) {
+			publishInput = req.Input
+			return "published", nil
+		},
+		"quarantine": func(_ context.Context, req runtime.Request) (string, error) {
+			t.Fatalf("rejected route ran for approved output: %q", req.Input)
+			return "", nil
+		},
+	})
+	id, err := eng.Start("gated", "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution := waitDone(t, eng, id)
+	if execution.Status != StatusCompleted || len(execution.FinalOutputs) != 1 {
+		t.Fatalf("execution = %s, %+v (%s)", execution.Status, execution.FinalOutputs, execution.Error)
+	}
+	if publishInput != "verified draft (checks passed)" {
+		t.Fatalf("publish input = %q", publishInput)
+	}
+	var gate *NodeRun
+	for _, run := range execution.Runs {
+		if run.NodeID == "quality" {
+			gate = run
+		}
+	}
+	if gate == nil || gate.DecisionSource != "llm_gate" || gate.Decision != "approve" ||
+		gate.Comment != "checks passed" || gate.ApprovedBy != "" {
+		t.Fatalf("LLM decision metadata = %+v", gate)
+	}
+}
+
+func TestLLMGateReworkLimitFailsClearly(t *testing.T) {
+	sourceCalls := 0
+	eng := newTestEngine(t, `
+name: bounded
+entry: source
+agents:
+  - id: source
+    runtime: source
+    handoff: [quality]
+  - id: quality
+    type: llm_gate
+    runtime: judge
+    prompt: "Review this result."
+    max_reworks: 1
+    reject-to: source
+`, map[string]func(ctx context.Context, req runtime.Request) (string, error){
+		"source": func(_ context.Context, _ runtime.Request) (string, error) {
+			sourceCalls++
+			return fmt.Sprintf("draft %d", sourceCalls), nil
+		},
+		"judge": func(_ context.Context, _ runtime.Request) (string, error) {
+			return `{"decision":"reject","feedback":"needs work"}`, nil
+		},
+	})
+	id, err := eng.Start("bounded", "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution := waitDone(t, eng, id)
+	if execution.Status != StatusRejected || !strings.Contains(execution.Error, "rework limit (1)") {
+		t.Fatalf("execution status/error = %s / %q", execution.Status, execution.Error)
+	}
+	var gateRuns []*NodeRun
+	for _, run := range execution.Runs {
+		if run.NodeID == "quality" {
+			gateRuns = append(gateRuns, run)
+		}
+	}
+	if sourceCalls != 2 || len(gateRuns) != 2 || gateRuns[1].GateReworks != 1 ||
+		gateRuns[1].DecisionSource != "llm_gate" || gateRuns[1].Decision != "reject" {
+		t.Fatalf("source calls=%d, gate runs=%+v", sourceCalls, gateRuns)
+	}
+}
+
+func TestAutomaticRetriesThenUseManualRetryFallback(t *testing.T) {
+	var calls int
+	eng := newTestEngine(t, `
+name: retry
+entry: worker
+agents:
+  - id: worker
+    runtime: flaky
+    retry: {count: 1, backoff: 1ms}
+`, map[string]func(ctx context.Context, req runtime.Request) (string, error){
+		"flaky": func(_ context.Context, _ runtime.Request) (string, error) {
+			calls++
+			if calls < 3 {
+				return "", fmt.Errorf("temporary failure %d", calls)
+			}
+			return "done", nil
+		},
+	})
+	id, err := eng.Start("retry", "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := waitForRetry(t, eng, id)
+	if calls != 2 || failed.Retries != 1 || failed.Status != StatusWaitingRetry {
+		t.Fatalf("waiting run = %+v, calls=%d", failed, calls)
+	}
+	if err := eng.Retry(id, failed.ID); err != nil {
+		t.Fatal(err)
+	}
+	execution := waitDone(t, eng, id)
+	if execution.Status != StatusCompleted || calls != 3 || execution.Runs[0].Retries != 2 {
+		t.Fatalf("execution = %s, calls=%d, run=%+v", execution.Status, calls, execution.Runs[0])
+	}
+}
+
+func TestAutomaticRetriesSucceedWithinConfiguredLimit(t *testing.T) {
+	var calls int
+	eng := newTestEngine(t, `
+name: retry
+entry: worker
+agents:
+  - id: worker
+    runtime: flaky
+    retry: {count: 2, backoff: 1ms}
+`, map[string]func(ctx context.Context, req runtime.Request) (string, error){
+		"flaky": func(_ context.Context, _ runtime.Request) (string, error) {
+			calls++
+			if calls < 3 {
+				return "", fmt.Errorf("temporary failure %d", calls)
+			}
+			return "recovered", nil
+		},
+	})
+	id, err := eng.Start("retry", "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution := waitDone(t, eng, id)
+	if execution.Status != StatusCompleted || calls != 3 || execution.Runs[0].Retries != 2 ||
+		execution.Runs[0].Error != "" || execution.Runs[0].Output != "recovered" {
+		t.Fatalf("execution = %s, calls=%d, run=%+v", execution.Status, calls, execution.Runs[0])
+	}
+}
+
+func TestAutomaticRetryCountAndBackoffCancellation(t *testing.T) {
+	var calls int
+	eng := newTestEngine(t, `
+name: retry
+entry: worker
+agents:
+  - id: worker
+    runtime: flaky
+    retry: {count: 2, backoff: 5s}
+`, map[string]func(ctx context.Context, req runtime.Request) (string, error){
+		"flaky": func(_ context.Context, _ runtime.Request) (string, error) {
+			calls++
+			return "", fmt.Errorf("temporary failure")
+		},
+	})
+	id, err := eng.Start("retry", "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		execution, err := eng.Get(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(execution.Runs) > 0 && execution.Runs[0].Retries == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	execution, err := eng.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(execution.Runs) == 0 || execution.Runs[0].Retries != 1 {
+		t.Fatalf("automatic retry did not begin: %+v", execution.Runs)
+	}
+	if err := eng.Cancel(id); err != nil {
+		t.Fatal(err)
+	}
+	execution = waitDone(t, eng, id)
+	if execution.Status != StatusCanceled || execution.Runs[0].Status != StatusCanceled || calls != 1 {
+		t.Fatalf("after cancellation: status=%s run=%s calls=%d", execution.Status, execution.Runs[0].Status, calls)
+	}
 }
 
 func TestRestartFromInterruptedRunReusesInputAndCompletedOutputs(t *testing.T) {
@@ -1245,6 +1659,7 @@ func TestRestartFromInterruptedRunReusesInputAndCompletedOutputs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer store.Close()
 	p, err := pipeline.Parse([]byte(`
 name: p
 entry: start
@@ -1283,6 +1698,15 @@ agents:
 	if err := store.Save(previous); err != nil {
 		t.Fatal(err)
 	}
+	stateDir := store.stateDir
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = NewStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
 	registry, err := runtime.NewRegistry(map[string]config.RuntimeConfig{"mock": {Type: "mock"}})
 	if err != nil {
 		t.Fatal(err)

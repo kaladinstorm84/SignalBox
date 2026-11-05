@@ -19,6 +19,7 @@ and script interpreters are installed separately when needed.
 | `standard` | Accepts a handoff (or several; see joins below), runs its prompt against a runtime, then hands off to one or more agents or a single orchestrator. |
 | `orchestrator` | A long-running coordinator. It accepts handoffs from **many** agents (fan-in: it waits until every inbound handoff has arrived), then runs its **stages** in order. Each stage dispatches to agents in parallel and collects the terminal output of every chain it started before moving on. A stage (or the orchestrator itself) can define a `prompt` to synthesise the collected results using the orchestrator's runtime. |
 | `approval` | A human gate. Approval passes the payload through unchanged. Rejection follows `reject-to` when specified; otherwise it restarts work after the last upstream approved gate in the same stage/scope, or retries immediate upstream work. Reviewer notes are appended to the rework input. |
+| `llm_gate` | An automated quality gate. It evaluates its input with the configured runtime and records an approve/reject decision and feedback separately from human approvals. Rejected work can be sent to `reject-to` for a bounded number of reworks. |
 | `manual_edit` | Pauses for a person to edit the incoming payload in the web UI or terminal, then hands the edited text downstream. |
 | `code` | Executes a local script with its input on stdin, then hands stdout to downstream nodes. No AI runtime is required. |
 
@@ -26,6 +27,32 @@ and script interpreters are installed separately when needed.
 
 - A node's `handoff` list names the nodes that receive its output. Multiple
   targets run as parallel branches.
+- Existing scalar targets such as `handoff: [review]` remain unconditional
+  and keep their original behavior. Approval and `llm_gate` nodes can instead
+  route by decision and construct downstream input from a small template:
+
+  ```yaml
+  - id: human_review
+    type: approval
+    handoff:
+      - to: publish
+        condition: on_approve
+        input: "{{ output }}"
+      - to: revise
+        condition: on_reject
+        input: |
+          {{ input }}
+
+          Reviewer feedback: {{ comment }}
+  ```
+
+  Conditions are `always`, `on_approve`, and `on_reject`. With no `condition`,
+  a handoff keeps the legacy approval behavior (it runs after approval).
+  `input` replaces the default output payload and supports only `{{ input }}`,
+  `{{ output }}`, and `{{ comment }}`; it is literal text substitution, not an
+  expression language. A handoff without `input` receives the node's output.
+  Rejection branches can terminate or continue through acyclic routes.
+  `reject-to` remains the option for routing work back through a rework loop.
 - A handoff to an orchestrator must be the *sole* target.
 - An agent with no `handoff` terminates its chain. Inside an orchestrator
   stage, a terminating chain hands its output back to the orchestrator;
@@ -55,8 +82,8 @@ and script interpreters are installed separately when needed.
 - **Formatted output:** set `format: true` on an agent to render its Markdown
   output in the execution detail view. The raw Markdown remains available in a
   collapsible section; raw HTML in Markdown is not rendered.
-- **Rejection target:** an approval can set `reject-to` to rerun an earlier
-  node, or start a rejection-only branch:
+- **Rejection target:** an approval or `llm_gate` can set `reject-to` to rerun
+  an earlier node, or start a rejection-only branch:
 
   ```yaml
   - id: human_review
@@ -75,12 +102,56 @@ and script interpreters are installed separately when needed.
   in the normal flow instead reuses its saved input plus the rejection notes.
 
   Targets must be non-orchestrator nodes in the same stage/scope, with handoffs
-  leading back to the approval. Normal handoff cycles remain invalid; only
+  leading back to the rejecting gate. Normal handoff cycles remain invalid; only
   rejection routes may loop backward. Diagrams place rejection-only work and
   dashed red rejection routes above the normal track, with return connectors
   back to review. Without `reject-to`, automatic checkpoint behavior remains
   unchanged. Rejections remain visible in the execution timeline; a later
   successful review can still complete that execution.
+
+### LLM quality gates
+
+An `llm_gate` is a distinct automated decision step. Its `prompt` describes
+the evaluation criteria; the configured runtime receives the node's input and
+is instructed to return exactly one JSON object with `decision` (`approve` or
+`reject`) and `feedback` (a string). Invalid verdicts fail clearly instead of
+being treated as approval.
+
+```yaml
+- id: quality_review
+  type: llm_gate
+  runtime: codex
+  prompt: Check factual accuracy and completeness.
+  max_reworks: 2
+  reject-to: writer
+  handoff: [publish]
+```
+
+The gate passes its input onward when approved. A rejection appends its
+feedback to the rework input and invokes `reject-to`; after the configured
+number of reworks, another rejection ends the execution with a clear
+`rework limit` error. `max_reworks` is between 0 and 10; it must be positive
+when automatic gate rework is configured. The execution record and UI show
+LLM verdicts and feedback independently of human approval metadata.
+
+### Runtime retries
+
+Callable nodes can retry runtime errors automatically with a fixed delay:
+
+```yaml
+- id: researcher
+  runtime: codex
+  retry:
+    count: 2
+    backoff: 500ms
+```
+
+`count` is the number of retries after the initial call (0–10), and `backoff`
+is a Go duration from 0 to 5 minutes. Cancellation interrupts the delay.
+After automatic retries are exhausted, the existing `waiting_retry` action
+remains available to retry the call manually or cancel the execution. Runtime
+errors are separate from quality-gate rejection and code-node rejection
+outcomes; automatic retries do not treat those decisions as transient failures.
 
 ### Code Steps
 
@@ -268,10 +339,14 @@ prints the build version.
   fail, or rejection-style retry outcome as described above.
 - **Rerun** starts a new execution with the same pipeline and input, using the
   pipeline definition currently on disk. **Delete** removes a finished
-  execution and its history file; cancel a running execution first.
+  execution and its stored history; cancel a running execution first.
 
-Execution history is persisted as JSON under `.signalbox/executions/`, so it
-survives restarts (in-flight runs are marked `interrupted`).
+Execution history is persisted in `.signalbox/executions.db`, so it survives
+restarts (in-flight runs are marked `interrupted`). Existing JSON records in
+`.signalbox/executions/` are imported automatically the first time the database
+opens. The default retention limit is 1,000 terminal executions; set
+`execution_retention` in `signalbox.yaml` to change it, or to `0` to keep
+history indefinitely. In-progress executions are not pruned.
 Interrupted standard-agent and code-node cards offer **Retry from here**,
 which starts a new execution at that call with its saved input, using the
 current pipeline definition. Completed earlier outputs remain available to
@@ -346,6 +421,7 @@ version: 1
 project: my-project
 pipelines_dir: pipelines
 state_dir: .signalbox
+execution_retention: 1000
 max_concurrent_calls: 4
 server:
   host: 127.0.0.1
@@ -369,6 +445,10 @@ runtimes:
 executions within one SignalBox process, including code steps and orchestrator
 synthesis. Calls above the limit wait for a slot and stop waiting if their
 execution is canceled. Approval waits and manual-retry waits do not occupy a
+
+The execution list API is paginated with `page` (1-based) and `page_size`
+(10–100, in increments of 10); the web UI defaults to 20 rows per page and
+remembers the selected size in that browser. Approval waits and manual-retry waits do not occupy a
 call slot. Omitted or `0` selects the default of `4`; negative values are
 invalid. Restart the server after changing the cap. Separate SignalBox
 processes have independent limits.
@@ -408,7 +488,7 @@ output stable between polls unless a new pipeline run is intended.
 | `PUT /api/pipeline-files/{filename}` | Validate and create/edit YAML: `{"content": "...", "version": "..."}`; use an empty version to create a new file |
 | `GET /api/settings` | Project configuration YAML and file version |
 | `PUT /api/settings` | Validate and save project YAML: `{"content": "...", "version": "..."}` |
-| `GET /api/executions` | Execution summaries (newest first) |
+| `GET /api/executions?page=1&page_size=20` | Paginated execution summaries (newest first); page sizes are multiples of 10 from 10 to 100. Returns `executions`, `page`, `page_size`, `total`, and `total_pages`. |
 | `POST /api/executions` | Start a run: `{"pipeline": "default", "input": "..."}` |
 | `GET /api/executions/{id}` | Full execution detail |
 | `POST /api/executions/{id}/approve` | Resolve a gate: `{"run_id": "...", "approved": true, "approved_by": "...", "comment": "..."}` |

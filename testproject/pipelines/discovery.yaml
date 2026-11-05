@@ -1,0 +1,81 @@
+name: discovery
+description: >-
+  Research a question, validate the findings with an automated quality gate,
+  and route the result through conditional human review.
+entry: researcher
+
+agents:
+  - id: researcher
+    type: standard
+    runtime: codex
+    description: Investigates the question and records findings with sources.
+    prompt: |
+      Investigate the user's discovery question.
+      Return:
+      1. A concise answer.
+      2. The evidence and sources used, with links where available.
+      3. Important uncertainties and what remains unknown.
+      Do not invent sources or claim certainty beyond the evidence.
+    retry:
+      count: 2
+      backoff: 1s
+    handoff: [quality_gate]
+
+  - id: quality_gate
+    type: llm_gate
+    runtime: codex
+    description: Checks that findings are supported, clear, and appropriately qualified.
+    prompt: |
+      Review the discovery findings for:
+      - A direct answer to the original question.
+      - Evidence that supports the claims and source links where relevant.
+      - Clear separation of known facts from uncertainty.
+
+      Reject findings that lack meaningful evidence or overstate certainty.
+      In feedback, say exactly what the researcher should improve.
+    retry:
+      count: 1
+      backoff: 1s
+    max_reworks: 2
+    reject-to: researcher
+    handoff: [human_review]
+
+  - id: human_review
+    type: approval
+    description: Human checks the quality-gated discovery before delivery.
+    handoff:
+      - to: publish
+        condition: on_approve
+        input: |
+          Discovery findings:
+          {{ output }}
+
+          Reviewer note:
+          {{ comment }}
+      - to: needs_revision
+        condition: on_reject
+        input: |
+          The discovery was not approved.
+
+          Findings:
+          {{ input }}
+
+          Reviewer feedback:
+          {{ comment }}
+
+  - id: publish
+    type: standard
+    runtime: codex
+    description: Produces a concise final discovery report.
+    prompt: |
+      Turn the approved discovery findings into a concise, readable report.
+      Preserve the evidence, sources, and uncertainty. Do not add unsupported
+      claims.
+
+  - id: needs_revision
+    type: standard
+    runtime: codex
+    description: Summarizes the review feedback for a follow-up discovery run.
+    prompt: |
+      Explain briefly what needs revision before this discovery can be used.
+      Preserve the reviewer feedback and identify any missing evidence.
