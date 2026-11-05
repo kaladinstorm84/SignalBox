@@ -219,7 +219,18 @@ prints the build version.
   into it. Opening New run (or clicking it again) reloads pipeline YAML from
   disk, so added and edited pipelines are available without restarting the server.
 - **Pipelines** — the loaded definitions: agents, types, runtimes, handoffs,
-  and stages.
+  and stages. Use **New pipeline** to create a YAML file or **Edit** on a
+  pipeline to modify its source. The editor writes to the configured
+  `pipelines_dir`, preserves comments/whitespace, and validates the graph,
+  runtime/code references, and duplicate pipeline names before saving.
+  Filenames must be `.yaml` or `.yml` files, not paths. Existing filenames are
+  read-only in the editor, and a new file never overwrites an existing one.
+  Stale saves are rejected if the file changed on disk. **Reload** discards a
+  draft and reads the current file; drafts survive navigation between pages.
+  **Edit pipeline files** remains available when malformed YAML prevents
+  pipeline loading, so invalid files can be repaired. The starter template
+  uses `mock`; select a runtime defined in your project when adapting it.
+  Successful saves are available to new runs without restarting the server.
 - **Settings** — edit the project configuration as YAML. Saving validates the
   configuration, runtime definitions, and pipeline references while preserving
   comments and whitespace. Reload reads the current file from disk; a stale
@@ -387,6 +398,9 @@ output stable between polls unless a new pipeline run is intended.
 |---------------|---------|
 | `GET /api/meta` | Project name |
 | `GET /api/pipelines` | Loaded pipeline definitions |
+| `GET /api/pipeline-files` | YAML filenames and pipeline names where valid, including invalid files for repair |
+| `GET /api/pipeline-files/{filename}` | Raw pipeline YAML and file version |
+| `PUT /api/pipeline-files/{filename}` | Validate and create/edit YAML: `{"content": "...", "version": "..."}`; use an empty version to create a new file |
 | `GET /api/settings` | Project configuration YAML and file version |
 | `PUT /api/settings` | Validate and save project YAML: `{"content": "...", "version": "..."}` |
 | `GET /api/executions` | Execution summaries (newest first) |
