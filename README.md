@@ -22,6 +22,7 @@ and script interpreters are installed separately when needed.
 | `llm_gate` | An automated quality gate. It evaluates its input with the configured runtime and records an approve/reject decision and feedback separately from human approvals. Rejected work can be sent to `reject-to` for a bounded number of reworks. |
 | `manual_edit` | Pauses for a person to edit the incoming payload in the web UI or terminal, then hands the edited text downstream. |
 | `code` | Executes a local script with its input on stdin, then hands stdout to downstream nodes. No AI runtime is required. |
+| `session` | A multi-round discussion between participant agents. Participants take turns, each seeing the transcript, until they reach consensus or the round limit. See [Sessions and chunks](#sessions-and-chunks). |
 
 ### Handoffs
 
@@ -152,6 +153,100 @@ After automatic retries are exhausted, the existing `waiting_retry` action
 remains available to retry the call manually or cancel the execution. Runtime
 errors are separate from quality-gate rejection and code-node rejection
 outcomes; automatic retries do not treat those decisions as transient failures.
+
+The test project's `discovery` pipeline demonstrates conditional handoffs,
+payload templates, an `llm_gate` with bounded rework, and runtime retries. The
+`Full Pipeline QA` pipeline puts an `llm_gate` after each planner.
+
+### Sessions and chunks
+
+A `session` node runs a conversation between **participants**: ordinary
+`standard` agents that only the session invokes. Each round, every participant
+takes one turn. Its prompt is its own `prompt` plus session instructions, and
+its input is the session's input followed by the transcript so far (and the
+chunk table, when chunks are enabled).
+
+```yaml
+- id: design_review
+  type: session
+  participants: [architect, security_reviewer, delivery_lead]
+  turn_order: round_robin        # or moderator (moderator speaks first each round)
+  # moderator: architect         # required with turn_order: moderator
+  max_rounds: 4                  # 1–20, default 5
+  summary_agent: delivery_lead   # optional; writes the session's output
+  consensus:
+    method: vote                 # vote (default) or moderator_decides
+    keyword: "VOTE: AGREE"       # default; must appear on its own line
+    require: majority            # all (default) or majority
+    require_chunks_done: true    # optional; needs chunks.enabled
+  chunks:
+    enabled: true
+    initial: [Agree the component boundaries]
+  handoff:
+    - to: sign_off
+      condition: on_consensus
+    - to: escalate
+      condition: on_no_consensus
+```
+
+- **Consensus.** With `vote`, a participant agrees by writing the keyword on its
+  own line (case-insensitive; `**bold**` is fine). A round reaches consensus
+  when all, or more than half, of the participants agree in that round. With
+  `moderator_decides`, only the `summary_agent` can end the session, by
+  writing `CONSENSUS: REACHED`. With `require_chunks_done`, consensus also
+  needs every chunk to be done; otherwise the discussion continues.
+- **Output.** When the session ends, the `summary_agent` (if set) writes a
+  final summary, which becomes the output. Without one, the output is
+  Markdown minutes of the transcript.
+- **Outcomes and routing.** A session ends with `consensus` or `no_consensus`.
+  Handoffs with no condition, or with `on_consensus`, run on consensus;
+  `on_no_consensus` routes run when the round limit is reached; `always` runs
+  on either. If rounds run out and there is no `on_no_consensus` or `always`
+  route, the execution is **rejected** with
+  `session "<id>" reached max_rounds (N) without consensus`.
+- **Participants** must be standard agents and belong to one session. They
+  cannot be the entry, a handoff, `reject-to` or `additional-input` target, or
+  a stage agent. They also cannot define their own `handoff`, `reject-to`,
+  `additional-input` or `retry`; set `retry` on the session instead, which
+  applies to each turn.
+- **History and recovery.** Each turn is saved to the execution record (the
+  run's `session` field) as soon as it completes, so transcripts survive
+  restarts. **Retry from here** on an interrupted session resumes it in a new
+  execution: completed turns are kept and not replayed, and chunks are copied.
+
+**Chunks** are execution-scoped work items with stable IDs (`C-001`,
+`C-002`, …). IDs are never reused, even after a chunk is removed. When a
+session has `chunks.enabled`, participants manage chunks with directives,
+each on its own line of their turn:
+
+```
+CHUNK_ADD: Write the migration plan
+CHUNK_DONE: C-001
+CHUNK_REMOVE: C-002
+```
+
+Titles must be one non-blank line of at most 200 characters, and each turn
+can apply at most 20 directives. Invalid directives (an unknown ID, a blank
+title, or an already-done chunk) are ignored and listed with the turn; they
+do not fail the session. People can also manage chunks while the execution
+is running, from the execution page, the API, or the CLI:
+
+```bash
+signalbox chunks list <execution>
+signalbox chunks add <execution> Write the migration plan
+signalbox chunks done <execution> C-001
+signalbox chunks remove <execution> C-002
+```
+
+The CLI talks to the running server, using the address in `signalbox.yaml`
+or `--addr host:port`. Use `--by name` to record who made the change. Chunks
+become read-only once an execution finishes.
+
+The test project includes two demos. `design-review` shows round-robin
+voting with a majority, chunks with `require_chunks_done`, and
+`on_consensus`/`on_no_consensus` routing. `incident-war-room` shows a
+moderator with `moderator_decides`, where running out of rounds rejects the
+execution.
 
 ### Code Steps
 
@@ -340,6 +435,12 @@ prints the build version.
 - **Rerun** starts a new execution with the same pipeline and input, using the
   pipeline definition currently on disk. **Delete** removes a finished
   execution and its stored history; cancel a running execution first.
+- Session runs show their transcript grouped by round, with ✓ marks on
+  agreeing turns, any chunk directives each turn applied or rejected, and a
+  consensus / no-consensus banner. Diagrams draw a session as an interchange
+  with one ring per participant and list the participants below it.
+  Executions with chunks show a **Chunks** table; while the execution is
+  running you can add chunks, mark them done, or remove them.
 
 Execution history is persisted in `.signalbox/executions.db`, so it survives
 restarts (in-flight runs are marked `interrupted`). Existing JSON records in
@@ -347,7 +448,7 @@ restarts (in-flight runs are marked `interrupted`). Existing JSON records in
 opens. The default retention limit is 1,000 terminal executions; set
 `execution_retention` in `signalbox.yaml` to change it, or to `0` to keep
 history indefinitely. In-progress executions are not pruned.
-Interrupted standard-agent and code-node cards offer **Retry from here**,
+Interrupted standard-agent, code, `llm_gate`, and session cards offer **Retry from here**,
 which starts a new execution at that call with its saved input, using the
 current pipeline definition. Completed earlier outputs remain available to
 `additional-input` dependencies; earlier branches are not replayed. This does
@@ -493,10 +594,14 @@ output stable between polls unless a new pipeline run is intended.
 | `GET /api/executions/{id}` | Full execution detail |
 | `POST /api/executions/{id}/approve` | Resolve a gate: `{"run_id": "...", "approved": true, "approved_by": "...", "comment": "..."}` |
 | `POST /api/executions/{id}/retry` | Retry a failed agent call awaiting retry: `{"run_id": "..."}` |
-| `POST /api/executions/{id}/restart` | Start a new execution from an interrupted standard-agent or code call: `{"run_id": "..."}` |
+| `POST /api/executions/{id}/restart` | Start a new execution from an interrupted standard-agent, code, `llm_gate`, or session call: `{"run_id": "..."}` |
 | `POST /api/executions/{id}/cancel` | Cancel a running execution |
 | `POST /api/executions/{id}/rerun` | Start a new execution with the same pipeline and input; returns `{"id": "..."}` |
 | `DELETE /api/executions/{id}` | Delete a finished execution (409 while it is still running) |
+| `GET /api/executions/{id}/chunks` | List the execution's chunks |
+| `POST /api/executions/{id}/chunks` | Add a chunk: `{"title": "...", "by": "..."}`; returns the chunk (409 once the execution has finished) |
+| `POST /api/executions/{id}/chunks/{chunk}/done` | Mark a chunk done: optional `{"by": "..."}` |
+| `DELETE /api/executions/{id}/chunks/{chunk}` | Remove a chunk (its ID is not reused) |
 
 ## Development
 
@@ -508,7 +613,7 @@ go test ./...
 Layout:
 
 - `cmd/signalbox` — CLI entry point
-- `internal/cli` — commands (`init`, `validate`, `serve`, `run`) and scaffolding templates
+- `internal/cli` — commands (`init`, `validate`, `serve`, `run`, `chunks`) and scaffolding templates
 - `internal/config` — `signalbox.yaml` loading
 - `internal/pipeline` — pipeline YAML schema and validation
 - `internal/engine` — execution engine (handoffs, orchestrator stages, approvals) and JSON persistence

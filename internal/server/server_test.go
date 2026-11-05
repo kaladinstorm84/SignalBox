@@ -890,3 +890,126 @@ agents:
 		t.Fatalf("gate view = %+v", gate)
 	}
 }
+
+func TestSessionPipelineAPIAndChunkEndpoints(t *testing.T) {
+	p, err := pipeline.Parse([]byte(`
+name: talk
+entry: start
+agents:
+  - id: start
+    runtime: mock
+    handoff: [panel]
+  - id: panel
+    type: session
+    participants: [a, b]
+    max_rounds: 1
+    chunks:
+      enabled: true
+    handoff:
+      - to: after
+        condition: on_no_consensus
+  - id: a
+    runtime: slow
+  - id: b
+    runtime: mock
+  - id: after
+    runtime: mock
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := runtime.NewRegistry(map[string]config.RuntimeConfig{"mock": {Type: "mock"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	registry.Register(&runtime.Mock{RuntimeName: "slow", Handler: func(ctx context.Context, _ runtime.Request) (string, error) {
+		started <- struct{}{}
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return "thinking", nil
+	}})
+	pipelines := map[string]*pipeline.Pipeline{p.Name: p}
+	eng, err := engine.New(pipelines, registry, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := New(eng, "test", func() (map[string]*pipeline.Pipeline, error) {
+		return pipelines, nil
+	}, nil, nil).Handler()
+	do := func(method, path, body string) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(method, path, strings.NewReader(body)))
+		return response
+	}
+
+	listed := do(http.MethodGet, "/api/pipelines", "")
+	var views []struct {
+		Nodes []struct {
+			ID           string                `json:"id"`
+			Participants []string              `json:"participants"`
+			MaxRounds    int                   `json:"max_rounds"`
+			TurnOrder    string                `json:"turn_order"`
+			Consensus    *pipeline.Consensus   `json:"consensus"`
+			Chunks       *pipeline.ChunkConfig `json:"chunks"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(listed.Body.Bytes(), &views); err != nil {
+		t.Fatal(err)
+	}
+	panel := views[0].Nodes[1]
+	if panel.ID != "panel" || len(panel.Participants) != 2 || panel.MaxRounds != 1 || panel.TurnOrder != "round_robin" ||
+		panel.Consensus == nil || panel.Consensus.Keyword != "VOTE: AGREE" || panel.Chunks == nil || !panel.Chunks.Enabled {
+		t.Fatalf("session view = %s", listed.Body.String())
+	}
+
+	id, err := eng.Start("talk", "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	base := "/api/executions/" + id + "/chunks"
+	if r := do(http.MethodPost, base, `{"title":""}`); r.Code != http.StatusBadRequest {
+		t.Fatalf("blank title status = %d", r.Code)
+	}
+	if r := do(http.MethodPost, "/api/executions/missing/chunks", `{"title":"x"}`); r.Code != http.StatusNotFound {
+		t.Fatalf("missing execution status = %d", r.Code)
+	}
+	added := do(http.MethodPost, base, `{"title":"Write tests","by":"matt"}`)
+	if added.Code != http.StatusCreated || !strings.Contains(added.Body.String(), `"id":"C-001"`) {
+		t.Fatalf("add = %d %s", added.Code, added.Body.String())
+	}
+	do(http.MethodPost, base, `{"title":"Drop me"}`)
+	if r := do(http.MethodDelete, base+"/C-002", ""); r.Code != http.StatusOK {
+		t.Fatalf("remove = %d %s", r.Code, r.Body.String())
+	}
+	if r := do(http.MethodPost, base+"/C-009/done", ""); r.Code != http.StatusNotFound {
+		t.Fatalf("unknown chunk status = %d", r.Code)
+	}
+	if r := do(http.MethodPost, base+"/C-001/done", `{"by":"matt"}`); r.Code != http.StatusOK {
+		t.Fatalf("done = %d %s", r.Code, r.Body.String())
+	}
+	listedChunks := do(http.MethodGet, base, "")
+	var chunks []engine.Chunk
+	if err := json.Unmarshal(listedChunks.Body.Bytes(), &chunks); err != nil || len(chunks) != 1 || chunks[0].Status != engine.ChunkDone || chunks[0].DoneBy != "matt" {
+		t.Fatalf("chunks = %s (%v)", listedChunks.Body.String(), err)
+	}
+
+	close(release)
+	done, _ := eng.Wait(id)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("execution did not finish")
+	}
+	if r := do(http.MethodPost, base, `{"title":"late"}`); r.Code != http.StatusConflict {
+		t.Fatalf("add after finish status = %d", r.Code)
+	}
+	exec := do(http.MethodGet, "/api/executions/"+id, "")
+	if !strings.Contains(exec.Body.String(), `"session":{`) || !strings.Contains(exec.Body.String(), `"outcome":"no_consensus"`) {
+		t.Fatalf("execution JSON missing session state: %s", exec.Body.String())
+	}
+}

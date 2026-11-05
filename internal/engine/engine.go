@@ -285,7 +285,7 @@ func (eng *Engine) RestartFromInterrupted(execID, runID string) (string, error) 
 	if interrupted == nil || interrupted.Status != StatusInterrupted {
 		return "", fmt.Errorf("run %q is not interrupted in execution %q", runID, execID)
 	}
-	if interrupted.Type != pipeline.TypeStandard && interrupted.Type != pipeline.TypeCode && interrupted.Type != pipeline.TypeLLMGate {
+	if !restartableType(interrupted.Type) {
 		return "", fmt.Errorf("run %q is not a retryable agent call", runID)
 	}
 	p, ok := eng.pipelines[source.Pipeline]
@@ -296,7 +296,7 @@ func (eng *Engine) RestartFromInterrupted(execID, runID string) (string, error) 
 	if node == nil {
 		return "", fmt.Errorf("agent %q is no longer in pipeline %q", interrupted.NodeID, source.Pipeline)
 	}
-	if node.Type != pipeline.TypeStandard && node.Type != pipeline.TypeCode && node.Type != pipeline.TypeLLMGate {
+	if !restartableType(node.Type) || (node.Type == pipeline.TypeSession) != (interrupted.Type == pipeline.TypeSession) {
 		return "", fmt.Errorf("agent %q is no longer a callable node", node.ID)
 	}
 
@@ -338,6 +338,14 @@ func (eng *Engine) RestartFromInterrupted(execID, runID string) (string, error) 
 		FromNodeID:              interrupted.FromNodeID,
 		StageID:                 interrupted.StageID,
 	}
+	if interrupted.Session != nil {
+		// Resume the discussion: completed turns are kept and skipped.
+		session := *interrupted.Session
+		session.Turns = append([]SessionTurn(nil), interrupted.Session.Turns...)
+		rootRun.Session = &session
+	}
+	le.exec.Chunks = append([]Chunk(nil), source.Chunks...)
+	le.exec.NextChunk = source.NextChunk
 	le.exec.Runs = append(le.exec.Runs, rootRun)
 	le.liveRuns = 1
 	eng.execs[le.exec.ID] = le
@@ -358,6 +366,15 @@ func (eng *Engine) RestartFromInterrupted(execID, runID string) (string, error) 
 	}
 	eng.persistLocked(le)
 	return le.exec.ID, nil
+}
+
+// restartableType reports whether runs of a node type can be restarted.
+func restartableType(t pipeline.NodeType) bool {
+	switch t {
+	case pipeline.TypeStandard, pipeline.TypeCode, pipeline.TypeLLMGate, pipeline.TypeSession:
+		return true
+	}
+	return false
 }
 
 // Cancel aborts a running execution.
@@ -705,6 +722,10 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 
 	if node.Type == pipeline.TypeLLMGate {
 		eng.runLLMGate(le, run, node, octx)
+		return
+	}
+	if node.Type == pipeline.TypeSession {
+		eng.runSession(le, run, node, octx)
 		return
 	}
 
@@ -1108,11 +1129,19 @@ func selectHandoffs(node *pipeline.Node, outcome string) []pipeline.HandoffRule 
 	for _, route := range node.Handoff {
 		switch route.Condition {
 		case "":
-			if outcome != "reject" {
+			if outcome != "reject" && outcome != OutcomeNoConsensus {
 				selected = append(selected, route)
 			}
 		case "always":
 			selected = append(selected, route)
+		case "on_consensus":
+			if outcome == OutcomeConsensus {
+				selected = append(selected, route)
+			}
+		case "on_no_consensus":
+			if outcome == OutcomeNoConsensus {
+				selected = append(selected, route)
+			}
 		case "on_approve":
 			if outcome == "approve" {
 				selected = append(selected, route)

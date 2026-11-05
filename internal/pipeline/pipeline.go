@@ -35,7 +35,43 @@ const (
 	// handing it off.
 	TypeManualEdit NodeType = "manual_edit"
 	TypeCode       NodeType = "code"
+	// TypeSession runs a multi-round discussion between participant agents
+	// until they reach consensus or the round limit.
+	TypeSession NodeType = "session"
 )
+
+// Session defaults and limits.
+const (
+	TurnOrderRoundRobin      = "round_robin"
+	TurnOrderModerator       = "moderator"
+	ConsensusVote            = "vote"
+	ConsensusModeratorDecide = "moderator_decides"
+	ConsensusRequireAll      = "all"
+	ConsensusRequireMajority = "majority"
+	DefaultConsensusKeyword  = "VOTE: AGREE"
+	DefaultMaxRounds         = 5
+	MaxSessionRounds         = 20
+	MaxChunkTitleLength      = 200
+	MaxInitialChunks         = 100
+)
+
+// Consensus configures how a session decides it has finished.
+type Consensus struct {
+	// Method is vote (default) or moderator_decides.
+	Method string `yaml:"method,omitempty" json:"method"`
+	// Keyword is the line a participant writes to vote in agreement.
+	Keyword string `yaml:"keyword,omitempty" json:"keyword,omitempty"`
+	// Require is all (default) or majority, for the vote method.
+	Require string `yaml:"require,omitempty" json:"require,omitempty"`
+	// RequireChunksDone withholds consensus while any chunk is pending.
+	RequireChunksDone bool `yaml:"require_chunks_done,omitempty" json:"require_chunks_done,omitempty"`
+}
+
+// ChunkConfig enables chunk tracking for a session.
+type ChunkConfig struct {
+	Enabled bool     `yaml:"enabled" json:"enabled"`
+	Initial []string `yaml:"initial,omitempty" json:"initial,omitempty"`
+}
 
 // HandoffRule is a conditional route. A YAML scalar remains a shorthand for
 // an unconditional handoff, preserving existing pipeline files.
@@ -124,6 +160,35 @@ type Node struct {
 
 	// Stages is only valid for orchestrators.
 	Stages []Stage `yaml:"stages,omitempty"`
+
+	// Session fields are only valid on session nodes. Participants are
+	// standard agents invoked only by the session, never by handoffs.
+	Participants []string     `yaml:"participants,omitempty"`
+	TurnOrder    string       `yaml:"turn_order,omitempty"`
+	Moderator    string       `yaml:"moderator,omitempty"`
+	MaxRounds    int          `yaml:"max_rounds,omitempty"`
+	Consensus    *Consensus   `yaml:"consensus,omitempty"`
+	SummaryAgent string       `yaml:"summary_agent,omitempty"`
+	Chunks       *ChunkConfig `yaml:"chunks,omitempty"`
+}
+
+// ChunksEnabled reports whether a session tracks chunks.
+func (n *Node) ChunksEnabled() bool {
+	return n.Chunks != nil && n.Chunks.Enabled
+}
+
+// TurnSequence returns the participants in the order they speak each round.
+func (n *Node) TurnSequence() []string {
+	if n.TurnOrder != TurnOrderModerator {
+		return append([]string{}, n.Participants...)
+	}
+	order := []string{n.Moderator}
+	for _, id := range n.Participants {
+		if id != n.Moderator {
+			order = append(order, id)
+		}
+	}
+	return order
 }
 
 // HandoffTargets returns every statically configured route target.
@@ -335,9 +400,9 @@ func (p *Pipeline) validate() error {
 			n.Type = TypeStandard
 		}
 		switch n.Type {
-		case TypeStandard, TypeOrchestrator, TypeApproval, TypeLLMGate, TypeManualEdit, TypeCode:
+		case TypeStandard, TypeOrchestrator, TypeApproval, TypeLLMGate, TypeManualEdit, TypeCode, TypeSession:
 		default:
-			return fmt.Errorf("pipeline %q: agent %q has unknown type %q (want standard, orchestrator, approval, llm_gate, manual_edit, or code)", p.Name, n.ID, n.Type)
+			return fmt.Errorf("pipeline %q: agent %q has unknown type %q (want standard, orchestrator, approval, llm_gate, manual_edit, code, or session)", p.Name, n.ID, n.Type)
 		}
 		p.byID[n.ID] = n
 	}
@@ -356,6 +421,9 @@ func (p *Pipeline) validate() error {
 		}
 	}
 
+	if err := p.checkSessionParticipants(); err != nil {
+		return fmt.Errorf("pipeline %q: %w", p.Name, err)
+	}
 	if err := p.checkDependencyCycle(); err != nil {
 		return fmt.Errorf("pipeline %q: %w", p.Name, err)
 	}
@@ -470,6 +538,7 @@ func (p *Pipeline) checkReachability() error {
 		for _, s := range n.Stages {
 			queue = append(queue, s.Agents...)
 		}
+		queue = append(queue, n.Participants...)
 	}
 	for id := range p.byID {
 		if !seen[id] {
@@ -552,8 +621,12 @@ func (p *Pipeline) validateNode(n *Node) error {
 			if n.Type != TypeApproval && n.Type != TypeLLMGate {
 				return fmt.Errorf("agent %q: handoff condition %q is only supported on approval and llm_gate nodes", n.ID, route.Condition)
 			}
+		case "on_consensus", "on_no_consensus":
+			if n.Type != TypeSession {
+				return fmt.Errorf("agent %q: handoff condition %q is only supported on session nodes", n.ID, route.Condition)
+			}
 		default:
-			return fmt.Errorf("agent %q: unknown handoff condition %q (want always, on_approve, or on_reject)", n.ID, route.Condition)
+			return fmt.Errorf("agent %q: unknown handoff condition %q (want always, on_approve, on_reject, on_consensus, or on_no_consensus)", n.ID, route.Condition)
 		}
 		if route.To == "" {
 			return fmt.Errorf("agent %q has a handoff with no target", n.ID)
@@ -588,7 +661,7 @@ func (p *Pipeline) validateNode(n *Node) error {
 	}
 	if n.Retry != nil {
 		switch n.Type {
-		case TypeStandard, TypeCode, TypeLLMGate, TypeOrchestrator:
+		case TypeStandard, TypeCode, TypeLLMGate, TypeOrchestrator, TypeSession:
 		default:
 			return fmt.Errorf("agent %q: retry is only supported on callable nodes", n.ID)
 		}
@@ -607,7 +680,13 @@ func (p *Pipeline) validateNode(n *Node) error {
 		return fmt.Errorf("llm_gate %q: max_reworks must be between 0 and 10", n.ID)
 	}
 
+	if n.Type != TypeSession && (len(n.Participants) > 0 || n.TurnOrder != "" || n.Moderator != "" || n.MaxRounds != 0 || n.Consensus != nil || n.SummaryAgent != "" || n.Chunks != nil) {
+		return fmt.Errorf("agent %q: participants, turn_order, moderator, max_rounds, consensus, summary_agent, and chunks are only supported on session nodes", n.ID)
+	}
+
 	switch n.Type {
+	case TypeSession:
+		return p.validateSession(n)
 	case TypeCode:
 		if n.Codes != nil {
 			if len(n.Codes) != 3 {

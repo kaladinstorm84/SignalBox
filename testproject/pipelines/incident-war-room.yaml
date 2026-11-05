@@ -1,0 +1,66 @@
+name: incident-war-room
+description: >-
+  A moderated incident session. The incident commander speaks first each
+  round and decides when the responders have agreed a plan. If no decision is
+  reached within the round limit, the execution is rejected.
+entry: intake
+
+agents:
+  - id: intake
+    type: standard
+    runtime: codex
+    description: Summarises the incident report for the responders.
+    prompt: |
+      Summarise the incident report: symptoms, impact, start time, and what
+      is known so far. Do not speculate about causes.
+    handoff: [war_room]
+
+  # turn_order: moderator puts the moderator first in every round.
+  # consensus.method: moderator_decides means only the summary agent can end
+  # the session, by writing "CONSENSUS: REACHED" on its own line. With no
+  # on_no_consensus route, running out of rounds rejects the execution.
+  - id: war_room
+    type: session
+    description: Moderated discussion that ends when the commander decides.
+    participants: [incident_commander, sre, comms_lead]
+    turn_order: moderator
+    moderator: incident_commander
+    summary_agent: incident_commander
+    max_rounds: 3
+    consensus:
+      method: moderator_decides
+    handoff: [postmortem]
+
+  - id: incident_commander
+    type: standard
+    runtime: codex
+    description: Runs the room and decides the response plan.
+    prompt: |
+      You are the incident commander. Set the agenda for each round, ask the
+      responders for what you need, and decide the response plan once you have
+      enough information. When asked for the summary, write the agreed plan
+      with owners for each action.
+
+  - id: sre
+    type: standard
+    runtime: codex
+    description: Diagnoses the technical cause and proposes mitigations.
+    prompt: |
+      You are the on-call SRE. Propose likely causes, the checks that would
+      confirm them, and the safest mitigation. Answer the commander directly.
+
+  - id: comms_lead
+    type: standard
+    runtime: codex
+    description: Handles stakeholder and customer communication.
+    prompt: |
+      You are the communications lead. Draft the customer status update and
+      say what you need from the responders to keep it accurate.
+
+  - id: postmortem
+    type: standard
+    runtime: codex
+    description: Drafts the postmortem skeleton from the agreed plan.
+    prompt: |
+      Draft a postmortem skeleton from the agreed incident plan: timeline,
+      impact, actions taken, and follow-ups with owners.

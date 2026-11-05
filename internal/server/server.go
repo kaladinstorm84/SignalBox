@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -84,6 +85,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/executions/{id}/cancel", s.handleCancel)
 	mux.HandleFunc("POST /api/executions/{id}/rerun", s.handleRerun)
 	mux.HandleFunc("DELETE /api/executions/{id}", s.handleDeleteExecution)
+	mux.HandleFunc("GET /api/executions/{id}/chunks", s.handleListChunks)
+	mux.HandleFunc("POST /api/executions/{id}/chunks", s.handleAddChunk)
+	mux.HandleFunc("POST /api/executions/{id}/chunks/{chunk}/done", s.handleCompleteChunk)
+	mux.HandleFunc("DELETE /api/executions/{id}/chunks/{chunk}", s.handleRemoveChunk)
 
 	return logMiddleware(mux)
 }
@@ -158,6 +163,13 @@ type nodeView struct {
 	Retry          *pipeline.RetryPolicy `json:"retry,omitempty"`
 	MaxReworks     int                   `json:"max_reworks,omitempty"`
 	Stages         []stageView           `json:"stages,omitempty"`
+	Participants   []string              `json:"participants,omitempty"`
+	TurnOrder      string                `json:"turn_order,omitempty"`
+	Moderator      string                `json:"moderator,omitempty"`
+	MaxRounds      int                   `json:"max_rounds,omitempty"`
+	Consensus      *pipeline.Consensus   `json:"consensus,omitempty"`
+	SummaryAgent   string                `json:"summary_agent,omitempty"`
+	Chunks         *pipeline.ChunkConfig `json:"chunks,omitempty"`
 }
 
 type handoffView struct {
@@ -194,6 +206,13 @@ func (s *Server) handlePipelines(w http.ResponseWriter, r *http.Request) {
 				RejectTo:       n.RejectTo,
 				Retry:          n.Retry,
 				MaxReworks:     n.MaxReworks,
+				Participants:   n.Participants,
+				TurnOrder:      n.TurnOrder,
+				Moderator:      n.Moderator,
+				MaxRounds:      n.MaxRounds,
+				Consensus:      n.Consensus,
+				SummaryAgent:   n.SummaryAgent,
+				Chunks:         n.Chunks,
 			}
 			for _, route := range n.Handoff {
 				nv.Handoff = append(nv.Handoff, handoffView{To: route.To, Condition: route.Condition})
@@ -437,4 +456,90 @@ func (s *Server) handleDeleteExecution(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("deleted execution %s", id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleListChunks(w http.ResponseWriter, r *http.Request) {
+	chunks, err := s.eng.ListChunks(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, chunks)
+}
+
+func (s *Server) handleAddChunk(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Title string `json:"title"`
+		By    string `json:"by"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid JSON body: %w", err))
+		return
+	}
+	id := r.PathValue("id")
+	if _, err := s.eng.Get(id); err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if req.By == "" {
+		req.By = "web-ui"
+	}
+	chunk, err := s.eng.AddChunk(id, req.Title, req.By)
+	if err != nil {
+		writeChunkErr(w, err)
+		return
+	}
+	log.Printf("execution %s: chunk %s added by %s", id, chunk.ID, req.By)
+	writeJSON(w, http.StatusCreated, chunk)
+}
+
+func (s *Server) handleCompleteChunk(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		By string `json:"by"`
+	}
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid JSON body: %w", err))
+			return
+		}
+	}
+	id := r.PathValue("id")
+	if _, err := s.eng.Get(id); err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if req.By == "" {
+		req.By = "web-ui"
+	}
+	if err := s.eng.CompleteChunk(id, r.PathValue("chunk"), req.By); err != nil {
+		writeChunkErr(w, err)
+		return
+	}
+	log.Printf("execution %s: chunk %s marked done by %s", id, r.PathValue("chunk"), req.By)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleRemoveChunk(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := s.eng.Get(id); err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if err := s.eng.RemoveChunk(id, r.PathValue("chunk")); err != nil {
+		writeChunkErr(w, err)
+		return
+	}
+	log.Printf("execution %s: chunk %s removed", id, r.PathValue("chunk"))
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func writeChunkErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, engine.ErrChunksReadOnly):
+		writeErr(w, http.StatusConflict, err)
+	case strings.Contains(err.Error(), "unknown chunk"):
+		writeErr(w, http.StatusNotFound, err)
+	default:
+		writeErr(w, http.StatusBadRequest, err)
+	}
 }
