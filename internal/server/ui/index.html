@@ -99,8 +99,8 @@
   .pill .lamp + .lamp { margin-left: -2px; }
   .pill.running, .pill.pending { color: var(--warn); border-color: rgba(240,180,50,.55); }
   .pill.running .lamp, .pill.pending .lamp { animation: blink 1.2s steps(2, jump-none) infinite; }
-  .pill.waiting_approval { color: var(--warn); border-color: var(--warn); }
-  .pill.waiting_approval .lamp { color: var(--err); animation: blink 1.6s steps(2, jump-none) infinite; }
+  .pill.waiting_approval, .pill.waiting_manual_edit { color: var(--warn); border-color: var(--warn); }
+  .pill.waiting_approval .lamp, .pill.waiting_manual_edit .lamp { color: var(--err); animation: blink 1.6s steps(2, jump-none) infinite; }
   .pill.waiting_inputs { color: var(--purple); border-color: var(--purple); }
   .pill.waiting_inputs .lamp { color: var(--warn); }
   .pill.completed { color: var(--ok); border-color: rgba(70,210,122,.55); }
@@ -324,7 +324,9 @@ function captureViewState() {
   return {focus};
 }
 function restoreViewState(state) {
-  $main.querySelectorAll('[data-draft]').forEach(el => { el.value = drafts[el.dataset.draft] || ''; });
+  $main.querySelectorAll('[data-draft]').forEach(el => {
+    el.value = el.dataset.draft in drafts ? drafts[el.dataset.draft] : (el.dataset.initial || '');
+  });
   $main.querySelectorAll('details[data-key]').forEach(el => {
     if (el.dataset.key in openSections) el.open = openSections[el.dataset.key];
   });
@@ -417,7 +419,7 @@ async function showExecutions() {
       <tr class="row" onclick="location.hash='#/exec/${encodeURIComponent(x.id)}'">
         <td class="mono">${esc(x.id)}</td>
         <td>${esc(x.pipeline)}</td>
-        <td>${pill(x.status)}${x.waiting_approvals ? ` <span class="pill waiting_approval">${x.waiting_approvals} to approve</span>` : ''}${x.waiting_retries ? ` <span class="pill waiting_retry">${x.waiting_retries} failed · retry</span>` : ''}</td>
+        <td>${pill(x.status)}${x.waiting_approvals ? ` <span class="pill waiting_approval">${x.waiting_approvals} to approve</span>` : ''}${x.waiting_manual_edits ? ` <span class="pill waiting_manual_edit">${x.waiting_manual_edits} to edit</span>` : ''}${x.waiting_retries ? ` <span class="pill waiting_retry">${x.waiting_retries} failed · retry</span>` : ''}</td>
         <td class="muted">${esc(x.input)}</td>
         <td class="muted">${fmtTime(x.created_at)}</td>
         <td class="actions" onclick="event.stopPropagation()">
@@ -481,7 +483,7 @@ async function showExecution(id) {
       ${finals ? `<div class="results-head"><h2 style="font-size:16px;margin:0">Results</h2>${copyAll}</div>${finals}` : ''}`;
     restoreViewState(state);
     const activeRun = (x.runs || []).slice().reverse().find(run =>
-      ['pending', 'running', 'waiting_inputs', 'waiting_approval', 'waiting_retry'].includes(run.status));
+      ['pending', 'running', 'waiting_inputs', 'waiting_approval', 'waiting_manual_edit', 'waiting_retry'].includes(run.status));
     const diagramViewport = $main.querySelector('.execution-diagram .diagram-card');
     const diagramNode = activeRun && [...$main.querySelectorAll('.execution-diagram [data-node-id]')]
       .find(node => node.dataset.nodeId === activeRun.node_id);
@@ -501,6 +503,7 @@ function isTerminal(s) { return ['completed','failed','rejected','canceled','int
 
 function renderRun(x, r) {
   const waiting = r.status === 'waiting_approval';
+  const manualEdit = r.status === 'waiting_manual_edit';
   const retryable = r.status === 'waiting_retry';
   const interrupted = r.status === 'interrupted' && ['standard', 'code'].includes(r.type);
   const stages = (r.stages || []).map(s => `
@@ -514,7 +517,7 @@ function renderRun(x, r) {
     : `<pre class="out">${esc(r.output)}</pre>`;
 
   return `
-  <div class="runcard ${waiting ? 'waiting' : ''} ${retryable ? 'retry' : ''} st-${esc(r.status)}">
+  <div class="runcard ${waiting || manualEdit ? 'waiting' : ''} ${retryable ? 'retry' : ''} st-${esc(r.status)}">
     <div class="runhead">
       <span class="nodeid">${esc(r.node_id)}</span>
       <span class="type ${esc(r.type)}">${esc(r.type)}</span>
@@ -538,6 +541,7 @@ function renderRun(x, r) {
     ${r.input ? `<details data-key="${esc(r.id)}:input"><summary>input</summary><pre class="out">${esc(r.input)}</pre></details>` : ''}
     ${stages}
     ${r.output ? `<details data-key="${esc(r.id)}:output" ${!r.stages ? 'open' : ''}><summary>${r.format ? 'formatted output' : 'output'}</summary>${outputContent}</details>` : ''}
+    ${r.edited_by ? `<div class="muted" style="margin-top:8px">Edited by ${esc(r.edited_by)}</div>` : ''}
     ${r.approved_by ? `<div class="muted" style="margin-top:8px">${r.status === 'rejected' ? 'Rejected' : 'Approved'} by ${esc(r.approved_by)}${r.comment ? ': ' + esc(r.comment) : ''}</div>` : ''}
     ${waiting ? `
       <div class="approve-box">
@@ -546,6 +550,15 @@ function renderRun(x, r) {
         <div class="approve-actions">
           <button class="approve" onclick="decide('${esc(x.id)}','${esc(r.id)}',true)">Approve</button>
           <button class="danger" onclick="decide('${esc(x.id)}','${esc(r.id)}',false)">Reject</button>
+        </div>
+      </div>` : ''}
+    ${manualEdit ? `
+      <div class="approve-box">
+        <span class="held"><i class="aspect"></i><b>Manual edit required</b></span>
+        <label for="edit-${esc(r.id)}">Edit payload before continuing</label>
+        <textarea id="edit-${esc(r.id)}" data-draft="${esc(r.id)}" data-initial="${esc(r.input)}" rows="12"></textarea>
+        <div class="approve-actions">
+          <button class="approve" onclick="submitManualEdit('${esc(x.id)}','${esc(r.id)}', this)">Save and continue</button>
         </div>
       </div>` : ''}
   </div>`;
@@ -584,6 +597,19 @@ async function decide(execId, runId, approved) {
     delete drafts[runId];
     toast(approved ? 'Approved' : 'Rejected');
   } catch (e) { toast('Error: ' + e.message); }
+}
+
+async function submitManualEdit(execId, runId, button) {
+  if (button) button.disabled = true;
+  const output = (document.getElementById('edit-' + runId) || {}).value || '';
+  try {
+    await api(`/executions/${encodeURIComponent(execId)}/manual-edit`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({run_id: runId, output, edited_by: 'web-ui'}),
+    });
+    delete drafts[runId];
+    toast('Edit saved');
+  } catch (e) { toast('Error: ' + e.message); if (button) button.disabled = false; }
 }
 
 async function cancelExec(id) {
@@ -916,7 +942,7 @@ function flowDiagram(p, execution = null) {
       .run-lamp { stroke: #151515; stroke-width: .8; }
       .run-lamp.running { fill: #20c55a; stroke: #eaffee; filter: drop-shadow(0 0 3px #20c55a); }
       .run-lamp.completed { fill: #339d52; }
-      .run-lamp.pending, .run-lamp.waiting_inputs, .run-lamp.waiting_approval { fill: #efb52f; }
+      .run-lamp.pending, .run-lamp.waiting_inputs, .run-lamp.waiting_approval, .run-lamp.waiting_manual_edit { fill: #efb52f; }
       .run-lamp.failed, .run-lamp.waiting_retry, .run-lamp.rejected { fill: #e2463a; }
       .run-lamp.canceled, .run-lamp.interrupted { fill: #747c75; }
       .cell { fill: #fff; stroke: ${INK}; stroke-width: .8; }

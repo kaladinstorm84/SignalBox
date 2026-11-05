@@ -375,6 +375,52 @@ agents:
 	}
 }
 
+func TestManualEditFlow(t *testing.T) {
+	eng := newTestEngine(t, `
+name: p
+entry: edit
+agents:
+  - id: edit
+    type: manual_edit
+    handoff: [next]
+  - id: next
+    runtime: mock
+`, map[string]func(context.Context, runtime.Request) (string, error){
+		"mock": func(_ context.Context, req runtime.Request) (string, error) {
+			return req.Input, nil
+		},
+	})
+	id, err := eng.Start("p", "original")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var waiting []*NodeRun
+	for len(waiting) == 0 && time.Now().Before(deadline) {
+		waiting = eng.WaitingManualEdits(id)
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(waiting) != 1 || waiting[0].Input != "original" {
+		t.Fatalf("waiting edits = %+v", waiting)
+	}
+	if err := eng.SubmitManualEdit(id, waiting[0].ID, "revised", "tester"); err != nil {
+		t.Fatal(err)
+	}
+	exec := waitDone(t, eng, id)
+	if exec.Status != StatusCompleted || len(exec.FinalOutputs) != 1 || exec.FinalOutputs[0].Output != "revised" {
+		t.Fatalf("execution = %+v", exec)
+	}
+	var edit *NodeRun
+	for _, run := range exec.Runs {
+		if run.NodeID == "edit" {
+			edit = run
+		}
+	}
+	if edit == nil || edit.Status != StatusCompleted || edit.Output != "revised" || edit.EditedBy != "tester" {
+		t.Fatalf("manual edit run = %+v", edit)
+	}
+}
+
 func TestApprovalRejection(t *testing.T) {
 	eng := newTestEngine(t, `
 name: p

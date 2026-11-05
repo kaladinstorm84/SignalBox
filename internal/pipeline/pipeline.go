@@ -12,7 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// NodeType distinguishes the three kinds of pipeline nodes.
+// NodeType distinguishes the kinds of pipeline nodes.
 type NodeType string
 
 const (
@@ -27,7 +27,10 @@ const (
 	// TypeApproval is a human gate. Execution pauses until a person approves
 	// or rejects via the web UI (or the terminal in `signalbox run`).
 	TypeApproval NodeType = "approval"
-	TypeCode     NodeType = "code"
+	// TypeManualEdit pauses for a person to edit the incoming payload before
+	// handing it off.
+	TypeManualEdit NodeType = "manual_edit"
+	TypeCode       NodeType = "code"
 )
 
 // Stage is one phase of an orchestrator. The orchestrator dispatches its
@@ -43,7 +46,8 @@ type Stage struct {
 	Prompt string `yaml:"prompt,omitempty"`
 }
 
-// Node is a single agent, orchestrator, or approval gate in a pipeline.
+// Node is a single agent, orchestrator, approval gate, or manual edit step
+// in a pipeline.
 type Node struct {
 	ID          string   `yaml:"id"`
 	Type        NodeType `yaml:"type"`
@@ -269,9 +273,9 @@ func (p *Pipeline) validate() error {
 			n.Type = TypeStandard
 		}
 		switch n.Type {
-		case TypeStandard, TypeOrchestrator, TypeApproval, TypeCode:
+		case TypeStandard, TypeOrchestrator, TypeApproval, TypeManualEdit, TypeCode:
 		default:
-			return fmt.Errorf("pipeline %q: agent %q has unknown type %q (want standard, orchestrator, approval, or code)", p.Name, n.ID, n.Type)
+			return fmt.Errorf("pipeline %q: agent %q has unknown type %q (want standard, orchestrator, approval, manual_edit, or code)", p.Name, n.ID, n.Type)
 		}
 		p.byID[n.ID] = n
 	}
@@ -541,6 +545,10 @@ func (p *Pipeline) validateNode(n *Node) error {
 	case TypeApproval:
 		if len(n.Stages) > 0 {
 			return fmt.Errorf("approval %q may not define stages", n.ID)
+		}
+	case TypeManualEdit:
+		if n.Runtime != "" || n.Prompt != "" || len(n.Stages) > 0 {
+			return fmt.Errorf("manual_edit %q may not define runtime, prompt, or stages", n.ID)
 		}
 	case TypeOrchestrator:
 		if len(n.Stages) == 0 {

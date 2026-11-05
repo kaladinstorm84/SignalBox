@@ -19,6 +19,7 @@ and script interpreters are installed separately when needed.
 | `standard` | Accepts a handoff (or several; see joins below), runs its prompt against a runtime, then hands off to one or more agents or a single orchestrator. |
 | `orchestrator` | A long-running coordinator. It accepts handoffs from **many** agents (fan-in: it waits until every inbound handoff has arrived), then runs its **stages** in order. Each stage dispatches to agents in parallel and collects the terminal output of every chain it started before moving on. A stage (or the orchestrator itself) can define a `prompt` to synthesise the collected results using the orchestrator's runtime. |
 | `approval` | A human gate. Approval passes the payload through unchanged. Rejection follows `reject-to` when specified; otherwise it restarts work after the last upstream approved gate in the same stage/scope, or retries immediate upstream work. Reviewer notes are appended to the rework input. |
+| `manual_edit` | Pauses for a person to edit the incoming payload in the web UI or terminal, then hands the edited text downstream. |
 | `code` | Executes a local script with its input on stdin, then hands stdout to downstream nodes. No AI runtime is required. |
 
 ### Handoffs
@@ -29,13 +30,17 @@ and script interpreters are installed separately when needed.
 - An agent with no `handoff` terminates its chain. Inside an orchestrator
   stage, a terminating chain hands its output back to the orchestrator;
   outside one, the output becomes a **result** of the execution.
-- Chains of standard, code, and approval nodes can run inside orchestrator stages.
-- **Joins:** when several agents hand off to the same standard, code, or approval
+- Chains of standard, code, approval, and manual-edit nodes can run inside orchestrator stages.
+- **Joins:** when several agents hand off to the same standard, code, approval, or manual-edit
   agent, it waits for all of them and runs once on the combined input (each
   part headed `--- handoff from <agent> ---`). Joins are counted per scope:
   inside a stage, only handoffs from that stage's chains count. For example,
   two planners in a stage can both hand off to a judge, which then hands back
   to the orchestrator.
+- **Manual editing:** set `type: manual_edit` on a node to pause a run and
+  revise the complete incoming payload before it continues. Set `handoff` to
+  the next node; the submitted text becomes that node's input. This step does
+  not use a runtime or prompt.
 - **Additional input:** an agent can name other nodes whose completed output
   it also needs. The engine waits for those outputs and appends each under an
   `--- additional input from <agent> ---` heading, alongside normal handoffs.

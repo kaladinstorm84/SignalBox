@@ -6,6 +6,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -226,6 +227,24 @@ func cmdRun(args []string) error {
 
 	for {
 		printProgress(eng, execID, seen)
+		for _, run := range eng.WaitingManualEdits(execID) {
+			if handled[run.ID] {
+				continue
+			}
+			handled[run.ID] = true
+			fmt.Printf("\n=== manual edit required: %s ===\n", run.NodeID)
+			fmt.Printf("--- current payload ---\n%s\n-----------------------\n", run.Input)
+			fmt.Println("Enter the full replacement payload. Finish with a line containing only a dot.")
+			output, err := readManualEdit(reader)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "read manual edit: %v\n", err)
+				_ = eng.Cancel(execID)
+				continue
+			}
+			if err := eng.SubmitManualEdit(execID, run.ID, output, "terminal"); err != nil {
+				fmt.Fprintf(os.Stderr, "submit manual edit failed: %v\n", err)
+			}
+		}
 		for _, run := range eng.WaitingApprovals(execID) {
 			if handled[run.ID] {
 				continue
@@ -273,6 +292,23 @@ func cmdRun(args []string) error {
 			printProgress(eng, execID, seen)
 			return printResult(eng, execID)
 		case <-ticker.C:
+		}
+	}
+}
+
+func readManualEdit(reader *bufio.Reader) (string, error) {
+	var output strings.Builder
+	for {
+		line, err := reader.ReadString('\n')
+		if strings.TrimSpace(line) == "." {
+			return output.String(), nil
+		}
+		output.WriteString(line)
+		if err != nil {
+			if err == io.EOF && output.Len() > 0 {
+				return output.String(), nil
+			}
+			return "", err
 		}
 	}
 }

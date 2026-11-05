@@ -40,6 +40,7 @@ type liveExec struct {
 	liveRuns       int
 	done           chan struct{}
 	approvals      map[string]chan approvalDecision
+	manualEdits    map[string]chan manualEditDecision
 	retries        map[string]*pendingRetry
 	orchs          map[string]*orchInstance
 	outputsChanged chan struct{}
@@ -61,6 +62,11 @@ type approvalDecision struct {
 	approved   bool
 	approvedBy string
 	comment    string
+}
+
+type manualEditDecision struct {
+	output   string
+	editedBy string
 }
 
 // orchInstance is the singleton per-execution state of one orchestrator node.
@@ -198,6 +204,26 @@ func (eng *Engine) Approve(execID, runID string, approved bool, approvedBy, comm
 	}
 	delete(le.approvals, runID)
 	ch <- approvalDecision{approved: approved, approvedBy: approvedBy, comment: comment}
+	return nil
+}
+
+// SubmitManualEdit resumes a manual_edit node with the edited payload.
+func (eng *Engine) SubmitManualEdit(execID, runID, output, editedBy string) error {
+	eng.mu.Lock()
+	defer eng.mu.Unlock()
+	le, ok := eng.execs[execID]
+	if !ok {
+		return fmt.Errorf("unknown execution %q", execID)
+	}
+	ch, ok := le.manualEdits[runID]
+	if !ok {
+		return fmt.Errorf("no pending manual edit %q in execution %q", runID, execID)
+	}
+	if le.exec.Status.Terminal() {
+		return fmt.Errorf("execution %q is already finished (%s)", execID, le.exec.Status)
+	}
+	delete(le.manualEdits, runID)
+	ch <- manualEditDecision{output: output, editedBy: editedBy}
 	return nil
 }
 
@@ -401,24 +427,27 @@ func (eng *Engine) List() []Summary {
 	defer eng.mu.Unlock()
 	out := make([]Summary, 0, len(eng.execs))
 	for _, le := range eng.execs {
-		waiting, retrying := 0, 0
+		waiting, manualEdits, retrying := 0, 0, 0
 		for _, r := range le.exec.Runs {
 			switch r.Status {
 			case StatusWaitingApproval:
 				waiting++
+			case StatusWaitingManualEdit:
+				manualEdits++
 			case StatusWaitingRetry:
 				retrying++
 			}
 		}
 		out = append(out, Summary{
-			ID:         le.exec.ID,
-			Pipeline:   le.exec.Pipeline,
-			Input:      firstChars(le.exec.Input, 160),
-			Status:     le.exec.Status,
-			Waiting:    waiting,
-			Retrying:   retrying,
-			CreatedAt:  le.exec.CreatedAt,
-			FinishedAt: le.exec.FinishedAt,
+			ID:          le.exec.ID,
+			Pipeline:    le.exec.Pipeline,
+			Input:       firstChars(le.exec.Input, 160),
+			Status:      le.exec.Status,
+			Waiting:     waiting,
+			ManualEdits: manualEdits,
+			Retrying:    retrying,
+			CreatedAt:   le.exec.CreatedAt,
+			FinishedAt:  le.exec.FinishedAt,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
@@ -428,6 +457,11 @@ func (eng *Engine) List() []Summary {
 // WaitingApprovals returns the runs currently blocked on human approval.
 func (eng *Engine) WaitingApprovals(execID string) []*NodeRun {
 	return eng.runsWithStatus(execID, StatusWaitingApproval)
+}
+
+// WaitingManualEdits returns the runs currently waiting for a manual edit.
+func (eng *Engine) WaitingManualEdits(execID string) []*NodeRun {
+	return eng.runsWithStatus(execID, StatusWaitingManualEdit)
 }
 
 // WaitingRetries returns the runs paused after a failed agent call.
@@ -585,6 +619,10 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 		eng.runApproval(le, run, node, octx)
 		return
 	}
+	if node.Type == pipeline.TypeManualEdit {
+		eng.runManualEdit(le, run, node, octx)
+		return
+	}
 
 	eng.mu.Lock()
 	now := time.Now().UTC()
@@ -658,6 +696,40 @@ func (eng *Engine) runApproval(le *liveExec, run *NodeRun, node *pipeline.Node, 
 		return
 	}
 	eng.finishRunRejected(le, run, node, octx, decision.comment, "")
+}
+
+func (eng *Engine) runManualEdit(le *liveExec, run *NodeRun, node *pipeline.Node, octx *stageState) {
+	eng.mu.Lock()
+	now := time.Now().UTC()
+	run.Status = StatusWaitingManualEdit
+	run.StartedAt = &now
+	if le.manualEdits == nil {
+		le.manualEdits = map[string]chan manualEditDecision{}
+	}
+	ch := make(chan manualEditDecision, 1)
+	le.manualEdits[run.ID] = ch
+	eng.persistLocked(le)
+	eng.mu.Unlock()
+
+	select {
+	case decision := <-ch:
+		eng.mu.Lock()
+		run.EditedBy = decision.editedBy
+		eng.mu.Unlock()
+		eng.finishRunOK(le, run, node.Handoff, decision.output, octx)
+	case <-le.ctx.Done():
+		eng.mu.Lock()
+		delete(le.manualEdits, run.ID)
+		if !run.Status.Terminal() {
+			run.Status = StatusCanceled
+			finished := time.Now().UTC()
+			run.FinishedAt = &finished
+		}
+		eng.releaseStageLocked(octx)
+		eng.endRunLocked(le)
+		eng.persistLocked(le)
+		eng.mu.Unlock()
+	}
 }
 
 func (eng *Engine) finishRunRejected(le *liveExec, run *NodeRun, node *pipeline.Node, octx *stageState, note, output string) {
