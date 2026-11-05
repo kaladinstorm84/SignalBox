@@ -16,7 +16,8 @@ Built in Go; ships as a single static binary with the web UI embedded.
 |------|-----------|
 | `standard` | Accepts a handoff (or several ? see joins below), runs its prompt against a runtime, then hands off to one or more agents — or to a single orchestrator. |
 | `orchestrator` | A long-running coordinator. It accepts handoffs from **many** agents (fan-in: it waits until every inbound handoff has arrived), then runs its **stages** in order. Each stage dispatches to agents in parallel and collects the terminal output of every chain it started before moving on. A stage (or the orchestrator itself) can define a `prompt` to synthesise the collected results using the orchestrator's runtime. |
-| `approval` | A human gate. The execution pauses until someone approves or rejects it. Approval passes the payload through unchanged; rejection stops the execution. |
+| `approval` | A human gate. Approval passes the payload through unchanged. Rejection restarts work after the last upstream approved gate in the same stage/scope, with reviewer notes appended to its input. |
+| `code` | Executes a local script with its input on stdin, then hands stdout to downstream nodes. No AI runtime is required. |
 
 ### Handoffs
 
@@ -48,6 +49,62 @@ Built in Go; ships as a single static binary with the web UI embedded.
   output in the execution detail view. The raw Markdown remains available in a
   collapsible section; raw HTML in Markdown is not rendered.
 
+### Code Steps
+
+```yaml
+- id: Verify
+  type: code
+  language: python
+  code-source: libs/verify.py
+  timeout_seconds: 30
+  codes:
+    success: 0
+    fail: 1
+    retry: 2
+  handoff: [security_judge]
+```
+
+Connect an upstream node with `handoff: [Verify]`, or list the code node in an
+orchestrator stage's `agents`. `code-source` is relative to the project directory
+containing `signalbox.yaml`; scripts also run with that working directory.
+Supported languages are `python`, `javascript` (Node.js), and `powershell`;
+the corresponding `python`, `node`, or `powershell` command must be on `PATH`.
+Scripts run locally with the server user's permissions, not in a sandbox.
+
+The full assembled handoff input is sent as UTF-8 text on **stdin**, including
+any `additional-input` sections. Write the result to **stdout** and diagnostics
+to **stderr**. With `codes`, the mapped `success` hands stdout downstream and
+`fail` immediately fails the execution. The mapped `retry` acts like rejection:
+it restarts work after the last upstream approved gate in the same stage/scope,
+or retries the immediate upstream agents if no earlier approval exists. Both
+stdout and stderr become rejection feedback appended to the rework input.
+The rejected code run remains in the timeline and does not hand off a result.
+Without upstream work to retry, rejection ends the execution.
+
+All three mappings are required when `codes` is present and must have distinct,
+non-negative values. Without `codes`, nonzero exits retain the manual-retry
+behavior. Unmapped exits and process errors (including timeouts) also pause
+for manual retry. The script is reloaded on each call. Code steps share the
+runtime concurrency cap and cancellation handling; the default timeout is
+600 seconds.
+
+For structured input, an upstream node can return JSON and the script can parse
+it directly (without additional labeled handoff sections):
+
+```python
+import json
+import sys
+
+data = json.load(sys.stdin)
+if not data.get("tests"):
+    print("Validation failed: no tests supplied", file=sys.stderr)
+    sys.exit(1)
+print(json.dumps({"validated": True, "tests": data["tests"]}))
+```
+
+The QA example's `libs/verify.py` currently checks for non-empty planner output
+and passes it through; replace its body with your validation rules.
+
 ### Runtimes
 
 Configured in `signalbox.yaml` and referenced by name from agents:
@@ -74,7 +131,7 @@ command can read its prompt from stdin.
 ## Getting started
 
 ```bash
-go install github.com/gitea/signalbox/cmd/signalbox@latest   # or: go build ./cmd/signalbox
+go install github.com/kaladinstorm84/SignalBox/cmd/signalbox@latest   # or: go build ./cmd/signalbox
 
 signalbox init my-project     # creates signalbox.yaml + pipelines/default.yaml
 cd my-project
@@ -96,6 +153,11 @@ auto-approve every gate (useful in scripts/CI).
   disk, so added and edited pipelines are available without restarting the server.
 - **Pipelines** — the loaded definitions: agents, types, runtimes, handoffs,
   and stages.
+- **Settings** — edit the project configuration as YAML. Saving validates the
+  configuration, runtime definitions, and pipeline references while preserving
+  comments and whitespace. Reload reads the current file from disk; a stale
+  save is rejected rather than overwriting external edits. Restart the server
+  after saving to apply runtime, concurrency, watcher, and server settings.
 - Both pages draw each pipeline as a track diagram: agents that run one after
   another sit on a single line, while agents that run in parallel (orchestrator
   stages and handoffs to several agents) split onto parallel tracks that rejoin
@@ -103,6 +165,12 @@ auto-approve every gate (useful in scripts/CI).
   branches.
 - Approval gates surface directly in the execution view with
   approve/reject buttons and an optional comment.
+  Rejection preserves the rejected review in the timeline and sends work back
+  after the last upstream approved gate in the same stage/scope. If there is
+  no earlier approved gate, the immediate upstream agents are retried. Notes
+  are appended under `--- rejection notes from <gate> ---`. If there is no
+  upstream work to retry (for example, an approval is the entry), rejection
+  still ends the execution.
 - When an agent call fails, that run pauses as `waiting_retry` with a
   **Retry** button; parallel branches keep running, but nothing downstream of
   the failure proceeds. Retry re-invokes the agent with the same input; use
@@ -114,6 +182,10 @@ auto-approve every gate (useful in scripts/CI).
 
 Execution history is persisted as JSON under `.signalbox/executions/`, so it
 survives restarts (in-flight runs are marked `interrupted`).
+Interrupted agent cards offer **Retry from here**, which starts a new execution
+at that call with its saved input. Completed earlier outputs remain available
+to `additional-input` dependencies; completed branches are not rerun. **Rerun**
+continues to start the whole pipeline from its original input.
 
 ## Pipeline YAML
 
@@ -174,6 +246,7 @@ version: 1
 project: my-project
 pipelines_dir: pipelines
 state_dir: .signalbox
+max_concurrent_calls: 4
 server:
   host: 127.0.0.1
   port: 8484
@@ -191,6 +264,10 @@ runtimes:
   copilot:
     type: copilot         # copilot -p "<prompt>"
 ```
+
+`max_concurrent_calls` limits simultaneous runtime invocations across all
+executions, including orchestrator synthesis. Calls above the limit wait for a
+slot; the default is `4` and the value must be positive.
 
 ### Watchers
 
@@ -221,11 +298,14 @@ output stable between polls unless a new pipeline run is intended.
 | Method & path | Purpose |
 |---------------|---------|
 | `GET /api/pipelines` | Loaded pipeline definitions |
+| `GET /api/settings` | Project configuration YAML and file version |
+| `PUT /api/settings` | Validate and save project YAML: `{"content": "...", "version": "..."}` |
 | `GET /api/executions` | Execution summaries (newest first) |
 | `POST /api/executions` | Start a run: `{"pipeline": "default", "input": "..."}` |
 | `GET /api/executions/{id}` | Full execution detail |
 | `POST /api/executions/{id}/approve` | Resolve a gate: `{"run_id": "...", "approved": true, "approved_by": "...", "comment": "..."}` |
 | `POST /api/executions/{id}/retry` | Retry a failed agent call awaiting retry: `{"run_id": "..."}` |
+| `POST /api/executions/{id}/restart` | Start a new execution from an interrupted standard-agent call: `{"run_id": "..."}` |
 | `POST /api/executions/{id}/cancel` | Cancel a running execution |
 | `POST /api/executions/{id}/rerun` | Start a new execution with the same pipeline and input; returns `{"id": "..."}` |
 | `DELETE /api/executions/{id}` | Delete a finished execution (409 while it is still running) |

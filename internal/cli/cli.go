@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gitea/signalbox/internal/config"
-	"github.com/gitea/signalbox/internal/engine"
-	"github.com/gitea/signalbox/internal/pipeline"
-	"github.com/gitea/signalbox/internal/runtime"
-	"github.com/gitea/signalbox/internal/server"
-	"github.com/gitea/signalbox/internal/watcher"
+	"github.com/kaladinstorm84/SignalBox/internal/config"
+	"github.com/kaladinstorm84/SignalBox/internal/engine"
+	"github.com/kaladinstorm84/SignalBox/internal/pipeline"
+	"github.com/kaladinstorm84/SignalBox/internal/runtime"
+	"github.com/kaladinstorm84/SignalBox/internal/server"
+	"github.com/kaladinstorm84/SignalBox/internal/watcher"
 )
 
 // Version is stamped at build time via -ldflags.
@@ -157,7 +157,7 @@ func cmdServe(args []string) error {
 	srv := server.New(eng, cfg.Project, func() (map[string]*pipeline.Pipeline, error) {
 		_, pipelines, err := loadProject()
 		return pipelines, err
-	}, watcher.New(cfg.StatePath(), eng.Start), cfg.Watchers)
+	}, watcher.New(cfg.StatePath(), eng.Start), cfg.Watchers, cfg.Root)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	return srv.ListenAndServe(ctx, listen)
@@ -342,6 +342,11 @@ func loadProject() (*config.Config, map[string]*pipeline.Pipeline, error) {
 	// Every runtime referenced by a pipeline must exist in the config.
 	for _, p := range pipelines {
 		for _, n := range p.Nodes {
+			if n.Type == pipeline.TypeCode {
+				if _, err := runtime.NewCode(&n, cfg.Root); err != nil {
+					return nil, nil, err
+				}
+			}
 			if n.Runtime == "" {
 				continue
 			}
@@ -370,5 +375,5 @@ func buildEngine(cfg *config.Config, pipelines map[string]*pipeline.Pipeline, pe
 			return nil, err
 		}
 	}
-	return engine.New(pipelines, registry, store)
+	return engine.NewWithLimit(pipelines, registry, store, cfg.MaxConcurrentCalls, cfg.Root)
 }

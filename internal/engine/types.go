@@ -3,7 +3,7 @@ package engine
 import (
 	"time"
 
-	"github.com/gitea/signalbox/internal/pipeline"
+	"github.com/kaladinstorm84/SignalBox/internal/pipeline"
 )
 
 // Status is the lifecycle state of an execution, node run, or stage.
@@ -20,11 +20,11 @@ const (
 	// until a person retries it or gives up.
 	StatusWaitingRetry Status = "waiting_retry"
 	StatusCompleted    Status = "completed"
-	StatusFailed        Status = "failed"
-	StatusRejected      Status = "rejected"
-	StatusCanceled      Status = "canceled"
-	// StatusInterrupted marks runs that were in flight when the server
-	// stopped; they cannot be resumed.
+	StatusFailed       Status = "failed"
+	StatusRejected     Status = "rejected"
+	StatusCanceled     Status = "canceled"
+	// StatusInterrupted marks runs that were in flight when the server stopped;
+	// standard agent calls can be restarted in a new execution from saved input.
 	StatusInterrupted Status = "interrupted"
 )
 
@@ -60,15 +60,16 @@ type StageRun struct {
 
 // NodeRun is one invocation of a pipeline node within an execution.
 type NodeRun struct {
-	ID     string            `json:"id"`
-	NodeID string            `json:"node_id"`
-	Type   pipeline.NodeType `json:"type"`
-	Status Status            `json:"status"`
-	Input  string            `json:"input,omitempty"`
-	Output string            `json:"output,omitempty"`
-	Format bool              `json:"format,omitempty"`
-	OutputHTML string        `json:"output_html,omitempty"`
-	Error  string            `json:"error,omitempty"`
+	ID                      string            `json:"id"`
+	NodeID                  string            `json:"node_id"`
+	Type                    pipeline.NodeType `json:"type"`
+	Status                  Status            `json:"status"`
+	Input                   string            `json:"input,omitempty"`
+	Output                  string            `json:"output,omitempty"`
+	Format                  bool              `json:"format,omitempty"`
+	OutputHTML              string            `json:"output_html,omitempty"`
+	AdditionalInputResolved bool              `json:"additional_input_resolved,omitempty"`
+	Error                   string            `json:"error,omitempty"`
 	// Retries counts how many times a failed agent call was retried.
 	Retries int `json:"retries,omitempty"`
 

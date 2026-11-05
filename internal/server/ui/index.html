@@ -138,6 +138,14 @@
   }
   select:focus, textarea:focus, input[type=text]:focus { outline: none; border-color: var(--accent); }
   textarea { min-height: 120px; resize: vertical; }
+  .settings-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 16px 0 12px; }
+  .settings-toolbar [role=status] { margin-left: auto; }
+  .settings-editor {
+    display: block; height: 65vh; min-height: 280px; width: 100%; padding: 16px;
+    font: 14px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    tab-size: 2; white-space: pre; overflow: auto; resize: vertical;
+  }
+  .settings-error { margin-top: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
   label { display: block; font: 600 12px var(--sign); letter-spacing: 1.2px; text-transform: uppercase; color: var(--muted); margin: 14px 0 6px; }
 
   /* Run cards: the left edge is a track circuit, lit by the run's state. */
@@ -263,6 +271,8 @@
         <span class="lever yellow" data-n="2" aria-hidden="true"></span><span>New run</span></a>
       <a href="#/pipelines" data-nav="pipelines">
         <span class="lever black" data-n="3" aria-hidden="true"></span><span>Pipelines</span></a>
+      <a href="#/settings" data-nav="settings">
+        <span class="lever yellow" data-n="4" aria-hidden="true"></span><span>Settings</span></a>
     </nav>
     <div class="diagram-mini" aria-hidden="true">
       <div class="panel">
@@ -284,6 +294,14 @@ const $main = document.getElementById('main');
 let pollTimer = null;
 let lastRendered = '';
 let currentExec = null;
+let settingsDocument = null;
+let settingsDraft = null;
+window.addEventListener('beforeunload', event => {
+  if (settingsDocument && settingsDraft !== settingsDocument.content) {
+    event.preventDefault();
+    event.returnValue = '';
+  }
+});
 // State the 2s refresh must not wipe: typed comments and expanded sections.
 const drafts = {};
 const openSections = {};
@@ -370,6 +388,7 @@ function route() {
   if (m) return showExecution(decodeURIComponent(m[1]));
   if (hash.startsWith('#/new')) return showNewRun();
   if (hash.startsWith('#/pipelines')) return showPipelines();
+  if (hash.startsWith('#/settings')) return showSettings();
   return showExecutions();
 }
 window.addEventListener('hashchange', route);
@@ -475,6 +494,7 @@ function isTerminal(s) { return ['completed','failed','rejected','canceled','int
 function renderRun(x, r) {
   const waiting = r.status === 'waiting_approval';
   const retryable = r.status === 'waiting_retry';
+  const interrupted = r.status === 'interrupted' && ['standard', 'code'].includes(r.type);
   const stages = (r.stages || []).map(s => `
     <div class="stage">
       <div class="runhead"><span class="nodeid">stage: ${esc(s.stage_id)}</span>${pill(s.status)}</div>
@@ -502,6 +522,11 @@ function renderRun(x, r) {
         <button onclick="retryRun('${esc(x.id)}','${esc(r.id)}', this)">Retry</button>
         <span class="muted">Re-runs this agent call with the same input. Use Cancel to give up.</span>
       </div>` : ''}
+    ${interrupted ? `
+      <div class="approve-actions" style="margin-top:8px">
+        <button class="secondary" onclick="restartInterruptedRun('${esc(x.id)}','${esc(r.id)}', this)">Retry from here</button>
+        <span class="muted">Starts a new execution from this call using its saved input.</span>
+      </div>` : ''}
     ${r.input ? `<details data-key="${esc(r.id)}:input"><summary>input</summary><pre class="out">${esc(r.input)}</pre></details>` : ''}
     ${stages}
     ${r.output ? `<details data-key="${esc(r.id)}:output" ${!r.stages ? 'open' : ''}><summary>${r.format ? 'formatted output' : 'output'}</summary>${outputContent}</details>` : ''}
@@ -526,6 +551,18 @@ async function retryRun(execId, runId, button) {
       body: JSON.stringify({run_id: runId}),
     });
     toast('Retrying');
+  } catch (e) { toast('Error: ' + e.message); if (button) button.disabled = false; }
+}
+
+async function restartInterruptedRun(execId, runId, button) {
+  if (button) button.disabled = true;
+  try {
+    const res = await api(`/executions/${encodeURIComponent(execId)}/restart`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({run_id: runId}),
+    });
+    toast('Started ' + res.id);
+    location.hash = '#/exec/' + encodeURIComponent(res.id);
   } catch (e) { toast('Error: ' + e.message); if (button) button.disabled = false; }
 }
 
@@ -650,7 +687,7 @@ function flowDiagram(p, execution = null) {
       const label = (it.kind === 'node' ? it.n.id : it.id).toUpperCase();
       it.tw = textWidth(label, LABEL);
       const type = it.kind === 'node' ? it.n.type : 'ref';
-      if (type === 'orchestrator') { it.w = it.tw + 22; it.up = 13; it.down = 24; }
+      if (type === 'orchestrator') { it.w = it.tw + 22; it.up = runStatusByNode[it.n.id] ? 28 : 13; it.down = 24; }
       else if (type === 'approval') { it.w = Math.max(40, it.tw); it.up = 40; it.down = 20; }
       else { it.w = Math.max(36, it.tw); it.up = 22; it.down = 20; }
     } else if (it.kind === 'seq') {
@@ -725,7 +762,7 @@ function flowDiagram(p, execution = null) {
     out.push(`<g class="node" data-node-id="${esc(n.id)}"><title>${esc(tip)}</title>`);
     if (n.type === 'orchestrator') {
       out.push(`<rect x="${x}" y="${y - 11}" width="${it.w}" height="22" fill="#c8732a" stroke="#7a3f12" stroke-width="1" />`);
-      text(mid, y + 4, label, 'block');
+      text(mid, status ? y - 16 : y + 4, label, status ? 'label' : 'block', 'middle');
       text(mid, y + 23, it.num, 'num', 'middle');
     } else if (n.type === 'approval') {
       const sx = mid - 4;
@@ -746,9 +783,7 @@ function flowDiagram(p, execution = null) {
       text(mid, y + 19, it.num, 'num', 'middle');
     }
     if (status) {
-      const lamp = n.type === 'orchestrator'
-        ? {x: x + it.w - 6, y: y - 5}
-        : n.type === 'approval' ? {x: mid + 23, y: y - 18} : {x: mid + 12, y: y - 4};
+      const lamp = n.type === 'approval' ? {x: mid + 9, y: y - 18} : {x: mid, y};
       out.push(`<circle class="run-lamp ${esc(status)}" cx="${lamp.x}" cy="${lamp.y}" r="3"><title>${esc(status)}</title></circle>`);
     }
     out.push('</g>');
@@ -825,6 +860,92 @@ function flowDiagram(p, execution = null) {
     (unreached.length ? `<div class="muted flow-note">Not reachable from ${esc(p.entry)}: ${unreached.map(n => esc(n.id)).join(', ')}</div>` : '');
 }
 
+async function showSettings() {
+  setNav('settings');
+  $main.innerHTML = '<h2>Settings</h2><div role="status" class="muted">Loading...</div>';
+  try {
+    if (!settingsDocument) {
+      settingsDocument = await api('/settings', {cache: 'no-store'});
+      settingsDraft = settingsDocument.content;
+    }
+  } catch (error) {
+    $main.innerHTML = `<h2>Settings</h2><div class="err-banner" role="alert">${esc(error.message)}</div>`;
+    return;
+  }
+  if (location.hash !== '#/settings') return;
+  $main.innerHTML = `
+    <h2>Settings</h2>
+    <div class="settings-toolbar">
+      <button id="settings-save" type="button">Save</button>
+      <button id="settings-reload" type="button" class="secondary">Reload</button>
+      <span id="settings-status" role="status" class="muted"></span>
+    </div>
+    <label for="settings-yaml">signalbox.yaml</label>
+    <textarea id="settings-yaml" class="settings-editor" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off"></textarea>
+    <div id="settings-error" class="err-banner settings-error" role="alert" hidden></div>`;
+  const editor = document.getElementById('settings-yaml');
+  const save = document.getElementById('settings-save');
+  const reload = document.getElementById('settings-reload');
+  const status = document.getElementById('settings-status');
+  const errorBanner = document.getElementById('settings-error');
+  editor.value = settingsDraft;
+  let busy = false;
+  const update = () => {
+    const dirty = settingsDraft !== settingsDocument.content;
+    save.disabled = busy || !dirty;
+    reload.disabled = busy;
+    editor.disabled = busy;
+    status.textContent = busy ? 'Saving...' : dirty ? 'Unsaved changes' : 'No unsaved changes';
+  };
+  editor.addEventListener('input', () => {
+    settingsDraft = editor.value;
+    errorBanner.hidden = true;
+    update();
+  });
+  editor.addEventListener('keydown', event => {
+    if (event.key === 'Tab' && !event.shiftKey) {
+      event.preventDefault();
+      editor.setRangeText('  ', editor.selectionStart, editor.selectionEnd, 'end');
+      editor.dispatchEvent(new Event('input', {bubbles: true}));
+    }
+  });
+  save.addEventListener('click', async () => {
+    busy = true;
+    errorBanner.hidden = true;
+    update();
+    try {
+      settingsDocument = await api('/settings', {
+        method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({content: settingsDraft, version: settingsDocument.version}),
+      });
+      settingsDraft = settingsDocument.content;
+      busy = false;
+      update();
+      status.textContent = 'Saved. Restart the server to apply settings.';
+    } catch (error) {
+      busy = false;
+      update();
+      errorBanner.textContent = error.message;
+      errorBanner.hidden = false;
+    }
+  });
+  reload.addEventListener('click', async () => {
+    if (settingsDraft !== settingsDocument.content && !confirm('Discard unsaved settings changes?')) return;
+    reload.disabled = true;
+    try {
+      const document = await api('/settings', {cache: 'no-store'});
+      settingsDocument = document;
+      settingsDraft = document.content;
+      await showSettings();
+    } catch (error) {
+      reload.disabled = false;
+      errorBanner.textContent = error.message;
+      errorBanner.hidden = false;
+    }
+  });
+  update();
+}
+
 // --- new run ---
 async function showNewRun() {
   setNav('new');
@@ -880,7 +1001,7 @@ async function showPipelines() {
             <td><b>${esc(n.id)}</b>${n.id === p.entry ? ' <span class="muted">(entry)</span>' : ''}
             ${n.description ? `<div class="muted">${esc(n.description)}</div>` : ''}</td>
             <td><span class="type ${esc(n.type)}">${esc(n.type)}</span></td>
-            <td class="mono">${esc(n.runtime || '—')}</td>
+            <td class="mono">${n.type === 'code' ? `${esc(n.language)}<div class="muted">${esc(n.code_source)}</div>` : esc(n.runtime || '—')}</td>
             <td>${n.stages ? n.stages.map(s => `<div class="muted">stage <b>${esc(s.id)}</b> → ${s.agents.map(esc).join(', ')}</div>`).join('') : ''}
                 ${(n.handoff || []).map(esc).join(', ') || (n.stages ? '' : '<span class="muted">terminates</span>')}</td>
           </tr>`).join('')}</tbody></table>

@@ -1,4 +1,4 @@
-module github.com/gitea/signalbox
+module github.com/kaladinstorm84/SignalBox
 
 go 1.25.0
 

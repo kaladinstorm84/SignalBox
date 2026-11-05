@@ -12,6 +12,9 @@ pipelines_dir: pipelines
 # Directory where execution history is stored.
 state_dir: .signalbox
 
+# Maximum number of runtime calls running at once; additional calls queue.
+max_concurrent_calls: 4
+
 server:
   host: 127.0.0.1
   port: 8484

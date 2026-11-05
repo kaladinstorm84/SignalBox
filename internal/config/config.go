@@ -13,6 +13,8 @@ import (
 // FileName is the project configuration file created by `signalbox init`.
 const FileName = "signalbox.yaml"
 
+const DefaultMaxConcurrentCalls = 4
+
 // RuntimeConfig describes one runtime entry in signalbox.yaml.
 type RuntimeConfig struct {
 	// Type is one of: openai, codex, claude, copilot, cli, mock.
@@ -52,13 +54,14 @@ type WatcherConfig struct {
 
 // Config is the parsed signalbox.yaml.
 type Config struct {
-	Version      int                      `yaml:"version"`
-	Project      string                   `yaml:"project"`
-	PipelinesDir string                   `yaml:"pipelines_dir,omitempty"`
-	StateDir     string                   `yaml:"state_dir,omitempty"`
-	Runtimes     map[string]RuntimeConfig `yaml:"runtimes"`
-	Server       ServerConfig             `yaml:"server,omitempty"`
-	Watchers     []WatcherConfig          `yaml:"watchers,omitempty"`
+	Version            int                      `yaml:"version"`
+	Project            string                   `yaml:"project"`
+	PipelinesDir       string                   `yaml:"pipelines_dir,omitempty"`
+	StateDir           string                   `yaml:"state_dir,omitempty"`
+	MaxConcurrentCalls int                      `yaml:"max_concurrent_calls,omitempty"`
+	Runtimes           map[string]RuntimeConfig `yaml:"runtimes"`
+	Server             ServerConfig             `yaml:"server,omitempty"`
+	Watchers           []WatcherConfig          `yaml:"watchers,omitempty"`
 
 	// Root is the directory containing signalbox.yaml (not serialised).
 	Root string `yaml:"-"`
@@ -74,6 +77,11 @@ func Load(dir string) (*Config, error) {
 		}
 		return nil, err
 	}
+	return Parse(data, dir)
+}
+
+func Parse(data []byte, dir string) (*Config, error) {
+	path := filepath.Join(dir, FileName)
 	var c Config
 	if err := yaml.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("%s: invalid YAML: %w", path, err)
@@ -96,6 +104,9 @@ func (c *Config) applyDefaults() {
 	if c.StateDir == "" {
 		c.StateDir = ".signalbox"
 	}
+	if c.MaxConcurrentCalls == 0 {
+		c.MaxConcurrentCalls = DefaultMaxConcurrentCalls
+	}
 	if c.Server.Host == "" {
 		c.Server.Host = "127.0.0.1"
 	}
@@ -105,6 +116,9 @@ func (c *Config) applyDefaults() {
 }
 
 func (c *Config) validate() error {
+	if c.MaxConcurrentCalls < 1 {
+		return fmt.Errorf("max_concurrent_calls must be at least 1")
+	}
 	if len(c.Runtimes) == 0 {
 		return fmt.Errorf("no runtimes defined")
 	}

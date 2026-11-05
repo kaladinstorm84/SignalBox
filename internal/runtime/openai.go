@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gitea/signalbox/internal/config"
+	"github.com/kaladinstorm84/SignalBox/internal/config"
 )
 
 // openAI calls any OpenAI-compatible chat completions endpoint.

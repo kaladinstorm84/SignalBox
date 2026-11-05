@@ -198,8 +198,16 @@ agents:
 
       Each test should be listed separately with a clear description and context.
 
+    handoff: [Verify]
+  - id: Verify
+    type: code
+    language: python
+    code-source: libs/verify.py
+    codes:
+       success : 0
+       fail: 1
+       retry: 2    # acts like a human approval rejection
     handoff: [security_judge]
-
   - id: security_planner_b
     type: standard
     description: Abuse Case Planner

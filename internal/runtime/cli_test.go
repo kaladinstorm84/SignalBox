@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/gitea/signalbox/internal/config"
+	"github.com/kaladinstorm84/SignalBox/internal/config"
+	"github.com/kaladinstorm84/SignalBox/internal/pipeline"
 )
 
 // TestHelperProcess is not a real test: it is the fake agent CLI that the
@@ -43,6 +45,37 @@ func helperRuntime(t *testing.T, rc config.RuntimeConfig) Runtime {
 		t.Fatal(err)
 	}
 	return rt
+}
+
+func TestCodeReceivesInputOnStdin(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "verify.py")
+	if err := os.WriteFile(source, []byte("print('verified')"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := NewCode(&pipeline.Node{ID: "verify", Language: "python", CodeSource: "verify.py", TimeoutSeconds: 5}, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := rt.(*cliRuntime)
+	if code.dir != root || code.promptMode != "stdin" {
+		t.Fatalf("code dir/mode = %q/%q", code.dir, code.promptMode)
+	}
+	t.Setenv("SIGNALBOX_HELPER", "1")
+	code.command = os.Args[0]
+	code.args = []string{"-test.run=^TestHelperProcess$", "--", source}
+	input := strings.Repeat("{\"data\":\"Unicode and large input\"}\n", 2000)
+	output, err := code.Invoke(context.Background(), Request{Input: input})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("args=1 last=%d stdin=%d", len(source), len(input))
+	if output != want {
+		t.Fatalf("output = %q, want %q", output, want)
+	}
+	if _, err := NewCode(&pipeline.Node{ID: "missing", Language: "python", CodeSource: "missing.py"}, root); err == nil {
+		t.Fatal("missing code-source was accepted")
+	}
 }
 
 func TestCLIShortPromptIsPassedAsArgument(t *testing.T) {
