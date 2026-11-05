@@ -1,0 +1,97 @@
+name: design-review
+description: >-
+  A round-robin design review session. An architect, a security reviewer and
+  a delivery lead debate a proposal, track agreed work as chunks, and vote
+  until a majority agree and every chunk is done. Consensus goes to human
+  sign-off; running out of rounds escalates instead.
+entry: brief
+
+agents:
+  - id: brief
+    type: standard
+    runtime: codex
+    description: Turns the request into a short design proposal to review.
+    prompt: |
+      Turn the user's request into a concise design proposal for review:
+      goal, proposed approach, key components, and known risks.
+      Keep it under 300 words.
+    handoff: [design_review]
+
+  # A session node owns its discussion: participants take turns in
+  # round-robin order, each seeing the full transcript and the chunk table.
+  # Participants are ordinary agents that only the session invokes.
+  - id: design_review
+    type: session
+    description: Multi-agent review that iterates until a majority agree.
+    participants: [architect, security_reviewer, delivery_lead]
+    turn_order: round_robin
+    max_rounds: 4
+    summary_agent: delivery_lead
+    consensus:
+      method: vote
+      keyword: "VOTE: AGREE"
+      require: majority           # all (default) or majority
+      require_chunks_done: true   # votes only count once every chunk is done
+    chunks:
+      enabled: true
+      initial:
+        - Agree the component boundaries
+        - Identify the top security risk and its mitigation
+    handoff:
+      - to: sign_off
+        condition: on_consensus
+        input: |
+          Agreed design (from the review session summary):
+          {{ output }}
+      - to: escalate
+        condition: on_no_consensus
+
+  - id: architect
+    type: standard
+    runtime: codex
+    description: Owns the technical shape of the design.
+    prompt: |
+      You are the architect in a design review. Challenge unclear component
+      boundaries and propose concrete improvements. Mark chunks done only
+      when the transcript shows they have been resolved.
+
+  - id: security_reviewer
+    type: standard
+    runtime: codex
+    description: Looks for security weaknesses and missing controls.
+    prompt: |
+      You are the security reviewer in a design review. Identify the most
+      important threats and require a specific mitigation for each. Add a
+      chunk for any security work that must be agreed before sign-off.
+
+  - id: delivery_lead
+    type: standard
+    runtime: codex
+    description: Keeps the review practical and writes the final summary.
+    prompt: |
+      You are the delivery lead in a design review. Keep the scope realistic,
+      merge the other reviewers' points into a single proposal, and close
+      chunks that have been settled. When asked for the summary, write the
+      agreed design, its rationale, and any follow-up work.
+
+  - id: sign_off
+    type: approval
+    description: A human signs off the agreed design.
+    handoff: [write_up]
+
+  - id: write_up
+    type: standard
+    runtime: codex
+    description: Produces the final design record.
+    prompt: |
+      Write a short design record (context, decision, consequences) from the
+      approved design summary.
+
+  - id: escalate
+    type: standard
+    runtime: codex
+    description: Explains why the review could not agree.
+    prompt: |
+      The design review ran out of rounds without agreement. From the session
+      minutes, list the unresolved disagreements and open chunks, and suggest
+      who should decide each one.

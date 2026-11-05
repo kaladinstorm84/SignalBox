@@ -88,6 +88,11 @@ First settle pipeline schema/version compatibility and integrity checks.
 Keep registry access separate from local execution; downloaded definitions should be inspectable and validated before use.
 Acceptance: Recovery tests verify that completed work is not repeated unnecessarily and that changed pipeline definitions produce a clear warning or error. CLI and web operations produce consistent results. Registry installation verifies the selected version and rejects invalid definitions.
 
+6. - Pipeline chaining.
+
+Allow refernces to sections in other pipelines
+
+
 ## Suggested delivery order
 - Routing and retry foundations, then automated gates.
 - Session execution and transcript persistence, then chunks.

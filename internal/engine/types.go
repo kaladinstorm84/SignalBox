@@ -96,8 +96,63 @@ type NodeRun struct {
 	Decision       string `json:"decision,omitempty"`
 	GateReworks    int    `json:"gate_reworks,omitempty"`
 
+	// Session is populated for session runs: rounds, turns, and outcome.
+	Session *SessionRun `json:"session,omitempty"`
+
 	StartedAt  *time.Time `json:"started_at,omitempty"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
+}
+
+// Session outcomes, recorded in SessionRun.Outcome and NodeRun.Decision.
+const (
+	OutcomeConsensus   = "consensus"
+	OutcomeNoConsensus = "no_consensus"
+)
+
+// SessionRun is the persisted state of a session node: its transcript is
+// saved after every turn, so it survives reloads and supports resumption.
+type SessionRun struct {
+	MaxRounds int           `json:"max_rounds"`
+	Round     int           `json:"round"`
+	Turns     []SessionTurn `json:"turns,omitempty"`
+	// Outcome is consensus or no_consensus once the session has finished.
+	Outcome        string `json:"outcome,omitempty"`
+	ConsensusRound int    `json:"consensus_round,omitempty"`
+	InitialChunks  bool   `json:"initial_chunks_added,omitempty"`
+}
+
+// SessionTurn is one participant contribution, or the final summary.
+type SessionTurn struct {
+	Round       int    `json:"round"`
+	Participant string `json:"participant"`
+	Output      string `json:"output"`
+	// Agreed marks a turn that voted for consensus (or, for
+	// moderator_decides, declared it).
+	Agreed  bool `json:"agreed,omitempty"`
+	Summary bool `json:"summary,omitempty"`
+	// Directives lists chunk directives applied from this turn; errors lists
+	// directives that were rejected and ignored.
+	Directives      []string  `json:"directives,omitempty"`
+	DirectiveErrors []string  `json:"directive_errors,omitempty"`
+	At              time.Time `json:"at"`
+}
+
+// Chunk statuses.
+const (
+	ChunkPending = "pending"
+	ChunkDone    = "done"
+)
+
+// Chunk is a trackable unit of work within an execution. IDs are stable and
+// never reused, even after a chunk is removed.
+type Chunk struct {
+	ID        string     `json:"id"`
+	Title     string     `json:"title"`
+	Status    string     `json:"status"`
+	CreatedBy string     `json:"created_by,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	DoneBy    string     `json:"done_by,omitempty"`
+	DoneAt    *time.Time `json:"done_at,omitempty"`
 }
 
 // FinalOutput is the terminal output of a chain that was not owned by an
@@ -117,8 +172,11 @@ type Execution struct {
 	Error        string        `json:"error,omitempty"`
 	Runs         []*NodeRun    `json:"runs"`
 	FinalOutputs []FinalOutput `json:"final_outputs,omitempty"`
-	CreatedAt    time.Time     `json:"created_at"`
-	FinishedAt   *time.Time    `json:"finished_at,omitempty"`
+	// Chunks are execution-scoped work items managed by sessions and people.
+	Chunks     []Chunk    `json:"chunks,omitempty"`
+	NextChunk  int        `json:"next_chunk,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
 
 // Summary is the list-view projection of an execution.

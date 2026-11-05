@@ -31,6 +31,7 @@ Usage:
   signalbox validate                 Validate the config and all pipelines
   signalbox serve [--addr host:port] Serve the tracking & launch web UI
   signalbox run <pipeline> [--input text]  Run a pipeline in the terminal
+  signalbox chunks list|add|done|remove <execution> ...  Manage execution chunks
   signalbox version                  Print the version
 `
 
@@ -50,6 +51,8 @@ func Main(args []string) int {
 		err = cmdServe(args[1:])
 	case "run":
 		err = cmdRun(args[1:])
+	case "chunks":
+		err = cmdChunks(args[1:], os.Stdout)
 	case "version", "--version", "-v":
 		fmt.Printf("signalbox %s\n", Version)
 	case "help", "--help", "-h":
