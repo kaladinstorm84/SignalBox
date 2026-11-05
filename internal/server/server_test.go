@@ -82,6 +82,88 @@ func TestProjectSettingsReadValidateSaveAndConflict(t *testing.T) {
 	}
 }
 
+func TestPipelineFileEditor(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, config.FileName), []byte("version: 1\npipelines_dir: definitions\nruntimes:\n  mock:\n    type: mock\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler := New(nil, "test", nil, nil, nil, root).Handler()
+	request := func(method, filename string, body any) *httptest.ResponseRecorder {
+		t.Helper()
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(method, "/api/pipeline-files"+filename, bytes.NewReader(data)))
+		return response
+	}
+	const content = "# Keep this comment\nname: demo\nentry: start\nagents:\n  - id: start\n    runtime: mock\n"
+	if response := request(http.MethodGet, "", nil); response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != "[]" {
+		t.Fatalf("initial list = %d: %s", response.Code, response.Body.String())
+	}
+	response := request(http.MethodPut, "/demo.yaml", settingsDocument{Content: content})
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create = %d: %s", response.Code, response.Body.String())
+	}
+	var saved settingsDocument
+	if err := json.Unmarshal(response.Body.Bytes(), &saved); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "definitions", "demo.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != content {
+		t.Fatalf("created content = %q (%v)", data, err)
+	}
+	if response := request(http.MethodPut, "/demo.yaml", settingsDocument{Content: content}); response.Code != http.StatusConflict {
+		t.Fatalf("overwrite without version = %d", response.Code)
+	}
+	if response := request(http.MethodPut, "/other.yml", settingsDocument{Content: content}); response.Code != http.StatusConflict {
+		t.Fatalf("duplicate name = %d", response.Code)
+	}
+	if response := request(http.MethodPut, "/demo.yaml", settingsDocument{Content: "name: [", Version: saved.Version}); response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid YAML = %d", response.Code)
+	}
+	unknownRuntime := strings.Replace(content, "runtime: mock", "runtime: missing", 1)
+	if response := request(http.MethodPut, "/demo.yaml", settingsDocument{Content: unknownRuntime, Version: saved.Version}); response.Code != http.StatusBadRequest {
+		t.Fatalf("unknown runtime = %d", response.Code)
+	}
+	updated := content + "description: Updated from the editor\n"
+	if response := request(http.MethodPut, "/demo.yaml", settingsDocument{Content: updated, Version: saved.Version}); response.Code != http.StatusOK {
+		t.Fatalf("edit = %d: %s", response.Code, response.Body.String())
+	}
+	if response := request(http.MethodPut, "/demo.yaml", settingsDocument{Content: content, Version: saved.Version}); response.Code != http.StatusConflict {
+		t.Fatalf("stale edit = %d", response.Code)
+	}
+	if response := request(http.MethodGet, "/demo.yaml", nil); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Updated from the editor") {
+		t.Fatalf("load = %d: %s", response.Code, response.Body.String())
+	}
+	if err := os.WriteFile(path, []byte("name: ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if response := request(http.MethodGet, "/demo.yaml", nil); response.Code != http.StatusOK {
+		t.Fatalf("load invalid file for repair = %d", response.Code)
+	}
+	if response := request(http.MethodGet, "", nil); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "demo.yaml") {
+		t.Fatalf("list invalid file = %d: %s", response.Code, response.Body.String())
+	}
+	for _, filename := range []string{"../outside.yaml", `..\outside.yaml`, "C:outside.yaml", "demo.txt", ".yaml"} {
+		if validPipelineFilename(filename) {
+			t.Fatalf("unsafe filename accepted: %q", filename)
+		}
+	}
+	if response := request(http.MethodPut, "/..%5Coutside.yaml", settingsDocument{Content: content}); response.Code != http.StatusBadRequest {
+		t.Fatalf("path escape = %d", response.Code)
+	}
+	foreign := httptest.NewRequest(http.MethodPut, "/api/pipeline-files/demo.yaml", strings.NewReader("{}"))
+	foreign.Header.Set("Origin", "https://unrelated.example")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, foreign)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("foreign origin = %d", response.Code)
+	}
+}
+
 func TestListPipelinesReloadsFromDisk(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "demo.yaml")

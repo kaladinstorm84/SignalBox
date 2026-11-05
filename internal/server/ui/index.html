@@ -296,8 +296,13 @@ let lastRendered = '';
 let currentExec = null;
 let settingsDocument = null;
 let settingsDraft = null;
+const pipelineDrafts = new Map();
+const pipelineTemplate = 'name: new-pipeline\nentry: start\n\nagents:\n  - id: start\n    type: standard\n    runtime: mock\n    prompt: |\n      Process the supplied input.\n';
+function pipelineDraftChanged(draft) {
+  return draft.content !== draft.savedContent || draft.filename !== draft.savedFilename;
+}
 window.addEventListener('beforeunload', event => {
-  if (settingsDocument && settingsDraft !== settingsDocument.content) {
+  if ((settingsDocument && settingsDraft !== settingsDocument.content) || [...pipelineDrafts.values()].some(pipelineDraftChanged)) {
     event.preventDefault();
     event.returnValue = '';
   }
@@ -387,6 +392,9 @@ function route() {
   const m = hash.match(/^#\/exec\/(.+)$/);
   if (m) return showExecution(decodeURIComponent(m[1]));
   if (hash.startsWith('#/new')) return showNewRun();
+  if (hash === '#/pipelines/new') return showPipelineEditor('', true);
+  const pipelineEdit = hash.match(/^#\/pipelines\/edit(?:\/(.+))?$/);
+  if (pipelineEdit) return showPipelineEditor(pipelineEdit[1] ? decodeURIComponent(pipelineEdit[1]) : '', false);
   if (hash.startsWith('#/pipelines')) return showPipelines();
   if (hash.startsWith('#/settings')) return showSettings();
   return showExecutions();
@@ -1011,6 +1019,131 @@ async function showSettings() {
   update();
 }
 
+async function showPipelineEditor(filename, creating) {
+  setNav('pipelines');
+  const expectedHash = location.hash;
+  $main.innerHTML = '<h2>Pipeline editor</h2><div class="muted" role="status">Loading...</div>';
+  let files, draft;
+  try {
+    files = await api('/pipeline-files', {cache: 'no-store'});
+    if (!creating && !filename) {
+      filename = files[0]?.filename || '';
+      creating = !filename;
+    }
+    const key = creating ? '__new__' : filename;
+    draft = pipelineDrafts.get(key);
+    if (!draft) {
+      const document = creating ? {content: pipelineTemplate, version: ''} :
+        await api('/pipeline-files/' + encodeURIComponent(filename), {cache: 'no-store'});
+      draft = {filename: creating ? '' : filename, savedFilename: creating ? '' : filename,
+        content: document.content, savedContent: document.content, version: document.version, isNew: creating, notice: ''};
+      pipelineDrafts.set(key, draft);
+    }
+  } catch (error) {
+    if (location.hash === expectedHash) $main.innerHTML = `<h2>Pipeline editor</h2><div class="err-banner" role="alert">${esc(error.message)}</div><button class="secondary" onclick="location.hash='#/pipelines'">Pipelines</button>`;
+    return;
+  }
+  if (location.hash !== expectedHash) return;
+  $main.innerHTML = `
+    <div class="topline"><h2>${draft.isNew ? 'New pipeline' : 'Edit pipeline'}</h2>
+      <button class="secondary" onclick="location.hash='#/pipelines'">Pipelines</button></div>
+    <label for="pipeline-file">Pipeline file</label>
+    <select id="pipeline-file"><option value="">New pipeline</option>${files.map(file => `<option value="${esc(file.filename)}">${esc(file.filename)}</option>`).join('')}</select>
+    <div class="settings-toolbar">
+      <button id="pipeline-save" type="button">Save</button>
+      <button id="pipeline-reload" type="button" class="secondary">${draft.isNew ? 'Reset' : 'Reload'}</button>
+      <span id="pipeline-status" role="status" class="muted"></span>
+    </div>
+    <label for="pipeline-filename">Filename</label>
+    <input id="pipeline-filename" type="text" placeholder="my-pipeline.yaml" autocomplete="off" ${draft.isNew ? '' : 'readonly'}>
+    <label for="pipeline-yaml">Pipeline YAML</label>
+    <textarea id="pipeline-yaml" class="settings-editor" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off"></textarea>
+    <div id="pipeline-error" class="err-banner settings-error" role="alert" hidden></div>`;
+  const chooser = document.getElementById('pipeline-file');
+  const filenameInput = document.getElementById('pipeline-filename');
+  const editor = document.getElementById('pipeline-yaml');
+  const save = document.getElementById('pipeline-save');
+  const reload = document.getElementById('pipeline-reload');
+  const status = document.getElementById('pipeline-status');
+  const errorBanner = document.getElementById('pipeline-error');
+  chooser.value = draft.isNew ? '' : draft.filename;
+  filenameInput.value = draft.filename;
+  editor.value = draft.content;
+  let busy = '';
+  const update = () => {
+    const dirty = pipelineDraftChanged(draft);
+    save.disabled = !!busy || !draft.filename.trim() || (!draft.isNew && !dirty);
+    chooser.disabled = reload.disabled = editor.disabled = filenameInput.disabled = !!busy;
+    status.textContent = busy || (dirty ? 'Unsaved changes' : draft.notice || 'No unsaved changes');
+  };
+  const capture = () => {
+    draft.content = editor.value;
+    draft.filename = filenameInput.value;
+    draft.notice = '';
+    errorBanner.hidden = true;
+    update();
+  };
+  filenameInput.addEventListener('input', capture);
+  editor.addEventListener('input', capture);
+  editor.addEventListener('keydown', event => {
+    if (event.key === 'Tab' && !event.shiftKey) {
+      event.preventDefault();
+      editor.setRangeText('  ', editor.selectionStart, editor.selectionEnd, 'end');
+      editor.dispatchEvent(new Event('input', {bubbles: true}));
+    }
+  });
+  chooser.addEventListener('change', () => {
+    location.hash = chooser.value ? '#/pipelines/edit/' + encodeURIComponent(chooser.value) : '#/pipelines/new';
+  });
+  save.addEventListener('click', async () => {
+    busy = 'Saving...';
+    errorBanner.hidden = true;
+    update();
+    try {
+      const saved = await api('/pipeline-files/' + encodeURIComponent(draft.filename), {
+        method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({content: draft.content, version: draft.version}),
+      });
+      if (draft.isNew) pipelineDrafts.delete('__new__');
+      draft.version = saved.version;
+      draft.content = draft.savedContent = saved.content;
+      draft.savedFilename = draft.filename;
+      draft.isNew = false;
+      draft.notice = 'Saved. Available for new runs.';
+      pipelineDrafts.set(draft.filename, draft);
+      if (location.hash === expectedHash) {
+        history.replaceState(null, '', '#/pipelines/edit/' + encodeURIComponent(draft.filename));
+        await showPipelineEditor(draft.filename, false);
+      }
+    } catch (error) {
+      busy = '';
+      update();
+      errorBanner.textContent = error.message;
+      errorBanner.hidden = false;
+    }
+  });
+  reload.addEventListener('click', async () => {
+    if (pipelineDraftChanged(draft) && !confirm('Discard unsaved pipeline changes?')) return;
+    busy = 'Loading...';
+    update();
+    try {
+      const document = draft.isNew ? {content: pipelineTemplate, version: ''} :
+        await api('/pipeline-files/' + encodeURIComponent(draft.filename), {cache: 'no-store'});
+      draft.content = draft.savedContent = document.content;
+      draft.version = document.version;
+      if (draft.isNew) draft.filename = draft.savedFilename = '';
+      draft.notice = '';
+      if (location.hash === expectedHash) await showPipelineEditor(draft.filename, draft.isNew);
+    } catch (error) {
+      busy = '';
+      update();
+      errorBanner.textContent = error.message;
+      errorBanner.hidden = false;
+    }
+  });
+  update();
+}
+
 // --- new run ---
 async function showNewRun() {
   setNav('new');
@@ -1050,15 +1183,21 @@ async function showNewRun() {
 // --- pipelines ---
 async function showPipelines() {
   setNav('pipelines');
-  let pipelines;
-  try { pipelines = await api('/pipelines', {cache: 'no-store'}); } catch (e) { $main.innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; return; }
+  let pipelines, files;
+  const actions = `<div class="topline"><h2>Pipelines</h2><div class="approve-actions" style="margin-top:0">
+    <button class="secondary" onclick="location.hash='#/pipelines/edit'">Edit pipeline files</button>
+    <button onclick="location.hash='#/pipelines/new'">New pipeline</button></div></div>`;
+  try { [pipelines, files] = await Promise.all([api('/pipelines', {cache: 'no-store'}), api('/pipeline-files', {cache: 'no-store'})]); }
+  catch (e) { $main.innerHTML = `${actions}<div class="err-banner" role="alert">${esc(e.message)}</div>`; return; }
+  const filenameByName = new Map(files.filter(file => file.name).map(file => [file.name, file.filename]));
   $main.innerHTML = `
-    <h2>Pipelines</h2><div class="page-sub">Definitions loaded from the pipelines directory.</div>
+    ${actions}<div class="page-sub">Definitions loaded from the pipelines directory.</div>
     ${pipelines.map(p => `
       <div class="card">
         <div class="topline"><div><b style="font-size:16px">${esc(p.name)}</b>
         ${p.description ? `<div class="muted">${esc(p.description)}</div>` : ''}</div>
-        <button class="secondary" onclick="location.hash='#/new'">Run</button></div>
+        <div class="approve-actions" style="margin-top:0">${filenameByName.has(p.name) ? `<button class="secondary" data-edit-file="${esc(filenameByName.get(p.name))}">Edit</button>` : ''}
+        <button class="secondary" onclick="location.hash='#/new'">Run</button></div></div>
         <div style="margin-top:10px">${flowDiagram(p)}</div>
         <table style="margin-top:10px"><thead><tr><th>Agent</th><th>Type</th><th>Runtime</th><th>Hands off to</th></tr></thead>
         <tbody>${p.nodes.map(n => `
@@ -1071,6 +1210,9 @@ async function showPipelines() {
                 ${(n.handoff || []).map(esc).join(', ') || (n.stages ? '' : '<span class="muted">terminates</span>')}</td>
           </tr>`).join('')}</tbody></table>
       </div>`).join('') || '<div class="empty">No pipelines found.</div>'}`;
+  $main.querySelectorAll('[data-edit-file]').forEach(button => button.addEventListener('click', () => {
+    location.hash = '#/pipelines/edit/' + encodeURIComponent(button.dataset.editFile);
+  }));
 }
 
 api('/meta').then(m => { document.getElementById('project-name').textContent = m.project; }).catch(() => {});
