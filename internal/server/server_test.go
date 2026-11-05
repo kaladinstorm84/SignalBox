@@ -599,10 +599,11 @@ agents:
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/executions/20261105-000001-bbbb/restart", strings.NewReader(body)))
 		return response
 	}
-	if response := post(`{}`); response.Code != http.StatusBadRequest {
-		t.Fatalf("missing run_id status = %d", response.Code)
+	if response := post(`{"run_id":"missing"}`); response.Code != http.StatusConflict {
+		t.Fatalf("unknown run status = %d", response.Code)
 	}
-	response := post(`{"run_id":"worker-run"}`)
+	// With no run_id the interrupted run is detected automatically.
+	response := post(`{}`)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("restart status = %d: %s", response.Code, response.Body.String())
 	}
@@ -627,6 +628,30 @@ agents:
 	}
 	if exec.Status != engine.StatusCompleted || exec.Runs[0].Input != "saved call input" {
 		t.Fatalf("restarted execution = %+v", exec)
+	}
+	if exec.Recovery == nil || exec.Recovery.SourceExecution != "20261105-000001-bbbb" || exec.Recovery.SourceRun != "worker-run" {
+		t.Fatalf("recovery = %+v", exec.Recovery)
+	}
+
+	// Restarting the restarted execution after an edit needs force.
+	changed, err := pipeline.Parse([]byte("name: demo\nentry: worker\nagents:\n  - id: worker\n    runtime: mock\n    prompt: new prompt\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p = changed
+	conflict := httptest.NewRecorder()
+	handler.ServeHTTP(conflict, httptest.NewRequest(http.MethodPost, "/api/executions/"+started.ID+"/restart", strings.NewReader(`{"node_id":"worker"}`)))
+	var body struct {
+		Changed bool     `json:"definition_changed"`
+		Changes []string `json:"changes"`
+	}
+	if conflict.Code != http.StatusConflict || json.Unmarshal(conflict.Body.Bytes(), &body) != nil || !body.Changed || len(body.Changes) != 1 {
+		t.Fatalf("changed definition response = %d %s", conflict.Code, conflict.Body.String())
+	}
+	forced := httptest.NewRecorder()
+	handler.ServeHTTP(forced, httptest.NewRequest(http.MethodPost, "/api/executions/"+started.ID+"/restart", strings.NewReader(`{"node_id":"worker","force":true}`)))
+	if forced.Code != http.StatusCreated {
+		t.Fatalf("forced restart = %d %s", forced.Code, forced.Body.String())
 	}
 }
 

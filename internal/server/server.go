@@ -81,7 +81,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/executions/{id}/approve", s.handleApprove)
 	mux.HandleFunc("POST /api/executions/{id}/manual-edit", s.handleManualEdit)
 	mux.HandleFunc("POST /api/executions/{id}/retry", s.handleRetry)
-	mux.HandleFunc("POST /api/executions/{id}/restart", s.handleRestartInterruptedRun)
+	mux.HandleFunc("POST /api/executions/{id}/restart", s.handleRestart)
 	mux.HandleFunc("POST /api/executions/{id}/cancel", s.handleCancel)
 	mux.HandleFunc("POST /api/executions/{id}/rerun", s.handleRerun)
 	mux.HandleFunc("DELETE /api/executions/{id}", s.handleDeleteExecution)
@@ -89,6 +89,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/executions/{id}/chunks", s.handleAddChunk)
 	mux.HandleFunc("POST /api/executions/{id}/chunks/{chunk}/done", s.handleCompleteChunk)
 	mux.HandleFunc("DELETE /api/executions/{id}/chunks/{chunk}", s.handleRemoveChunk)
+	mux.HandleFunc("GET /api/registry", s.handleRegistry)
+	mux.HandleFunc("GET /api/registry/{name}", s.handleRegistryPackage)
+	mux.HandleFunc("GET /api/registry/{name}/{version}", s.handleRegistryPackage)
+	mux.HandleFunc("POST /api/registry/install", s.handleRegistryInstall)
+	mux.HandleFunc("POST /api/registry/publish", s.handleRegistryPublish)
 
 	return logMiddleware(mux)
 }
@@ -407,28 +412,45 @@ func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (s *Server) handleRestartInterruptedRun(w http.ResponseWriter, r *http.Request) {
+// handleRestart starts a new execution from a run of a finished one. With no
+// run_id or node_id the most recent failed or interrupted run is used; stage
+// restarts an orchestrator run from that stage. A changed pipeline definition
+// is reported as 409 with definition_changed unless force is set.
+func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		RunID string `json:"run_id"`
+		RunID  string `json:"run_id"`
+		NodeID string `json:"node_id"`
+		Stage  string `json:"stage"`
+		Force  bool   `json:"force"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid JSON body: %w", err))
 		return
 	}
-	if req.RunID == "" {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("run_id is required"))
+	execID := r.PathValue("id")
+	if _, err := s.eng.Get(execID); err != nil {
+		writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	if err := s.refreshPipelines(); err != nil {
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("reloading pipelines: %w", err))
 		return
 	}
-	newID, err := s.eng.RestartFromInterrupted(r.PathValue("id"), req.RunID)
+	newID, err := s.eng.Restart(execID, engine.RestartOptions{RunID: req.RunID, NodeID: req.NodeID, Stage: req.Stage, Force: req.Force})
 	if err != nil {
+		var changed *engine.DefinitionChangedError
+		if errors.As(err, &changed) {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":              err.Error(),
+				"definition_changed": true,
+				"changes":            changed.Changes,
+			})
+			return
+		}
 		writeErr(w, http.StatusConflict, err)
 		return
 	}
-	log.Printf("started execution %s from interrupted run %s", newID, req.RunID)
+	log.Printf("started execution %s by restarting %s", newID, execID)
 	writeJSON(w, http.StatusCreated, map[string]string{"id": newID})
 }
 

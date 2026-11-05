@@ -1,0 +1,38 @@
+name: release-notes
+version: 1.1.0
+description: >-
+  Registry demo package: turns a change list into release notes, with an
+  imported template and a lint script packaged alongside it.
+imports:
+  - from: ../shared/release-agents.yaml
+    templates: [reader_base]
+params:
+  product:
+    default: SignalBox
+    description: Product name used in the heading.
+entry: changelog_reader
+
+agents:
+  - id: changelog_reader
+    extends: reader_base
+    handoff: [writer]
+  - id: writer
+    type: standard
+    runtime: mock
+    description: Writes the release notes.
+    prompt: |
+      Write release notes for {{params.product}} from the extracted changes.
+    handoff: [editor_check]
+  - id: editor_check
+    type: approval
+    description: Human check before linting.
+    handoff: [lint]
+  - id: lint
+    type: code
+    language: python
+    code-source: libs/notes_lint.py
+    codes:
+      success: 0
+      fail: 1
+      retry: 2
+

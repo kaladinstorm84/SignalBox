@@ -663,6 +663,8 @@ prints the build version.
 - Runs with a `context` strategy show a **context** section listing the
   included earlier outputs, any truncation, and the exact appended text. The
   Pipelines table and diagram tooltips show each node's strategy.
+- **Registry** — browse, inspect, install, and publish versioned pipeline
+  packages when a registry is configured (see [Pipeline registry](#pipeline-registry)).
 
 Execution history is persisted in `.signalbox/executions.db`, so it survives
 restarts (in-flight runs are marked `interrupted`). Existing JSON records in
@@ -672,15 +674,146 @@ opens. The default retention limit is 1,000 terminal executions; set
 history indefinitely. In-progress executions are not pruned.
 Interrupted standard-agent, code, `llm_gate`, and session cards offer **Retry from here**,
 which starts a new execution at that call with its saved input, using the
-current pipeline definition. Completed earlier outputs remain available to
-`additional-input` dependencies; earlier branches are not replayed. This does
-not resume the original orchestrator or its other branches. Interrupted
-approvals and orchestrator runs do not offer this action. **Rerun** starts the
-whole pipeline from its original input instead.
+current pipeline definition. Completed work that the call does not lead to is
+carried into the new execution rather than repeated, and an interrupted session
+resumes its transcript. Finished executions also offer **Restart from here** on
+top-level runs and **Restart from this stage** on orchestrator stages; see
+[Recovery and restart](#recovery-and-restart). **Rerun** starts the whole
+pipeline from its original input instead.
 
 The server has no authentication. Keep it bound to loopback or a trusted
 interface; anyone with access can launch configured commands, approve work,
 and edit project settings. Run only trusted pipeline definitions and scripts.
+
+## Recovery and restart
+
+A finished execution (failed, rejected, canceled, interrupted, or completed)
+can be restarted from any of its top-level runs, or from a stage of an
+orchestrator run. Restarting creates a **new** execution; the original is left
+untouched and linked from the new one.
+
+- The selected node runs again with its saved input, context selection, and
+  chunk state. Everything downstream of it runs again as it is reached.
+- Completed runs that are not downstream of the restart point are copied into
+  the new execution and marked **reused** (with a link to where they ran)
+  instead of being repeated. Their handoffs into joins that will run again are
+  replayed, so a fan-in agent still receives every branch.
+- Restarting an orchestrator from a stage keeps the earlier stages' results
+  and the context they saved; every earlier stage must have completed. A run
+  inside a stage cannot be a restart point on its own; restart its
+  orchestrator from that stage.
+- An interrupted session resumes its transcript and chunk list.
+- With no run given, the most recent failed, interrupted, or canceled run is
+  chosen (for a rejected execution, the rejecting run).
+
+Each execution stores a fingerprint of the resolved pipeline. If the
+definition has changed since the source ran, the restart is **refused** and
+the changes (a changed entry, or added, removed, or modified agents; agents
+are compared after parameter substitution) are
+listed. Confirm in the UI or pass `--force` to restart on the current
+definition; the changes are recorded as warnings on the new execution. A
+restart point whose agent was removed or changed type cannot be forced.
+Changes to script files used by code steps are not detected. Executions from
+before fingerprints existed restart with a warning.
+
+Limitations: there is one restart point per restart. Unfinished runs that
+are not downstream of it (for example, a parallel branch that was canceled
+alongside the failure) are not rerun; this is recorded as a warning. Restart
+snapshots are stored with the execution, so they are removed with it by
+`execution_retention`.
+
+Try it with `pipelines/recovery-drill.yaml` in the test project: its verify
+stage fails until `recovery-drill.fixed` exists in the project root. Create
+the file and use **Restart from this stage** on `verify`, or
+`signalbox restart <execution> --node coordinator --stage verify`. The new
+execution reuses intake, both scouts, merge, and the draft stage.
+
+Behaviour changes from earlier versions: **Retry from here** on an interrupted
+run now carries completed runs into the new execution and replays sibling
+inputs into joins, and it is refused when the pipeline changed unless forced.
+
+## Command line
+
+`signalbox run` runs a pipeline in the terminal. Execution commands manage
+executions on a running `signalbox serve` (the address comes from
+`signalbox.yaml`, or pass `--addr host:port`), so anything the web UI can do
+can be scripted:
+
+```text
+signalbox list [--page N] [--page-size N]
+signalbox show <execution> [--json]
+signalbox start <pipeline> [--input text] [--param k=v]...
+signalbox approve <execution> [--run id] [--comment text] [--by name]
+signalbox reject <execution> [--run id] [--comment text] [--by name]
+signalbox edit <execution> [--run id] (--output text | --file path) [--by name]
+signalbox retry <execution> [--run id]
+signalbox restart <execution> [--run id | --node id] [--stage id] [--force]
+signalbox rerun <execution>
+signalbox cancel <execution>
+signalbox delete <execution>
+signalbox chunks ...
+signalbox registry ...
+```
+
+When exactly one run is waiting, `approve`, `reject`, `edit`, and `retry` pick
+it automatically; otherwise they list the candidates and ask for `--run`.
+`show` prints the run table, including reused runs and restart warnings.
+`signalbox help executions` and `signalbox help registry` print the details.
+
+## Pipeline registry
+
+A registry is a directory, usually on a file share, holding versioned,
+hash-verified pipeline packages. Configure it in `signalbox.yaml`:
+
+```yaml
+registry:
+  path: ./registry      # relative to the project, absolute, or file:///S:/team/registry
+```
+
+```text
+signalbox registry search [query]
+signalbox registry versions <name>
+signalbox registry show <name>[@version] [--file path]
+signalbox registry publish <pipeline> [--version x.y.z] [--by name]
+signalbox registry install <name>[@version|@latest] [--digest sha256:...] [--force]
+signalbox registry installed
+```
+
+Every command accepts `--registry PATH` to override the configured path. The
+**Registry** page in the web UI offers the same search, inspect, install, and
+publish actions.
+
+- **Packages.** Publishing validates the pipeline and packages it together
+  with its imports and the scripts its code steps use. Files outside the
+  project are refused. The layout is
+  `<registry>/<name>/<version>/manifest.json` plus `files/<project path>`. The
+  manifest lists each file's SHA-256 and a package digest, along with the
+  runtimes and params the pipeline needs.
+- **Names.** The package name is the pipeline name. It must be lowercase
+  letters, digits, `_`, or `-` (up to 64 characters, starting with a letter or
+  digit), so packages behave the same on case-insensitive file systems and
+  shares. Windows device names (`con`, `nul`, `com1`, …) are refused, as is
+  a name differing only in case from an existing package.
+- **Versions.** These are semantic versions (`1.2.0`, `2.0.0-rc.1`). The
+  version comes from `--version`, else the pipeline's `version:` field, else
+  the next patch after the latest published version (`0.1.0` first).
+  Published versions are immutable.
+- **Integrity.** `show` and `install` verify every file hash and the digest.
+  Install can be pinned with `--digest`; the UI always pins to the digest it
+  displayed. A package written for a newer pipeline schema (`schema:`) is
+  refused with a request to upgrade SignalBox.
+- **Install.** Files land in this project, with the package's pipeline mapped
+  into this project's `pipelines_dir`. The pipeline is validated against this
+  project's runtimes in a staging copy before anything is written.
+  Installation is refused when a different pipeline already uses the name, or
+  when an existing file differs from the package. Files unchanged since the
+  last install upgrade freely; `--force` overwrites local edits. Installed
+  versions and file hashes are recorded in `signalbox.lock.json`.
+- **Git.** Keep a `.gitattributes` containing `* -text` in a registry that
+  lives in git, so line-ending conversion does not change the hashed bytes.
+
+The test project's `registry/` holds `release-notes` 1.0.0 and 1.1.0. Install
+1.0.0, then upgrade to 1.1.0 to see the lock file track it.
 
 ## Pipeline YAML
 
@@ -737,6 +870,11 @@ and invalid cross-stage rejection routes. It also checks orchestrator stages,
 handoff exclusivity, and stage chains that leak into another orchestrator.
 Rejection loops are permitted without weakening normal cycle checks.
 
+Two optional top-level fields support sharing. `version: 1.2.0` is the
+pipeline's semantic version, used by `registry publish`. `schema: 1` declares
+the pipeline schema the file was written for; a file with a newer schema than
+this SignalBox understands is rejected with a request to upgrade.
+
 ## Project configuration (`signalbox.yaml`)
 
 ```yaml
@@ -770,6 +908,8 @@ allow_external_imports: false   # imports must stay inside the project
 mcp:                            # see "MCP servers"
   enabled: false
   servers: {}
+registry:                       # see "Pipeline registry"
+  path: ./registry
 ```
 
 `max_concurrent_calls` limits simultaneous runtime invocations across all
@@ -824,7 +964,7 @@ output stable between polls unless a new pipeline run is intended.
 | `GET /api/executions/{id}` | Full execution detail |
 | `POST /api/executions/{id}/approve` | Resolve a gate: `{"run_id": "...", "approved": true, "approved_by": "...", "comment": "..."}` |
 | `POST /api/executions/{id}/retry` | Retry a failed agent call awaiting retry: `{"run_id": "..."}` |
-| `POST /api/executions/{id}/restart` | Start a new execution from an interrupted standard-agent, code, `llm_gate`, or session call: `{"run_id": "..."}` |
+| `POST /api/executions/{id}/restart` | Start a new execution from a run of a finished execution: `{"run_id": "...", "node_id": "...", "stage": "...", "force": false}` (all optional; with no run, the latest failed/interrupted/canceled run). Returns 201 `{"id": "..."}`; 409 `{"error", "definition_changed": true, "changes": [...]}` when the pipeline changed and `force` is not set |
 | `POST /api/executions/{id}/cancel` | Cancel a running execution |
 | `POST /api/executions/{id}/rerun` | Start a new execution with the same pipeline, input, and params; returns `{"id": "..."}` |
 | `DELETE /api/executions/{id}` | Delete a finished execution (409 while it is still running) |
@@ -832,6 +972,11 @@ output stable between polls unless a new pipeline run is intended.
 | `POST /api/executions/{id}/chunks` | Add a chunk: `{"title": "...", "by": "..."}`; returns the chunk (409 once the execution has finished) |
 | `POST /api/executions/{id}/chunks/{chunk}/done` | Mark a chunk done: optional `{"by": "..."}` |
 | `DELETE /api/executions/{id}/chunks/{chunk}` | Remove a chunk (its ID is not reused) |
+| `GET /api/registry?q=...` | Registry status: `configured`, `path`, matching `packages`, `installed` (lock entries), and `publishable` pipeline names |
+| `GET /api/registry/{name}` | Latest version of a package: `manifest`, `versions`, file contents, and `verify_error` if integrity fails |
+| `GET /api/registry/{name}/{version}` | A specific version (`latest` allowed) |
+| `POST /api/registry/install` | Install: `{"ref": "name@1.2.0", "digest": "sha256:...", "force": false}` (409 on conflicts or validation errors) |
+| `POST /api/registry/publish` | Publish: `{"pipeline": "name", "version": "", "by": "..."}`; returns 201 with the manifest |
 
 ## Development
 
@@ -843,10 +988,11 @@ go test ./...
 Layout:
 
 - `cmd/signalbox` — CLI entry point
-- `internal/cli` — commands (`init`, `validate`, `serve`, `run`, `chunks`) and scaffolding templates
+- `internal/cli` — commands (`init`, `validate`, `serve`, `run`, `chunks`, execution commands, `registry`) and scaffolding templates
 - `internal/config` — `signalbox.yaml` loading
 - `internal/pipeline` — pipeline YAML schema and validation
-- `internal/engine` — execution engine (handoffs, orchestrator stages, approvals) and JSON persistence
+- `internal/engine` — execution engine (handoffs, orchestrator stages, approvals, recovery/restart) and persistence
+- `internal/registry` — pipeline packages: publish, verify, install, lock file
 - `internal/runtime` — runtime adapters (OpenAI API, agent CLIs, mock) and local script execution
 - `internal/server` — HTTP API and embedded web UI
 - `internal/watcher` — command polling and persisted output-change detection

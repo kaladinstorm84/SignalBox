@@ -28,7 +28,7 @@ Flags:
   --by name          Who made the change (default: cli)
 `
 
-var chunksHTTPClient = &http.Client{Timeout: 15 * time.Second}
+var apiHTTPClient = &http.Client{Timeout: 15 * time.Second}
 
 // cmdChunks manages an execution's chunks through a running server, so
 // changes reach live sessions immediately.
@@ -72,7 +72,7 @@ func cmdChunks(args []string, out io.Writer) error {
 			return fmt.Errorf("usage: signalbox chunks list <execution>")
 		}
 		var chunks []engine.Chunk
-		if err := chunksRequest(http.MethodGet, base, nil, &chunks); err != nil {
+		if err := apiRequest(http.MethodGet, base, nil, &chunks); err != nil {
 			return err
 		}
 		if len(chunks) == 0 {
@@ -91,7 +91,7 @@ func cmdChunks(args []string, out io.Writer) error {
 			return fmt.Errorf("usage: signalbox chunks add <execution> <title...>")
 		}
 		var chunk engine.Chunk
-		if err := chunksRequest(http.MethodPost, base, map[string]string{"title": title, "by": by}, &chunk); err != nil {
+		if err := apiRequest(http.MethodPost, base, map[string]string{"title": title, "by": by}, &chunk); err != nil {
 			return err
 		}
 		fmt.Fprintf(out, "added %s: %s\n", chunk.ID, chunk.Title)
@@ -99,7 +99,7 @@ func cmdChunks(args []string, out io.Writer) error {
 		if len(positional) != 3 {
 			return fmt.Errorf("usage: signalbox chunks done <execution> <chunk-id>")
 		}
-		if err := chunksRequest(http.MethodPost, base+"/"+url.PathEscape(positional[2])+"/done", map[string]string{"by": by}, nil); err != nil {
+		if err := apiRequest(http.MethodPost, base+"/"+url.PathEscape(positional[2])+"/done", map[string]string{"by": by}, nil); err != nil {
 			return err
 		}
 		fmt.Fprintf(out, "%s marked done\n", strings.ToUpper(positional[2]))
@@ -107,7 +107,7 @@ func cmdChunks(args []string, out io.Writer) error {
 		if len(positional) != 3 {
 			return fmt.Errorf("usage: signalbox chunks remove <execution> <chunk-id>")
 		}
-		if err := chunksRequest(http.MethodDelete, base+"/"+url.PathEscape(positional[2]), nil, nil); err != nil {
+		if err := apiRequest(http.MethodDelete, base+"/"+url.PathEscape(positional[2]), nil, nil); err != nil {
 			return err
 		}
 		fmt.Fprintf(out, "%s removed\n", strings.ToUpper(positional[2]))
@@ -133,7 +133,7 @@ func configuredServerAddr() (string, error) {
 	return net.JoinHostPort(host, fmt.Sprint(cfg.Server.Port)), nil
 }
 
-func chunksRequest(method, target string, body, result any) error {
+func apiRequest(method, target string, body, result any) error {
 	var reader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -149,7 +149,7 @@ func chunksRequest(method, target string, body, result any) error {
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := chunksHTTPClient.Do(req)
+	resp, err := apiHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("contacting SignalBox server (is `signalbox serve` running?): %w", err)
 	}

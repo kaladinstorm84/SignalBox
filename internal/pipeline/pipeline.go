@@ -209,8 +209,14 @@ func (n *Node) HandoffTargets() []string {
 
 // Pipeline is one YAML file in the pipelines directory.
 type Pipeline struct {
+	// Schema is the pipeline format version (default 1). Files declaring a
+	// newer schema than this build supports are rejected.
+	Schema      int    `yaml:"schema,omitempty"`
 	Name        string `yaml:"name"`
 	Description string `yaml:"description,omitempty"`
+	// Version is an optional semantic version used when publishing to a
+	// registry.
+	Version string `yaml:"version,omitempty"`
 	// Entry is the node that receives the initial input.
 	Entry string `yaml:"entry"`
 	Nodes []Node `yaml:"agents"`
@@ -394,6 +400,12 @@ func Names(m map[string]*Pipeline) []string {
 func (p *Pipeline) validate() error {
 	if p.Name == "" {
 		return fmt.Errorf("pipeline is missing a name")
+	}
+	if p.Schema < 0 || p.Schema > SchemaVersion {
+		return fmt.Errorf("pipeline %q uses schema %d; this SignalBox supports schema %d or lower (upgrade SignalBox)", p.Name, p.Schema, SchemaVersion)
+	}
+	if p.Version != "" && !ValidVersion(p.Version) {
+		return fmt.Errorf("pipeline %q: version %q must be a semantic version such as 1.2.0", p.Name, p.Version)
 	}
 	if len(p.Nodes) == 0 {
 		return fmt.Errorf("pipeline %q has no agents", p.Name)

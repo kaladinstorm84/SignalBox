@@ -1,2 +1,5 @@
 # SignalBox execution state
 .signalbox/
+
+# Flag file for the recovery-drill demo
+recovery-drill.fixed

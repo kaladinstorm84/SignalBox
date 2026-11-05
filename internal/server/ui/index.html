@@ -138,11 +138,11 @@
   td.actions { white-space: nowrap; text-align: right; }
   td.actions button + button { margin-left: 6px; }
   button.approve { background: linear-gradient(180deg, #5fe08e, #2fae5f); border-color: #1d6d3b; color: #06210f; box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 2px 0 #1d6d3b; }
-  select, textarea, input[type=text] {
+  select, textarea, input[type=text], input[type=search] {
     width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border);
     border-radius: 5px; padding: 9px 12px; font: inherit;
   }
-  select:focus, textarea:focus, input[type=text]:focus { outline: none; border-color: var(--accent); }
+  select:focus, textarea:focus, input[type=text]:focus, input[type=search]:focus { outline: none; border-color: var(--accent); }
   textarea { min-height: 120px; resize: vertical; }
   .settings-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 16px 0 12px; }
   .settings-toolbar [role=status] { margin-left: auto; }
@@ -227,6 +227,21 @@
 
   .err-banner { background: rgba(226,70,58,.1); border: 1px solid var(--err); color: #ff8a80;
                 border-radius: 5px; padding: 10px 14px; margin-bottom: 14px; }
+  .recovery-banner { border-left: 4px solid var(--purple); font-size: 13.5px; }
+  .recovery-banner.forced { border-left-color: var(--warn); }
+  .recovery-banner a { color: var(--accent2); }
+  .recovery-warnings { margin: 8px 0 0; padding-left: 20px; color: var(--warn); font-size: 12.5px; }
+  .reused-badge { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; padding: 1px 7px; border-radius: 3px;
+                  border: 1px dashed var(--purple); color: var(--purple); text-decoration: none; }
+  .registry-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 14px; align-items: start; }
+  .registry-grid > div { min-width: 0; }
+  .registry-grid pre.out { max-width: 100%; overflow: auto; }
+  .registry-grid .card { margin-bottom: 0; }
+  .pkg-row.selected td { background: rgba(201,163,74,.08); }
+  .pkg-meta { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 13px; margin: 8px 0; }
+  .pkg-meta dt { color: var(--muted); } .pkg-meta dd { margin: 0; min-width: 0; overflow-wrap: anywhere; white-space: normal; }
+  .badge-installed { font-size: 11px; color: var(--ok); border: 1px solid var(--ok); border-radius: 3px; padding: 0 6px; margin-left: 6px; }
+  @media (max-width: 900px) { .registry-grid { grid-template-columns: 1fr; } }
   .topline { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
   .toast { position: fixed; bottom: 20px; right: 20px; background: var(--enamel); color: var(--cream); border: 2px solid var(--cream);
            font-family: var(--sign); letter-spacing: .5px; padding: 10px 18px; border-radius: 4px; opacity: 0; transition: opacity .25s; pointer-events: none; }
@@ -295,6 +310,8 @@
         <span class="lever black" data-n="3" aria-hidden="true"></span><span>Pipelines</span></a>
       <a href="#/settings" data-nav="settings">
         <span class="lever yellow" data-n="4" aria-hidden="true"></span><span>Settings</span></a>
+      <a href="#/registry" data-nav="registry">
+        <span class="lever black" data-n="5" aria-hidden="true"></span><span>Registry</span></a>
     </nav>
     <div class="diagram-mini" aria-hidden="true">
       <div class="panel">
@@ -387,7 +404,7 @@ async function copyResult(index, button) {
 async function api(path, opts) {
   const res = await fetch('/api' + path, opts);
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error || res.statusText);
+  if (!res.ok) { const err = new Error(body.error || res.statusText); err.status = res.status; err.body = body; throw err; }
   return body;
 }
 function esc(s) {
@@ -421,6 +438,8 @@ function route() {
   if (pipelineEdit) return showPipelineEditor(pipelineEdit[1] ? decodeURIComponent(pipelineEdit[1]) : '', false);
   if (hash.startsWith('#/pipelines')) return showPipelines();
   if (hash.startsWith('#/settings')) return showSettings();
+  const registryRoute = hash.match(/^#\/registry(?:\/(.+))?$/);
+  if (registryRoute) return showRegistry(registryRoute[1] ? decodeURIComponent(registryRoute[1]) : '');
   return showExecutions();
 }
 window.addEventListener('hashchange', route);
@@ -530,6 +549,7 @@ async function showExecution(id) {
       </div>
       ${diagram ? `<div class="execution-diagram">${diagram}</div>` : ''}
       ${x.error ? `<div class="err-banner">${esc(x.error)}</div>` : ''}
+      ${renderRecovery(x)}
       <div class="card"><label style="margin-top:0">Input</label><pre class="out">${esc(x.input)}</pre>
       ${x.params && Object.keys(x.params).length ? `<label>Parameters</label><table class="params-table"><tbody>${Object.keys(x.params).sort().map(k => `<tr><td class="mono">${esc(k)}</td><td>${x.params[k] === '' ? '<span class="muted">(empty)</span>' : esc(x.params[k])}</td></tr>`).join('')}</tbody></table>` : ''}</div>
       <h2 style="font-size:16px;margin:20px 0 10px">Agent runs</h2>
@@ -561,9 +581,13 @@ function renderRun(x, r) {
   const manualEdit = r.status === 'waiting_manual_edit';
   const retryable = r.status === 'waiting_retry';
   const interrupted = r.status === 'interrupted' && ['standard', 'code', 'llm_gate', 'session'].includes(r.type);
+  // Any top-level run of a finished execution can be a restart point; stage
+  // runs restart through their orchestrator's stage.
+  const restartable = isTerminal(x.status) && !r.orch_run_id && !r.reused_from && !interrupted;
   const stages = (r.stages || []).map(s => `
     <div class="stage">
-      <div class="runhead"><span class="nodeid">stage: ${esc(s.stage_id)}</span>${pill(s.status)}</div>
+      <div class="runhead"><span class="nodeid">stage: ${esc(s.stage_id)}</span>${pill(s.status)}
+      ${isTerminal(x.status) && !r.reused_from && s.status !== 'pending' ? `<button class="secondary sm" style="margin-left:auto" title="New execution that keeps earlier stages and reruns from this one" onclick="restartRun('${esc(x.id)}', {run_id: '${esc(r.id)}', stage: '${esc(s.stage_id)}'}, this)">Restart from this stage</button>` : ''}</div>
       ${(s.outputs || []).map((o, i) => `<details data-key="${esc(r.id)}:${esc(s.stage_id)}:${i}"><summary>result from ${esc(o.node_id)}</summary><pre class="out">${esc(o.output)}</pre></details>`).join('')}
       ${s.context ? `<details data-key="${esc(r.id)}:${esc(s.stage_id)}:context"><summary>stage context</summary><pre class="out">${esc(s.context)}</pre></details>` : ''}
     </div>`).join('');
@@ -580,7 +604,9 @@ function renderRun(x, r) {
       ${r.from_node_id ? `<span class="muted">← ${esc(r.from_node_id)}</span>` : '<span class="muted">entry</span>'}
       ${r.stage_id ? `<span class="muted">in stage ${esc(r.stage_id)}</span>` : ''}
       ${r.retries ? `<span class="muted">${r.retries} ${r.retries === 1 ? 'retry' : 'retries'}</span>` : ''}
+      ${r.reused_from ? `<a class="reused-badge" href="#/exec/${encodeURIComponent(r.reused_from)}" title="Carried over from ${esc(r.reused_from)} instead of being repeated">reused</a>` : ''}
       <span class="muted" style="margin-left:auto">${fmtTime(r.started_at)}</span>
+      ${restartable ? `<button class="secondary sm" title="New execution that keeps unaffected completed work and reruns this node and everything after it" onclick="restartRun('${esc(x.id)}', {run_id: '${esc(r.id)}'}, this)">Restart from here</button>` : ''}
     </div>
     ${integrationsLabel(r.model, r.mcp, r.node_id) ? `<div class="muted integrations">${integrationsLabel(r.model, r.mcp, r.node_id)}</div>` : ''}
     ${r.error ? `<div class="err-banner" style="margin:8px 0 0">${esc(r.error)}</div>` : ''}
@@ -592,7 +618,7 @@ function renderRun(x, r) {
     ${interrupted ? `
       <div class="approve-actions" style="margin-top:8px">
         <button class="secondary" onclick="restartInterruptedRun('${esc(x.id)}','${esc(r.id)}', this)">Retry from here</button>
-        <span class="muted">${r.session ? 'Starts a new execution that resumes this session; completed turns and chunks are kept.' : 'Starts a new execution from this call using its saved input.'}</span>
+        <span class="muted">${r.session ? 'Starts a new execution that resumes this session; completed turns and chunks are kept.' : 'Starts a new execution from this call using its saved input; completed work elsewhere is reused.'}</span>
       </div>` : ''}
     ${r.input ? `<details data-key="${esc(r.id)}:input"><summary>input</summary><pre class="out">${esc(r.input)}</pre></details>` : ''}
     ${r.context ? renderContext(r) : ''}
@@ -765,15 +791,45 @@ async function retryRun(execId, runId, button) {
 }
 
 async function restartInterruptedRun(execId, runId, button) {
+  return restartRun(execId, {run_id: runId}, button);
+}
+
+// restartRun starts a new execution from a run (or orchestrator stage) of a
+// finished one. If the pipeline changed since, it lists the changes and asks
+// before restarting on the current definition.
+async function restartRun(execId, target, button) {
   if (button) button.disabled = true;
+  const post = force => api(`/executions/${encodeURIComponent(execId)}/restart`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({...target, force}),
+  });
   try {
-    const res = await api(`/executions/${encodeURIComponent(execId)}/restart`, {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({run_id: runId}),
-    });
+    let res;
+    try { res = await post(false); }
+    catch (e) {
+      if (!e.body || !e.body.definition_changed) throw e;
+      const changes = (e.body.changes || []).map(c => '• ' + c).join('\n');
+      if (!confirm(`The pipeline has changed since this execution ran:\n\n${changes}\n\nRestart anyway using the current definition? The changes are recorded as warnings on the new execution.`)) {
+        if (button) button.disabled = false;
+        return;
+      }
+      res = await post(true);
+    }
     toast('Started ' + res.id);
     location.hash = '#/exec/' + encodeURIComponent(res.id);
   } catch (e) { toast('Error: ' + e.message); if (button) button.disabled = false; }
+}
+
+function renderRecovery(x) {
+  const r = x.recovery;
+  if (!r) return '';
+  const from = `<a href="#/exec/${encodeURIComponent(r.source_execution)}" class="mono">${esc(r.source_execution)}</a>`;
+  const what = `<b>${esc(r.node_id)}</b>${r.stage ? ` from stage <b>${esc(r.stage)}</b>` : ''}`;
+  const warnings = (r.warnings || []).map(w => `<li>${esc(w)}</li>`).join('');
+  return `<div class="card recovery-banner${r.forced ? ' forced' : ''}">
+    <div><b>Restarted</b> from ${from} at ${what}${r.resumed ? ' (session resumed)' : ''}
+    · ${r.reused_runs || 0} completed ${r.reused_runs === 1 ? 'run' : 'runs'} reused${r.forced ? ' · <b>forced on a changed definition</b>' : ''}</div>
+    ${warnings ? `<ul class="recovery-warnings">${warnings}</ul>` : ''}</div>`;
 }
 
 async function decide(execId, runId, approved) {
@@ -1508,6 +1564,117 @@ async function showPipelines() {
   $main.querySelectorAll('[data-edit-file]').forEach(button => button.addEventListener('click', () => {
     location.hash = '#/pipelines/edit/' + encodeURIComponent(button.dataset.editFile);
   }));
+}
+
+// --- registry ---
+async function showRegistry(selected) {
+  setNav('registry');
+  const query = new URLSearchParams(location.search).get('q') || (window.registryQuery || '');
+  let data;
+  try { data = await api('/registry?q=' + encodeURIComponent(query), {cache: 'no-store'}); }
+  catch (e) { $main.innerHTML = `<h2>Registry</h2><div class="err-banner">${esc(e.message)}</div>`; return; }
+  if (!location.hash.startsWith('#/registry')) return;
+  const installed = data.installed || {};
+  const header = `<div class="topline"><div><h2>Registry</h2><div class="page-sub">Share versioned pipelines through a directory or file share${data.configured ? ` · <span class="mono">${esc(data.path)}</span>` : ''}.</div></div></div>`;
+  if (!data.configured) {
+    $main.innerHTML = header + `<div class="card"><p>No registry is configured. Add one to <span class="mono">signalbox.yaml</span> (in <a href="#/settings">Settings</a>):</p>
+      <pre class="out">registry:\n  path: ./registry        # or an absolute path / file:// share</pre>
+      <p class="muted">The command line can also use <span class="mono">signalbox registry ... --registry PATH</span>.</p></div>`;
+    return;
+  }
+  const rows = (data.packages || []).map(p => `
+    <tr class="row pkg-row ${p.name === selected.split('@')[0] ? 'selected' : ''}" onclick="location.hash='#/registry/${encodeURIComponent(p.name)}'">
+      <td><b>${esc(p.name)}</b>${installed[p.name] ? `<span class="badge-installed">installed ${esc(installed[p.name].version)}</span>` : ''}
+        ${p.description ? `<div class="muted">${esc(p.description)}</div>` : ''}</td>
+      <td class="mono">${esc(p.latest)}</td><td class="muted">${p.versions.length}</td></tr>`).join('');
+  const publishable = data.publishable || [];
+  $main.innerHTML = header + `
+    ${data.error ? `<div class="err-banner">${esc(data.error)}</div>` : ''}
+    <div class="registry-grid">
+      <div>
+        <div class="card">
+          <form id="registry-search" class="approve-actions" style="margin-top:0">
+            <input id="registry-q" type="search" placeholder="Search name or description" value="${esc(query)}" style="flex:1">
+            <button class="secondary" type="submit">Search</button></form>
+          ${rows ? `<table style="margin-top:10px"><thead><tr><th>Package</th><th>Latest</th><th>Versions</th></tr></thead><tbody>${rows}</tbody></table>`
+                 : `<div class="empty">${query ? 'No packages match.' : 'The registry is empty. Publish a pipeline below.'}</div>`}
+        </div>
+        <div class="card" style="margin-top:14px">
+          <h3 style="margin-top:0">Publish a pipeline</h3>
+          ${publishable.length ? `
+          <label for="publish-pipeline">Pipeline</label>
+          <select id="publish-pipeline">${publishable.map(n => `<option>${esc(n)}</option>`).join('')}</select>
+          <label for="publish-version">Version <span class="muted">(blank: the pipeline's <span class="mono">version:</span>, else next patch)</span></label>
+          <input id="publish-version" type="text" placeholder="e.g. 1.2.0">
+          <div class="approve-actions"><button id="publish-button">Publish</button>
+          <span class="muted">Packages the pipeline with its imports and code files. Versions are immutable.</span></div>`
+          : '<div class="muted">No pipelines can be published. Package names must be lowercase letters, digits, "_" or "-".</div>'}
+        </div>
+      </div>
+      <div id="registry-detail">${selected ? '<div class="card muted">Loading…</div>' : '<div class="card empty">Select a package to inspect its files and install it.</div>'}</div>
+    </div>`;
+  $main.querySelector('#registry-search').addEventListener('submit', event => {
+    event.preventDefault();
+    window.registryQuery = $main.querySelector('#registry-q').value;
+    route();
+  });
+  const publishButton = $main.querySelector('#publish-button');
+  if (publishButton) publishButton.addEventListener('click', async () => {
+    publishButton.disabled = true;
+    try {
+      const m = await api('/registry/publish', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({pipeline: $main.querySelector('#publish-pipeline').value, version: $main.querySelector('#publish-version').value.trim(), by: 'web-ui'})});
+      toast(`Published ${m.name}@${m.version}`);
+      location.hash = '#/registry/' + encodeURIComponent(m.name + '@' + m.version);
+    } catch (e) { toast('Error: ' + e.message); publishButton.disabled = false; }
+  });
+  if (selected) renderRegistryPackage(selected, installed);
+}
+
+async function renderRegistryPackage(ref, installed) {
+  const [name, version] = ref.split('@');
+  const panel = document.getElementById('registry-detail');
+  let d;
+  try { d = await api(`/registry/${encodeURIComponent(name)}/${encodeURIComponent(version || 'latest')}`, {cache: 'no-store'}); }
+  catch (e) { panel.innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; return; }
+  if (document.getElementById('registry-detail') !== panel) return;
+  const m = d.manifest;
+  const current = installed[m.name];
+  const files = m.files.map(f => `<details data-key="pkg:${esc(f.path)}" ${f.path === m.entry ? 'open' : ''}>
+      <summary><span class="mono">${esc(f.path)}</span> <span class="muted">${f.size} bytes · sha256 ${esc(f.sha256.slice(0, 12))}…</span></summary>
+      <pre class="out">${esc(d.files[f.path] ?? '(unavailable)')}</pre></details>`).join('');
+  panel.innerHTML = `<div class="card">
+    <div class="topline"><div><h3 style="margin:0">${esc(m.name)}</h3>${m.description ? `<div class="muted">${esc(m.description)}</div>` : ''}</div>
+    <select id="pkg-version" style="width:auto">${d.versions.map(v => `<option ${v === m.version ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div>
+    ${d.verify_error ? `<div class="err-banner" style="margin-top:10px">Integrity check failed: ${esc(d.verify_error)}</div>` : ''}
+    <dl class="pkg-meta">
+      <dt>Published</dt><dd>${fmtTime(m.published_at)}${m.published_by ? ' by ' + esc(m.published_by) : ''}</dd>
+      <dt>Digest</dt><dd class="mono">${esc(m.digest)}</dd>
+      <dt>Schema</dt><dd>${m.schema_version}</dd>
+      <dt>Runtimes</dt><dd>${(m.runtimes || []).map(r => `<span class="mono">${esc(r)}</span>`).join(', ') || '—'}</dd>
+      ${m.params && m.params.length ? `<dt>Params</dt><dd>${m.params.map(esc).join(', ')}</dd>` : ''}
+      <dt>Installed</dt><dd>${current ? `${esc(current.version)}${current.digest === m.digest ? ' (this version)' : ''}` : 'no'}</dd>
+    </dl>
+    <div class="approve-actions">
+      <button id="install-button" ${d.verify_error ? 'disabled' : ''}>${current ? (current.digest === m.digest ? 'Reinstall' : 'Install ' + esc(m.version)) : 'Install'}</button>
+      <label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" id="install-force" style="width:auto"> overwrite local changes</label>
+    </div>
+    <div class="muted" style="font-size:12.5px">Install is pinned to the digest above, verifies every file, and validates the pipeline against this project's runtimes before writing anything.</div>
+    <h4>Files</h4>${files}</div>`;
+  panel.querySelector('#pkg-version').addEventListener('change', event => {
+    location.hash = '#/registry/' + encodeURIComponent(m.name + '@' + event.target.value);
+  });
+  const button = panel.querySelector('#install-button');
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    try {
+      const res = await api('/registry/install', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ref: m.name + '@' + m.version, digest: m.digest, force: panel.querySelector('#install-force').checked})});
+      const changed = (res.written || []).length + (res.replaced || []).length;
+      toast(`Installed ${m.name}@${m.version} · ${changed} file${changed === 1 ? '' : 's'} written`);
+      route();
+    } catch (e) { toast('Error: ' + e.message); button.disabled = false; }
+  });
 }
 
 api('/meta').then(m => { document.getElementById('project-name').textContent = m.project; }).catch(() => {});

@@ -1740,14 +1740,26 @@ agents:
 	if exec.Input != "original task" {
 		t.Fatalf("recovery execution input = %q", exec.Input)
 	}
-	if len(exec.Runs) != 2 || exec.Runs[0].NodeID != "interrupted_call" || exec.Runs[1].NodeID != "judge" {
-		t.Fatalf("recovery runs = %+v, want interrupted_call then judge", exec.Runs)
+	var fresh []string
+	for _, run := range exec.Runs {
+		if run.ReusedFrom == "" {
+			fresh = append(fresh, run.NodeID)
+		} else if run.ReusedFrom != previous.ID {
+			t.Fatalf("reused run %s from %q", run.NodeID, run.ReusedFrom)
+		}
+	}
+	if strings.Join(fresh, ",") != "interrupted_call,judge" || len(exec.Runs) != 5 {
+		t.Fatalf("recovery runs = %v (total %d), want interrupted_call then judge plus 3 reused", fresh, len(exec.Runs))
+	}
+	if exec.Recovery == nil || exec.Recovery.SourceExecution != previous.ID || exec.Recovery.SourceRun != "interrupted-run" || exec.Recovery.ReusedRuns != 3 {
+		t.Fatalf("recovery = %+v", exec.Recovery)
 	}
 	if !strings.Contains(retryInput, "saved call input") || !strings.Contains(retryInput, "--- additional input from requirements_loader ---\nsaved requirements") {
 		t.Fatalf("retry input missing saved call input or requirements: %q", retryInput)
 	}
-	if judgeInput != "retried output" {
-		t.Fatalf("judge input = %q, want retried output", judgeInput)
+	// The completed sibling's handoff into the join is replayed, not lost.
+	if !strings.Contains(judgeInput, "retried output") || !strings.Contains(judgeInput, "sibling output") {
+		t.Fatalf("judge input = %q, want retried and sibling outputs", judgeInput)
 	}
 }
 
