@@ -55,3 +55,31 @@ func TestModelArgAndMCPValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestUploadsDefaultsAndValidation(t *testing.T) {
+	base := "version: 1\nproject: test\nruntimes:\n  mock:\n    type: mock\n"
+	cfg, err := Parse([]byte(base), ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Uploads.MaxBytes != DefaultUploadMaxBytes || cfg.Uploads.MaxFiles != DefaultUploadMaxFiles || len(cfg.Uploads.AllowedExtensions) != len(DefaultUploadExtensions) {
+		t.Fatalf("defaults = %+v", cfg.Uploads)
+	}
+	cfg, err = Parse([]byte(base+"uploads:\n  max_bytes: 1024\n  max_files: 3\n  allowed_extensions: [CSV, .Md]\n"), ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Uploads.MaxBytes != 1024 || cfg.Uploads.MaxFiles != 3 || strings.Join(cfg.Uploads.AllowedExtensions, " ") != ".csv .md" {
+		t.Fatalf("configured = %+v", cfg.Uploads)
+	}
+	for _, bad := range []string{
+		"uploads:\n  max_bytes: -1\n",
+		"uploads:\n  max_bytes: 2000000000000\n",
+		"uploads:\n  max_files: 1000\n",
+		"uploads:\n  allowed_extensions: [\"../x\"]\n",
+	} {
+		if _, err := Parse([]byte(base+bad), "."); err == nil || !strings.Contains(err.Error(), "uploads") {
+			t.Fatalf("%q accepted: %v", bad, err)
+		}
+	}
+}

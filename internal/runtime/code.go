@@ -93,6 +93,7 @@ func NewCode(node *pipeline.Node, projectRoot string) (Runtime, error) {
 		return nil, err
 	}
 	rt.(*cliRuntime).dir = root
+	rt.(*cliRuntime).code = true
 	if node.Codes != nil {
 		return &codeRuntime{Runtime: rt, codes: node.Codes}, nil
 	}

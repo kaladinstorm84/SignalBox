@@ -1,0 +1,36 @@
+# Demo: uploads passed down a pipeline chain.
+#
+#   signalbox run upload-chained --file samples/orders.csv
+#
+# The audit node runs upload-review as a linked child execution. With
+# files: inherit the child receives this execution's files (hard-linked, not
+# copied), which satisfies upload-review's files.required. Without it the
+# child would start with no files and fail.
+name: upload-chained
+description: >-
+  File uploads through chaining: the parent's attached files are inherited by
+  a linked upload-review execution.
+files:
+  extensions: [.csv, .md, .txt]
+entry: brief
+
+agents:
+  - id: brief
+    runtime: mock
+    description: Frames the audit request.
+    prompt: |
+      Frame an audit of the attached order files.
+    handoff: [audit]
+
+  - id: audit
+    type: pipeline
+    pipeline: upload-review
+    description: Runs upload-review on the same files.
+    files: inherit
+    handoff: [wrap]
+
+  - id: wrap
+    runtime: mock
+    description: Wraps the audit result.
+    prompt: |
+      Wrap the audit report with a cover note.

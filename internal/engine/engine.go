@@ -32,6 +32,10 @@ type Engine struct {
 	execs       map[string]*liveExec
 	callSlots   chan struct{}
 	projectRoot string
+	// uploadLimits bound new executions' files; filesRoot is the absolute
+	// uploads folder, resolved on first use.
+	uploadLimits UploadLimits
+	filesRoot    string
 }
 
 // liveExec is the in-memory state wrapped around a persisted Execution.
@@ -135,11 +139,12 @@ func NewWithLimit(pipelines map[string]*pipeline.Pipeline, registry *runtime.Reg
 		return nil, fmt.Errorf("maximum concurrent calls must be at least 1")
 	}
 	eng := &Engine{
-		pipelines: pipelines,
-		registry:  registry,
-		store:     store,
-		execs:     map[string]*liveExec{},
-		callSlots: make(chan struct{}, maxConcurrentCalls),
+		pipelines:    pipelines,
+		registry:     registry,
+		store:        store,
+		execs:        map[string]*liveExec{},
+		callSlots:    make(chan struct{}, maxConcurrentCalls),
+		uploadLimits: DefaultUploadLimits(),
 	}
 	if len(projectRoot) > 0 {
 		eng.projectRoot = projectRoot[0]
@@ -175,23 +180,20 @@ func (eng *Engine) Start(pipelineName, input string) (string, error) {
 // StartWithParams begins a new execution with parameter values. Values are
 // validated against the pipeline's declarations before anything runs.
 func (eng *Engine) StartWithParams(pipelineName, input string, params map[string]string) (string, error) {
-	eng.mu.Lock()
-	defer eng.mu.Unlock()
-	le, err := eng.startLocked(startSpec{pipeline: pipelineName, input: input, params: params})
-	if err != nil {
-		return "", err
-	}
-	return le.exec.ID, nil
+	return eng.StartWith(StartOptions{Pipeline: pipelineName, Input: input, Params: params})
 }
 
 // startSpec describes a new execution. from, until, and parent are set for
-// child executions started by pipeline nodes.
+// child executions started by pipeline nodes. files are new uploads; reuse
+// carries over another execution's files.
 type startSpec struct {
 	pipeline    string
 	input       string
 	params      map[string]string
 	from, until string
 	parent      *ParentLink
+	files       []FileInput
+	reuse       *reusedFiles
 }
 
 func (eng *Engine) startLocked(spec startSpec) (*liveExec, error) {
@@ -199,7 +201,15 @@ func (eng *Engine) startLocked(spec startSpec) (*liveExec, error) {
 	if !ok {
 		return nil, fmt.Errorf("unknown pipeline %q", spec.pipeline)
 	}
-	p, resolved, err := template.WithParams(spec.params)
+	sources, err := eng.collectFilesLocked(template, spec)
+	if err != nil {
+		return nil, err
+	}
+	params, err := bindFileParams(template, spec.params, sources)
+	if err != nil {
+		return nil, err
+	}
+	p, resolved, err := template.WithParams(params)
 	if err != nil {
 		return nil, err
 	}
@@ -243,6 +253,12 @@ func (eng *Engine) startLocked(spec startSpec) (*liveExec, error) {
 	if spec.from != "" || spec.until != "" {
 		le.exec.Section = &Section{From: spec.from, Until: spec.until}
 	}
+	files, err := eng.storeFilesLocked(le.exec.ID, sources)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	le.exec.Files = files
 
 	eng.execs[le.exec.ID] = le
 	eng.deliverLocked(le, le.entryID(), spec.input, "", nil)
@@ -363,6 +379,7 @@ func (eng *Engine) Delete(execID string) error {
 		if err := eng.store.Delete(execID); err != nil {
 			return fmt.Errorf("deleting execution %q: %w", execID, err)
 		}
+		eng.removeUploadsLocked(execID)
 		return nil
 	}
 	select {
@@ -378,6 +395,7 @@ func (eng *Engine) Delete(execID string) error {
 			return fmt.Errorf("deleting execution %q: %w", execID, err)
 		}
 	}
+	eng.removeUploadsLocked(execID)
 	delete(eng.execs, execID)
 	return nil
 }
@@ -755,6 +773,11 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 		return
 	}
 
+	delivery, err := eng.deliverFiles(le, run, node)
+	if err != nil {
+		eng.finishRunErr(le, run, node, octx, err)
+		return
+	}
 	var invokeWith func(input string) (string, error)
 	sch := le.p.SchemaFor(node.OutputSchema())
 	if node.Type == pipeline.TypeCode {
@@ -764,7 +787,9 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 			return
 		}
 		invokeWith = func(input string) (string, error) {
-			return rt.Invoke(le.ctx, runtime.Request{Input: input})
+			req := runtime.Request{Input: input}
+			delivery.apply(&req)
+			return rt.Invoke(le.ctx, req)
 		}
 	} else {
 		rt, err := eng.registry.Get(node.Runtime)
@@ -775,6 +800,7 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 		invokeWith = func(input string) (string, error) {
 			req := agentRequest(run, node.Prompt, input)
 			req.Schema = sch
+			delivery.apply(&req)
 			return rt.Invoke(le.ctx, req)
 		}
 	}
@@ -862,6 +888,11 @@ func (eng *Engine) runLLMGate(le *liveExec, run *NodeRun, node *pipeline.Node, o
 		return
 	}
 	sch := le.p.SchemaFor(node.OutputSchema())
+	delivery, err := eng.deliverFiles(le, run, node)
+	if err != nil {
+		eng.finishRunErr(le, run, node, octx, err)
+		return
+	}
 	prompt := node.Prompt + "\n\nReturn only one JSON object with exactly two string fields, decision and feedback. " +
 		`decision must be "approve" or "reject". Example: {"decision":"approve","feedback":"..."}.`
 	if sch != nil {
@@ -872,6 +903,7 @@ func (eng *Engine) runLLMGate(le *liveExec, run *NodeRun, node *pipeline.Node, o
 		return eng.invokeRetrying(le, run, node.Retry, func() (string, error) {
 			req := agentRequest(run, prompt, input)
 			req.Schema = sch
+			delivery.apply(&req)
 			return rt.Invoke(le.ctx, req)
 		})
 	}

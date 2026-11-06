@@ -169,7 +169,12 @@ type Node struct {
 	// Output requires JSON output conforming to a project schema.
 	Output *OutputSpec `yaml:"output,omitempty"`
 	// Format requests rendered Markdown presentation for this node's output.
-	Format         bool           `yaml:"format,omitempty"`
+	Format bool `yaml:"format,omitempty"`
+	// Files delivers the execution's uploaded files to the node: inline,
+	// path, or none (default); pipeline nodes use inherit or none.
+	Files string `yaml:"files,omitempty" json:"files,omitempty"`
+	// FilesBudget bounds the characters of inline file content.
+	FilesBudget    int            `yaml:"files_budget,omitempty" json:"files_budget,omitempty"`
 	Language       string         `yaml:"language,omitempty"`
 	CodeSource     string         `yaml:"code-source,omitempty"`
 	TimeoutSeconds int            `yaml:"timeout_seconds,omitempty"`
@@ -243,6 +248,8 @@ type Pipeline struct {
 	Params map[string]*Param `yaml:"params,omitempty"`
 	// Input optionally validates the initial input against a schema.
 	Input *InputSpec `yaml:"input,omitempty"`
+	// Files declares the uploaded files an execution accepts.
+	Files *FilesSpec `yaml:"files,omitempty"`
 	// Sources lists files merged in through imports, in load order.
 	Sources []string `yaml:"-"`
 
@@ -440,6 +447,9 @@ func (p *Pipeline) validate() error {
 		return fmt.Errorf("pipeline %q: %w", p.Name, err)
 	}
 	if err := p.validateInputSpec(); err != nil {
+		return fmt.Errorf("pipeline %q: %w", p.Name, err)
+	}
+	if err := p.validateFilesSpec(); err != nil {
 		return fmt.Errorf("pipeline %q: %w", p.Name, err)
 	}
 	p.byID = map[string]*Node{}
@@ -668,6 +678,9 @@ func (p *Pipeline) validateNode(n *Node) error {
 	}
 
 	if err := validateOutputSpec(n); err != nil {
+		return err
+	}
+	if err := validateNodeFiles(n); err != nil {
 		return err
 	}
 	structured := n.OutputSchema() != ""

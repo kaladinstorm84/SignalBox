@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -211,5 +213,55 @@ func TestExecutionCommandsDriveTheServerAPI(t *testing.T) {
 	}
 	if _, err := run("retry", id, "--bogus"); err == nil {
 		t.Fatal("unknown flag accepted")
+	}
+}
+
+func TestStartWithFilesUploadsMultipart(t *testing.T) {
+	p, err := pipeline.Parse([]byte("name: up\nfiles: {required: true}\nparams:\n  main: {type: file}\nagents:\n  - id: a\n    runtime: mock\n    files: inline\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := runtime.NewRegistry(map[string]config.RuntimeConfig{"mock": {Type: "mock"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := engine.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	eng, err := engine.New(map[string]*pipeline.Pipeline{"up": p}, registry, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	load := func() (map[string]*pipeline.Pipeline, error) { return map[string]*pipeline.Pipeline{"up": p}, nil }
+	srv := httptest.NewServer(server.New(eng, "test", load, nil, nil).Handler())
+	defer srv.Close()
+	addr := strings.TrimPrefix(srv.URL, "http://")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "orders.csv")
+	if err := os.WriteFile(path, []byte("a,b\n1,2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := cmdOps("start", []string{"up", "--file", path, "--param", "main=orders.csv", "--addr", addr}, &out); err != nil {
+		t.Fatal(err)
+	}
+	fields := strings.Fields(out.String())
+	if len(fields) < 2 || !strings.Contains(out.String(), "1 file(s) attached") {
+		t.Fatalf("start output %q", out.String())
+	}
+	x, err := eng.Get(fields[1])
+	if err != nil || len(x.Files) != 1 || x.Files[0].Name != "orders.csv" || x.Files[0].Size != 8 || x.Params["main"] != "orders.csv" {
+		t.Fatalf("execution = %+v %v", x, err)
+	}
+
+	out.Reset()
+	if err := cmdOps("start", []string{"up", "--input", "x", "--addr", addr}, &out); err == nil || !strings.Contains(err.Error(), "requires at least one file") {
+		t.Fatalf("start without files: %v", err)
+	}
+	if err := cmdOps("start", []string{"up", "--file", filepath.Join(dir, "missing.csv"), "--addr", addr}, &out); err == nil {
+		t.Fatal("missing local file accepted")
 	}
 }

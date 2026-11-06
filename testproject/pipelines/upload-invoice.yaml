@@ -1,0 +1,32 @@
+# Demo: uploads with a schema and a file parameter.
+#
+#   signalbox run upload-invoice --file samples/invoice-1042.json --param invoice=invoice-1042.json
+#
+# Uploaded .json/.yaml files must match schemas/invoice.json, so
+# samples/invoice-bad.json is rejected before the execution starts. The
+# "invoice" parameter has type: file: in the New run form it is a file picker,
+# and its value is the stored name of the attached file, so prompts can say
+# which file to use with ${{ params.invoice }}.
+name: upload-invoice
+description: >-
+  File uploads: schema-validated JSON uploads and a file-typed parameter that
+  names the invoice to book.
+params:
+  invoice:
+    type: file
+    required: true
+    description: The invoice JSON to book.
+files:
+  required: true
+  max_count: 1
+  extensions: [.json]
+  schema: invoice
+entry: book
+
+agents:
+  - id: book
+    runtime: mock
+    description: Books the invoice named by the parameter.
+    files: inline
+    prompt: |
+      Book invoice file ${{ params.invoice }} and confirm the total.

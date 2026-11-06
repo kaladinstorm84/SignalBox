@@ -213,6 +213,63 @@ schema-validated gate verdict; start it with
 and `structured-repair` (a script whose invalid answer is repaired from the
 validation errors).
 
+### File uploads
+
+An execution can carry files: attach them in the New run form (drop zone or
+browse), with `signalbox run|start --file path` (repeatable), or as
+`multipart/form-data` on `POST /api/executions`. Files are validated before
+the execution is created, so a bad upload never starts a run, and are stored
+read-only under `<state_dir>/uploads/<execution>/files/`.
+
+A pipeline can declare what it accepts; all keys are optional:
+
+```yaml
+files:
+  required: true            # refuse runs without files
+  max_count: 3              # at most this many (default: uploads.max_files)
+  extensions: [.csv, .md]   # narrower than uploads.allowed_extensions
+  schema: invoice           # .json/.yaml/.yml uploads must match schemas/invoice.json
+params:
+  ledger:
+    type: file              # a file picker in the UI; value = the attached file's name
+```
+
+Nodes never see the files unless they ask, so existing pipelines are
+unchanged. Set `files:` per node:
+
+| `files:` | Nodes | Delivery |
+|----------|-------|----------|
+| `inline` | standard, code, llm_gate | Text files are appended to the input between `--- file: name ---` markers, up to `files_budget` characters (default 20,000). Longer files are truncated with a note; binary files and files past the budget are listed by name only. Works with every runtime, including `openai`. |
+| `path` | standard, code, llm_gate | Read-only copies are placed in a per-run folder named by `SIGNALBOX_FILES_DIR`; agents get the folder and file list in their prompt, and `claude`/`copilot` also get `--add-dir`. Code steps read the folder from the environment. Not available on `openai` runtimes. |
+| `inherit` | pipeline | The linked child execution receives this execution's files (hard-linked, not copied). Without it the child starts with none. |
+
+Each run records which files it received, how, and whether any were
+truncated; the execution page lists the files with size, type, schema check
+and download links, and `signalbox show` prints them. **Rerun**, **Restart**
+and inherited child executions reuse the original files (marked `reused`), and
+deleting or pruning an execution removes its upload folder. Downloads are
+always served as attachments with `nosniff` and a sandbox CSP, and only names
+recorded on the execution resolve. Watchers cannot attach files, so a watched
+pipeline may not set `files.required`.
+
+Project limits live in `signalbox.yaml` (see below): `uploads.max_bytes` per
+file (default 10 MiB), `uploads.max_files` per execution (default 10) and
+`uploads.allowed_extensions` (defaults to common text, data, office and image
+types). Names are reduced to a safe base name (paths, control characters and
+Windows device names are stripped or escaped) and made unique per execution.
+When running in Docker, uploads live in the state volume with the database.
+
+Demos (sample files in `testproject/samples/`):
+
+- `upload-review` — an agent reads files inline, `libs/file_stats.py` reads
+  them by path, and a gate checks the result against the same files:
+  `signalbox run upload-review --file samples/orders.csv --file samples/notes.md`
+- `upload-invoice` — schema-validated JSON upload plus a `type: file`
+  parameter: `--file samples/invoice-1042.json --param invoice=invoice-1042.json`
+  (try `samples/invoice-bad.json` to see it rejected before the run starts)
+- `upload-chained` — a pipeline node passes the files to `upload-review` with
+  `files: inherit`.
+
 ### Runtime retries
 
 Callable nodes can retry runtime errors automatically with a fixed delay:
@@ -892,7 +949,7 @@ can be scripted:
 ```text
 signalbox list [--page N] [--page-size N]
 signalbox show <execution> [--json]
-signalbox start <pipeline> [--input text] [--param k=v]...
+signalbox start <pipeline> [--input text] [--param k=v]... [--file path]...
 signalbox approve <execution> [--run id] [--comment text] [--by name]
 signalbox reject <execution> [--run id] [--comment text] [--by name]
 signalbox edit <execution> [--run id] (--output text | --file path) [--by name]
@@ -1062,6 +1119,10 @@ mcp:                            # see "MCP servers"
   servers: {}
 registry:                       # see "Pipeline registry"
   path: ./registry
+uploads:                        # see "File uploads"
+  max_bytes: 10485760           # per file (max 1 GiB)
+  max_files: 10                 # per execution (max 100)
+  allowed_extensions: [.txt, .md, .csv, .json, .pdf, .png]
 ```
 
 `max_concurrent_calls` limits simultaneous runtime invocations across all
@@ -1104,8 +1165,8 @@ output stable between polls unless a new pipeline run is intended.
 
 | Method & path | Purpose |
 |---------------|---------|
-| `GET /api/meta` | Project name |
-| `GET /api/pipelines` | Loaded pipeline definitions, including `params`, imported `sources`, `input_schema`, and each agent's `model`, `mcp` and `output` contract (`schema`, `on_invalid`, `max_repairs`) |
+| `GET /api/meta` | Project name and `uploads` limits (`max_bytes`, `max_files`, `allowed_extensions`) |
+| `GET /api/pipelines` | Loaded pipeline definitions, including `params`, imported `sources`, `input_schema`, `files` (the upload declaration), and each agent's `model`, `mcp`, `output` contract (`schema`, `on_invalid`, `max_repairs`) and `files`/`files_budget` |
 | `GET /api/schemas` | Project schema files: `dir`, `schemas` (`name`, `file`, `schema`, `used_by`), and load `errors` |
 | `GET /api/pipeline-files` | YAML filenames and pipeline names where valid, including invalid files for repair |
 | `GET /api/pipeline-files/{filename}` | Raw pipeline YAML and file version |
@@ -1113,13 +1174,14 @@ output stable between polls unless a new pipeline run is intended.
 | `GET /api/settings` | Project configuration YAML and file version |
 | `PUT /api/settings` | Validate and save project YAML: `{"content": "...", "version": "..."}` |
 | `GET /api/executions?page=1&page_size=20` | Paginated execution summaries (newest first); page sizes are multiples of 10 from 10 to 100. Returns `executions`, `page`, `page_size`, `total`, and `total_pages`. Child executions of pipeline nodes carry `parent` (the parent execution ID). |
-| `POST /api/executions` | Start a run: `{"pipeline": "default", "input": "...", "params": {"topic": "..."}}` (`params` optional; 400 if invalid) |
-| `GET /api/executions/{id}` | Full execution detail. Child executions include `parent` (`execution`, `run_id`, `node_id`, `depth`) and `section` (`from`, `until`); pipeline-node runs list `child_executions`; `surfaced` lists runs waiting in live descendants (`execution`, `pipeline`, `parent_run_id`, `run`) |
+| `POST /api/executions` | Start a run: `{"pipeline": "default", "input": "...", "params": {"topic": "..."}}` (`params` optional; 400 if invalid). To attach files send `multipart/form-data` with `pipeline`, `input`, `params` (a JSON string) and one `file` part per file |
+| `GET /api/executions/{id}` | Full execution detail. Child executions include `parent` (`execution`, `run_id`, `node_id`, `depth`) and `section` (`from`, `until`); pipeline-node runs list `child_executions`; `surfaced` lists runs waiting in live descendants (`execution`, `pipeline`, `parent_run_id`, `run`); `files` lists attached files (`name`, `size`, `content_type`, `sha256`, `schema`, `reused_from`) and each run's `files` records what it received (`mode`, `names`, `chars`, `budget`, `truncated`, `omitted`) |
+| `GET /api/executions/{id}/files/{name}` | Download an attached file (always `Content-Disposition: attachment`; 404 for names not attached to the execution) |
 | `POST /api/executions/{id}/approve` | Resolve a gate: `{"run_id": "...", "approved": true, "approved_by": "...", "comment": "..."}`. `run_id` may be a surfaced run of a child execution (the same applies to `manual-edit` and `retry`) |
 | `POST /api/executions/{id}/retry` | Retry a failed agent call awaiting retry: `{"run_id": "..."}` |
 | `POST /api/executions/{id}/restart` | Start a new execution from a run of a finished execution: `{"run_id": "...", "node_id": "...", "stage": "...", "force": false}` (all optional; with no run, the latest failed/interrupted/canceled run). Returns 201 `{"id": "..."}`; 409 `{"error", "definition_changed": true, "changes": [...]}` when the pipeline changed and `force` is not set |
 | `POST /api/executions/{id}/cancel` | Cancel a running execution |
-| `POST /api/executions/{id}/rerun` | Start a new execution with the same pipeline, input, and params; returns `{"id": "..."}` (409 for child executions; restart the parent instead) |
+| `POST /api/executions/{id}/rerun` | Start a new execution with the same pipeline, input, params and files; returns `{"id": "..."}` (409 for child executions; restart the parent instead) |
 | `DELETE /api/executions/{id}` | Delete a finished execution (409 while it is still running) |
 | `GET /api/executions/{id}/chunks` | List the execution's chunks |
 | `POST /api/executions/{id}/chunks` | Add a chunk: `{"title": "...", "by": "..."}`; returns the chunk (409 once the execution has finished) |

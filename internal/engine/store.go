@@ -62,7 +62,45 @@ func NewStore(stateDir string, retentionLimit ...int) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("applying execution retention: %w", err)
 	}
+	store.sweepUploads()
 	return store, nil
+}
+
+// UploadsDir is the folder holding each execution's uploaded files.
+func (s *Store) UploadsDir() string {
+	return filepath.Join(s.stateDir, "uploads")
+}
+
+func (s *Store) removeUploads(ids []string) {
+	for _, id := range ids {
+		if id == "" || strings.ContainsAny(id, `/\.`) {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(s.UploadsDir(), id))
+	}
+}
+
+// sweepUploads removes upload folders whose execution no longer exists,
+// for example after a crash between pruning and cleanup. Recently changed
+// folders are left alone in case another process is starting an execution.
+func (s *Store) sweepUploads() {
+	entries, err := os.ReadDir(s.UploadsDir())
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if info, err := entry.Info(); err != nil || time.Since(info.ModTime()) < 10*time.Minute {
+			continue
+		}
+		var one int
+		err := s.db.QueryRow("SELECT 1 FROM executions WHERE id = ?", entry.Name()).Scan(&one)
+		if errors.Is(err, sql.ErrNoRows) {
+			s.removeUploads([]string{entry.Name()})
+		}
+	}
 }
 
 func (s *Store) initialize() error {
@@ -112,14 +150,16 @@ func (s *Store) Save(e *Execution) error {
 	if err := saveExecution(tx, e, payload, summary); err != nil {
 		return err
 	}
+	var pruned []string
 	if e.Status.Terminal() {
-		if err := pruneExecutions(tx, s.retention); err != nil {
+		if pruned, err = pruneExecutions(tx, s.retention); err != nil {
 			return fmt.Errorf("pruning execution history: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("saving execution: %w", err)
 	}
+	s.removeUploads(pruned)
 	return nil
 }
 
@@ -129,10 +169,15 @@ func (s *Store) prune() error {
 		return err
 	}
 	defer tx.Rollback()
-	if err := pruneExecutions(tx, s.retention); err != nil {
+	pruned, err := pruneExecutions(tx, s.retention)
+	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.removeUploads(pruned)
+	return nil
 }
 
 func saveExecution(tx *sql.Tx, e *Execution, payload []byte, summary Summary) error {
@@ -165,6 +210,7 @@ func (s *Store) Delete(id string) error {
 	if n == 0 {
 		return fmt.Errorf("unknown execution %q", id)
 	}
+	s.removeUploads([]string{id})
 	return nil
 }
 
@@ -290,7 +336,7 @@ func (s *Store) importLegacy() error {
 		}
 		imported = append(imported, path)
 	}
-	if err := pruneExecutions(tx, s.retention); err != nil {
+	if _, err := pruneExecutions(tx, s.retention); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
@@ -359,18 +405,32 @@ func interruptExecution(e *Execution) bool {
 	return changed
 }
 
-func pruneExecutions(tx *sql.Tx, retention int) error {
+// pruneExecutions deletes terminal executions beyond the retention limit and
+// returns their IDs so the caller can remove their uploads after commit.
+func pruneExecutions(tx *sql.Tx, retention int) ([]string, error) {
 	if retention == 0 {
-		return nil
+		return nil, nil
 	}
-	_, err := tx.Exec(`DELETE FROM executions
+	rows, err := tx.Query(`DELETE FROM executions
 		WHERE status IN ('completed', 'failed', 'rejected', 'canceled', 'interrupted')
 		AND id NOT IN (
 			SELECT id FROM executions
 			WHERE status IN ('completed', 'failed', 'rejected', 'canceled', 'interrupted')
 			ORDER BY created_at DESC, id DESC LIMIT ?
-		)`, retention)
-	return err
+		) RETURNING id`, retention)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func summarizeExecution(e *Execution) Summary {

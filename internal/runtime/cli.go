@@ -30,6 +30,33 @@ type cliRuntime struct {
 	modelArg string
 	// mcpServers are the servers registered in signalbox.yaml.
 	mcpServers map[string]config.MCPServerConfig
+	// code marks a code node: its stdin is the raw input, so file paths are
+	// only passed through the environment.
+	code bool
+}
+
+// filesInstructions tells an agent CLI where the uploaded files are.
+func filesInstructions(req Request) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Attached files (read-only copies in %s):", req.FilesDir)
+	for _, path := range req.Files {
+		b.WriteString("\n- " + path)
+	}
+	return b.String()
+}
+
+// filesArgs exposes the files folder to the child process: always through
+// SIGNALBOX_FILES_DIR, and to claude/copilot agents with --add-dir so their
+// sandboxes allow reading it.
+func (c *cliRuntime) filesArgs(req Request) (args, env []string) {
+	if req.FilesDir == "" {
+		return nil, nil
+	}
+	env = []string{FilesDirEnv + "=" + req.FilesDir}
+	if (c.kind == "claude" || c.kind == "copilot") && !c.code {
+		args = []string{"--add-dir", req.FilesDir}
+	}
+	return args, env
 }
 
 // maxArgPrompt keeps arg-mode prompts well inside the 32,767-character
@@ -116,12 +143,18 @@ func (c *cliRuntime) Invoke(ctx context.Context, req Request) (string, error) {
 	if req.Schema != nil {
 		prompt += "\n\n---\n\n" + req.Schema.Instructions()
 	}
+	if req.FilesDir != "" && !c.code {
+		prompt += "\n\n---\n\n" + filesInstructions(req)
+	}
 
 	extra, env, cleanup, err := c.integrationArgs(req)
 	if err != nil {
 		return "", err
 	}
 	defer cleanup()
+	filesExtra, filesEnv := c.filesArgs(req)
+	extra = append(extra, filesExtra...)
+	env = append(env, filesEnv...)
 
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()

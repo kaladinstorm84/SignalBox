@@ -100,6 +100,8 @@ type Config struct {
 	MCP                  MCPConfig `yaml:"mcp,omitempty"`
 	// Registry is the shared pipeline registry used by `signalbox registry`.
 	Registry RegistryConfig `yaml:"registry,omitempty"`
+	// Uploads limits the files attached to executions.
+	Uploads UploadsConfig `yaml:"uploads,omitempty"`
 
 	// Root is the directory containing signalbox.yaml (not serialised).
 	Root string `yaml:"-"`
@@ -110,6 +112,37 @@ type RegistryConfig struct {
 	// Path is absolute, relative to the project root, or a file:// URL.
 	Path string `yaml:"path,omitempty"`
 }
+
+// Upload limit defaults.
+const (
+	DefaultUploadMaxBytes = 10 << 20
+	DefaultUploadMaxFiles = 10
+	// MaxUploadBytes caps uploads.max_bytes.
+	MaxUploadBytes = 1 << 30
+	// MaxUploadFiles caps uploads.max_files.
+	MaxUploadFiles = 100
+)
+
+// DefaultUploadExtensions are the file types accepted when
+// uploads.allowed_extensions is not set: text, data, documents, and images.
+var DefaultUploadExtensions = []string{
+	".txt", ".md", ".csv", ".tsv", ".json", ".yaml", ".yml", ".xml", ".log",
+	".pdf", ".docx", ".xlsx", ".pptx",
+	".png", ".jpg", ".jpeg", ".gif", ".webp",
+}
+
+// UploadsConfig bounds the files attached to one execution.
+type UploadsConfig struct {
+	// MaxBytes is the largest single file accepted (default 10 MiB).
+	MaxBytes int64 `yaml:"max_bytes,omitempty"`
+	// MaxFiles is the most files one execution may carry (default 10).
+	MaxFiles int `yaml:"max_files,omitempty"`
+	// AllowedExtensions lists accepted extensions (default: common text,
+	// data, document, and image types).
+	AllowedExtensions []string `yaml:"allowed_extensions,omitempty"`
+}
+
+var uploadExtPattern = regexp.MustCompile(`^\.[a-z0-9][a-z0-9_+-]{0,15}$`)
 
 // RegistryPath resolves the configured registry directory, or "" when none
 // is configured.
@@ -190,6 +223,22 @@ func (c *Config) applyDefaults() {
 	if c.Server.Port == 0 {
 		c.Server.Port = 8484
 	}
+	if c.Uploads.MaxBytes == 0 {
+		c.Uploads.MaxBytes = DefaultUploadMaxBytes
+	}
+	if c.Uploads.MaxFiles == 0 {
+		c.Uploads.MaxFiles = DefaultUploadMaxFiles
+	}
+	if len(c.Uploads.AllowedExtensions) == 0 {
+		c.Uploads.AllowedExtensions = append([]string(nil), DefaultUploadExtensions...)
+	}
+	for i, ext := range c.Uploads.AllowedExtensions {
+		ext = strings.ToLower(strings.TrimSpace(ext))
+		if ext != "" && !strings.HasPrefix(ext, ".") {
+			ext = "." + ext
+		}
+		c.Uploads.AllowedExtensions[i] = ext
+	}
 }
 
 func (c *Config) validate() error {
@@ -204,6 +253,17 @@ func (c *Config) validate() error {
 	}
 	if rel := filepath.Clean(filepath.FromSlash(c.SchemasDir)); filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("schemas_dir %q must be a relative path inside the project root", c.SchemasDir)
+	}
+	if c.Uploads.MaxBytes < 1 || c.Uploads.MaxBytes > MaxUploadBytes {
+		return fmt.Errorf("uploads.max_bytes must be between 1 and %d", int64(MaxUploadBytes))
+	}
+	if c.Uploads.MaxFiles < 1 || c.Uploads.MaxFiles > MaxUploadFiles {
+		return fmt.Errorf("uploads.max_files must be between 1 and %d", MaxUploadFiles)
+	}
+	for _, ext := range c.Uploads.AllowedExtensions {
+		if !uploadExtPattern.MatchString(ext) {
+			return fmt.Errorf("uploads.allowed_extensions: %q is not a file extension such as .csv", ext)
+		}
 	}
 	for name, r := range c.Runtimes {
 		switch r.Type {

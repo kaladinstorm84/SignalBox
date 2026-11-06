@@ -87,6 +87,9 @@ func (p *Pipeline) SchemaNames() []string {
 	if name := p.InputSchema(); name != "" {
 		seen[name] = true
 	}
+	if p.Files != nil && p.Files.Schema != "" {
+		seen[p.Files.Schema] = true
+	}
 	for i := range p.Nodes {
 		if name := p.Nodes[i].OutputSchema(); name != "" {
 			seen[name] = true

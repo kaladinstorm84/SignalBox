@@ -299,6 +299,12 @@ func (eng *Engine) Restart(execID string, opts RestartOptions) (string, error) {
 		outputsChanged: make(chan struct{}),
 		joinExpected:   joinCountsFrom(p, node.ID),
 	}
+	files, err := eng.reuseFilesLocked(source.ID, source.Files, le.exec.ID)
+	if err != nil {
+		cancel()
+		return "", fmt.Errorf("reusing files of execution %s: %w", source.ID, err)
+	}
+	le.exec.Files = files
 
 	rootRun := &NodeRun{
 		ID:                      newRunID(),

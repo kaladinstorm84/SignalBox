@@ -16,6 +16,8 @@ const (
 	ParamInteger = "integer"
 	ParamNumber  = "number"
 	ParamBoolean = "boolean"
+	// ParamFile values name one of the execution's uploaded files.
+	ParamFile = "file"
 
 	MaxParams           = 50
 	MaxParamValueLength = 10000
@@ -110,8 +112,12 @@ func (p *Pipeline) validateParams() error {
 		}
 		switch param.Type {
 		case ParamString, ParamInteger, ParamNumber, ParamBoolean:
+		case ParamFile:
+			if param.Default != nil || len(param.Values) > 0 {
+				return fmt.Errorf("param %q of type file may not have a default or values", name)
+			}
 		default:
-			return fmt.Errorf("param %q has unknown type %q (want string, integer, number, or boolean)", name, param.Type)
+			return fmt.Errorf("param %q has unknown type %q (want string, integer, number, boolean, or file)", name, param.Type)
 		}
 		if param.Required && param.Default != nil {
 			return fmt.Errorf("param %q is required and may not have a default", name)

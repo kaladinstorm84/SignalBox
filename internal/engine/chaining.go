@@ -56,14 +56,22 @@ func (eng *Engine) runChild(le *liveExec, run *NodeRun, node *pipeline.Node) (st
 		eng.mu.Unlock()
 		return "", fmt.Errorf("pipeline %q would nest deeper than %d child executions", node.Pipeline, pipeline.MaxPipelineDepth)
 	}
-	child, err := eng.startLocked(startSpec{
+	spec := startSpec{
 		pipeline: node.Pipeline,
 		input:    run.Input,
 		params:   node.Params,
 		from:     node.From,
 		until:    node.Until,
 		parent:   &ParentLink{Execution: le.exec.ID, RunID: run.ID, NodeID: node.ID, Depth: depth},
-	})
+	}
+	if node.FilesMode() == pipeline.FilesInherit {
+		spec.reuse = &reusedFiles{exec: le.exec.ID, files: le.exec.Files}
+		run.Files = &RunFiles{Mode: pipeline.FilesInherit}
+		for _, f := range le.exec.Files {
+			run.Files.Names = append(run.Files.Names, f.Name)
+		}
+	}
+	child, err := eng.startLocked(spec)
 	if err != nil {
 		eng.mu.Unlock()
 		return "", fmt.Errorf("starting pipeline %q: %w", node.Pipeline, err)

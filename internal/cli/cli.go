@@ -202,11 +202,13 @@ func cmdRun(args []string) error {
 	autoApprove := fs.Bool("yes", false, "automatically approve all approval gates (non-interactive runs)")
 	params := paramFlag{}
 	fs.Var(params, "param", "pipeline parameter as name=value (repeatable)")
+	var filePaths fileFlag
+	fs.Var(&filePaths, "file", "file to attach to the execution (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: signalbox run <pipeline> [--input text] [--param name=value]... [--yes]")
+		return fmt.Errorf("usage: signalbox run <pipeline> [--input text] [--param name=value]... [--file path]... [--yes]")
 	}
 	pipelineName := fs.Arg(0)
 	// The flag package stops at the first positional argument, so re-parse
@@ -236,15 +238,24 @@ func cmdRun(args []string) error {
 			}
 		}
 	}
-	if in == "" {
-		return fmt.Errorf("no input: pass --input or pipe text on stdin")
+	if in == "" && len(filePaths) == 0 {
+		return fmt.Errorf("no input: pass --input, pipe text on stdin, or attach --file")
+	}
+	files, err := readFiles(filePaths)
+	if err != nil {
+		return err
 	}
 
-	execID, err := eng.StartWithParams(pipelineName, in, params)
+	execID, err := eng.StartWith(engine.StartOptions{Pipeline: pipelineName, Input: in, Params: params, Files: files})
 	if err != nil {
 		return err
 	}
 	fmt.Printf("execution %s started (pipeline %q)\n", execID, pipelineName)
+	if started, err := eng.Get(execID); err == nil {
+		for _, f := range started.Files {
+			fmt.Printf("  attached %s (%d bytes, %s)\n", f.Name, f.Size, f.ContentType)
+		}
+	}
 
 	done, err := eng.Wait(execID)
 	if err != nil {
@@ -427,7 +438,38 @@ func buildEngine(cfg *config.Config, pipelines map[string]*pipeline.Pipeline, pe
 			return nil, err
 		}
 	}
-	return engine.NewWithLimit(pipelines, registry, store, cfg.MaxConcurrentCalls, cfg.Root)
+	eng, err := engine.NewWithLimit(pipelines, registry, store, cfg.MaxConcurrentCalls, cfg.Root)
+	if err != nil {
+		return nil, err
+	}
+	eng.SetUploadLimits(engine.UploadLimitsFromConfig(cfg.Uploads))
+	return eng, nil
+}
+
+// fileFlag collects repeatable --file path flags.
+type fileFlag []string
+
+func (f *fileFlag) String() string { return strings.Join(*f, ",") }
+
+func (f *fileFlag) Set(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("--file needs a path")
+	}
+	*f = append(*f, value)
+	return nil
+}
+
+// readFiles loads files named on the command line for upload.
+func readFiles(paths []string) ([]engine.FileInput, error) {
+	files := make([]engine.FileInput, 0, len(paths))
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, engine.FileInput{Name: filepath.Base(path), Data: data})
+	}
+	return files, nil
 }
 
 // paramFlag collects repeatable --param name=value flags.

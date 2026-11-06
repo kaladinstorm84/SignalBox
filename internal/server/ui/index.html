@@ -117,6 +117,10 @@
   .params-form label { margin-top: 10px; }
   .req { color: var(--accent2); }
   .params-table td { padding: 4px 10px 4px 0; }
+  .dropzone { margin-top: 6px; padding: 14px; border: 1px dashed rgba(201,163,74,.45); border-radius: 4px; text-align: center; cursor: pointer; }
+  .dropzone.over, .dropzone:focus { border-color: var(--accent2); background: rgba(201,163,74,.08); outline: none; }
+  .file-chip { display: inline-flex; align-items: center; gap: 6px; margin: 8px 8px 0 0; padding: 3px 4px 3px 10px; border: 1px solid rgba(201,163,74,.3); border-radius: 4px; }
+  .files-note { margin-top: 6px; font-size: 12.5px; }
   .integrations { margin-top: 6px; font-size: 12.5px; }
 
   /* Buttons: brass fittings; approve/retry pull "off", reject/cancel to danger. */
@@ -566,7 +570,8 @@ async function showExecution(id) {
       ${renderSurfaced(x)}
       ${renderRecovery(x)}
       <div class="card"><label style="margin-top:0">Input</label><pre class="out">${esc(x.input)}</pre>
-      ${x.params && Object.keys(x.params).length ? `<label>Parameters</label><table class="params-table"><tbody>${Object.keys(x.params).sort().map(k => `<tr><td class="mono">${esc(k)}</td><td>${x.params[k] === '' ? '<span class="muted">(empty)</span>' : esc(x.params[k])}</td></tr>`).join('')}</tbody></table>` : ''}</div>
+      ${x.params && Object.keys(x.params).length ? `<label>Parameters</label><table class="params-table"><tbody>${Object.keys(x.params).sort().map(k => `<tr><td class="mono">${esc(k)}</td><td>${x.params[k] === '' ? '<span class="muted">(empty)</span>' : esc(x.params[k])}</td></tr>`).join('')}</tbody></table>` : ''}
+      ${renderFiles(x)}</div>
       <h2 style="font-size:16px;margin:20px 0 10px">Agent runs</h2>
       ${runs || '<div class="muted">No runs yet.</div>'}
       ${renderChunks(x, !!pipelineDefinition && pipelineDefinition.nodes.some(n => n.chunks && n.chunks.enabled))}
@@ -637,6 +642,7 @@ function renderRun(x, r) {
       ${restartable ? `<button class="secondary sm" title="New execution that keeps unaffected completed work and reruns this node and everything after it" onclick="restartRun('${esc(x.id)}', {run_id: '${esc(r.id)}'}, this)">Restart from here</button>` : ''}
     </div>
     ${integrationsLabel(r.model, r.mcp, r.node_id) ? `<div class="muted integrations">${integrationsLabel(r.model, r.mcp, r.node_id)}</div>` : ''}
+    ${runFilesNote(x, r)}
     ${(r.child_executions || []).length ? `<div class="child-links"><span class="muted">${r.child_executions.length === 1 ? 'Linked execution' : 'Linked executions'}:</span>${r.child_executions.map((c, i) => `<a class="mono" href="#/exec/${encodeURIComponent(c)}">${esc(c)}</a>${i < r.child_executions.length - 1 ? '<span class="muted">(earlier attempt)</span>' : ''}`).join('')}</div>` : ''}
     ${r.error ? `<div class="err-banner" style="margin:8px 0 0">${esc(r.error)}</div>` : ''}
     ${retryable ? `
@@ -744,11 +750,62 @@ function paramField(p) {
   let control;
   if (choices) {
     control = `<select id="${esc(id)}" data-param="${esc(p.name)}">${p.required ? '<option value="">Choose…</option>' : ''}${choices.map(v => `<option value="${esc(v)}" ${v === def ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>`;
+  } else if (p.type === 'file') {
+    control = `<input id="${esc(id)}" type="file" data-param-file="${esc(p.name)}"><div class="muted">The file is attached to the execution and the parameter is set to its name.</div>`;
   } else {
     const numeric = p.type === 'integer' || p.type === 'number';
     control = `<input id="${esc(id)}" type="${numeric ? 'number' : 'text'}" ${p.type === 'integer' ? 'step="1"' : p.type === 'number' ? 'step="any"' : ''} data-param="${esc(p.name)}" value="${esc(def)}" autocomplete="off">`;
   }
   return label + control;
+}
+
+function fmtBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(1) + ' MB';
+}
+
+function fileURL(execId, name) {
+  return `/api/executions/${encodeURIComponent(execId)}/files/${encodeURIComponent(name)}`;
+}
+
+// filesSpecLabel describes a pipeline's declared upload requirements.
+function filesSpecLabel(f) {
+  if (!f) return '';
+  const parts = [f.required ? 'files required' : 'files accepted'];
+  if (f.max_count) parts.push(`at most ${f.max_count}`);
+  if (f.extensions && f.extensions.length) parts.push(f.extensions.join(', '));
+  if (f.schema) parts.push(`JSON/YAML must match schema ${f.schema}`);
+  return parts.join(' · ');
+}
+
+function nodeFilesLabel(n) {
+  if (!n.files || n.files === 'none') return '';
+  return n.files === 'inline' ? `files inline${n.files_budget ? ` (≤${n.files_budget} chars)` : ''}` : n.files === 'path' ? 'files by path' : 'files inherited';
+}
+
+// renderFiles lists the files attached to an execution with download links.
+function renderFiles(x) {
+  const files = x.files || [];
+  if (!files.length) return '';
+  return `<label>Attached files</label><table class="params-table files-table"><tbody>${files.map(f => `<tr>
+    <td><a class="mono" href="${fileURL(x.id, f.name)}" download>${esc(f.name)}</a></td>
+    <td class="muted">${fmtBytes(f.size)} · ${esc(f.content_type)}${f.text ? '' : ' · binary'}</td>
+    <td>${f.schema ? `<span class="schema-badge" title="Validated against schema ${esc(f.schema)} on upload">schema ${esc(f.schema)} ✓</span>` : ''}
+    ${f.reused_from ? `<a class="reused-badge" href="#/exec/${encodeURIComponent(f.reused_from)}" title="Carried over from ${esc(f.reused_from)}">reused</a>` : ''}</td></tr>`).join('')}</tbody></table>`;
+}
+
+// runFilesNote says which attached files a run received and how.
+function runFilesNote(x, r) {
+  const f = r.files;
+  if (!f) return '';
+  const execId = x.surfaced ? '' : x.id;
+  const names = (f.names || []).map(n => execId ? `<a class="mono" href="${fileURL(execId, n)}" download>${esc(n)}</a>` : `<span class="mono">${esc(n)}</span>`).join(', ');
+  const how = f.mode === 'inline' ? `inlined ${f.chars || 0}${f.budget ? ' of ' + f.budget : ''} chars` : f.mode === 'path' ? 'read-only copies by path' : 'passed to the linked pipeline';
+  const extra = [];
+  if ((f.truncated || []).length) extra.push('truncated: ' + f.truncated.map(esc).join(', '));
+  if ((f.omitted || []).length) extra.push('listed only: ' + f.omitted.map(esc).join(', '));
+  return `<div class="muted files-note">Files (${how}): ${names || 'none'}${extra.length ? ' · ' + extra.join(' · ') : ''}</div>`;
 }
 
 function contextLabel(c) {
@@ -1574,8 +1631,9 @@ async function showPipelineEditor(filename, creating) {
 // --- new run ---
 async function showNewRun() {
   setNav('new');
-  let pipelines;
-  try { pipelines = await api('/pipelines', {cache: 'no-store'}); } catch (e) { $main.innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; return; }
+  let pipelines, meta = {};
+  try { [pipelines, meta] = await Promise.all([api('/pipelines', {cache: 'no-store'}), api('/meta', {cache: 'no-store'}).catch(() => ({}))]); } catch (e) { $main.innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; return; }
+  const limits = meta.uploads || {};
   const options = pipelines.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
   $main.innerHTML = `
     <h2>New run</h2><div class="page-sub">Send an input into a pipeline and follow it through every agent and approval.</div>
@@ -1584,11 +1642,42 @@ async function showNewRun() {
       <div id="pl-info" class="muted" style="margin-top:8px"></div>
       <div id="pl-params"></div>
       <label>Input</label><textarea id="input" placeholder="The task, question, or payload handed to the entry agent..."></textarea>
+      <label>Files <span class="muted">optional</span></label>
+      <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Attach files">
+        <div>Drop files here or <u>browse</u></div>
+        <div class="muted" id="files-hint">${limits.max_files ? `Up to ${limits.max_files} files, ${fmtBytes(limits.max_bytes)} each${limits.allowed_extensions && limits.allowed_extensions.length ? ' · ' + limits.allowed_extensions.map(esc).join(' ') : ''}` : ''}</div>
+        <input id="file-input" type="file" multiple hidden>
+      </div>
+      <div id="file-list"></div>
       <div style="margin-top:16px"><button id="start">Start execution</button></div>
     </div>`;
   const info = document.getElementById('pl-info');
   const paramsBox = document.getElementById('pl-params');
   const sel = document.getElementById('pl');
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('file-input');
+  const fileList = document.getElementById('file-list');
+  let attached = [];
+  const showFiles = () => {
+    fileList.innerHTML = attached.map((f, i) => `<div class="file-chip"><span class="mono">${esc(f.name)}</span> <span class="muted">${fmtBytes(f.size)}</span><button class="secondary sm" data-remove="${i}" aria-label="Remove ${esc(f.name)}">×</button></div>`).join('');
+  };
+  const addFiles = list => {
+    for (const f of list) {
+      if (limits.max_bytes && f.size > limits.max_bytes) { toast(`${f.name} is larger than ${fmtBytes(limits.max_bytes)}`); continue; }
+      attached = attached.filter(a => a.name !== f.name).concat(f);
+    }
+    showFiles();
+  };
+  fileList.addEventListener('click', e => {
+    const i = e.target.dataset && e.target.dataset.remove;
+    if (i !== undefined) { attached.splice(Number(i), 1); showFiles(); }
+  });
+  dropzone.addEventListener('click', () => fileInput.click());
+  dropzone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); } });
+  fileInput.addEventListener('change', () => { addFiles(fileInput.files); fileInput.value = ''; });
+  dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('over'); });
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('over'));
+  dropzone.addEventListener('drop', e => { e.preventDefault(); dropzone.classList.remove('over'); addFiles(e.dataTransfer.files); });
   const describe = () => {
     const p = pipelines.find(q => q.name === sel.value);
     paramsBox.innerHTML = p && p.params && p.params.length
@@ -1596,21 +1685,38 @@ async function showNewRun() {
     if (!p) { info.textContent = ''; return; }
     info.innerHTML = `${p.description ? esc(p.description) + '<br>' : ''}
       ${p.input_schema ? `<div class="muted">Input must be a JSON document matching schema <span class="mono">${esc(p.input_schema)}</span> (see Pipelines → Schemas).</div>` : ''}
+      ${p.files ? `<div class="muted">${esc(filesSpecLabel(p.files))}</div>` : ''}
       <div style="margin-top:6px">${flowDiagram(p)}</div>`;
   };
   sel.addEventListener('change', describe); describe();
   document.getElementById('start').addEventListener('click', async () => {
     const input = document.getElementById('input').value.trim();
-    if (!input) { toast('Please provide an input.'); return; }
     const params = {};
     for (const el of paramsBox.querySelectorAll('[data-param]')) {
       if (el.value !== '') params[el.dataset.param] = el.value;
     }
+    let files = attached.slice();
+    for (const el of paramsBox.querySelectorAll('[data-param-file]')) {
+      const f = el.files && el.files[0];
+      if (!f) continue;
+      params[el.dataset.paramFile] = f.name;
+      files = files.filter(a => a.name !== f.name);
+      files.push(f);
+    }
+    if (!input && !files.length) { toast('Please provide an input or attach a file.'); return; }
     try {
-      const res = await api('/executions', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({pipeline: sel.value, input, params}),
-      });
+      let opts;
+      if (files.length) {
+        const form = new FormData();
+        form.append('pipeline', sel.value);
+        form.append('input', input);
+        form.append('params', JSON.stringify(params));
+        files.forEach(f => form.append('file', f, f.name));
+        opts = {method: 'POST', body: form};
+      } else {
+        opts = {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({pipeline: sel.value, input, params})};
+      }
+      const res = await api('/executions', opts);
       location.hash = '#/exec/' + encodeURIComponent(res.id);
     } catch (e) { toast('Error: ' + e.message); }
   });
@@ -1635,7 +1741,8 @@ async function showPipelines() {
         ${p.description ? `<div class="muted">${esc(p.description)}</div>` : ''}
         ${p.params && p.params.length ? `<div class="muted">params: ${p.params.map(q => `<span class="mono">${esc(q.name)}</span>${q.required ? '*' : ''}`).join(', ')}</div>` : ''}
         ${p.sources && p.sources.length ? `<div class="muted">imports: ${p.sources.map(src => `<span class="mono">${esc(src)}</span>`).join(', ')}</div>` : ''}
-        ${p.input_schema ? `<div class="muted">input schema: <span class="mono">${esc(p.input_schema)}</span></div>` : ''}</div>
+        ${p.input_schema ? `<div class="muted">input schema: <span class="mono">${esc(p.input_schema)}</span></div>` : ''}
+        ${p.files ? `<div class="muted">${esc(filesSpecLabel(p.files))}</div>` : ''}</div>
         <div class="approve-actions" style="margin-top:0">${filenameByName.has(p.name) ? `<button class="secondary" data-edit-file="${esc(filenameByName.get(p.name))}">Edit</button>` : ''}
         <button class="secondary" onclick="location.hash='#/new'">Run</button></div></div>
         <div style="margin-top:10px">${flowDiagram(p)}</div>
@@ -1645,7 +1752,7 @@ async function showPipelines() {
             <td><b>${esc(n.id)}</b>${n.id === p.entry ? ' <span class="muted">(entry)</span>' : ''}
             ${n.description ? `<div class="muted">${esc(n.description)}</div>` : ''}</td>
             <td><span class="type ${esc(n.type)}">${esc(n.type)}</span></td>
-            <td class="mono">${n.type === 'code' ? `${esc(n.language)}<div class="muted">${esc(n.code_source)}</div>` : n.type === 'session' ? `<div class="muted">${(n.participants || []).map(esc).join(', ')}</div><div class="muted">${n.max_rounds} rounds · ${esc(n.consensus ? n.consensus.method : '')}${n.chunks && n.chunks.enabled ? ' · chunks' : ''}</div>` : n.type === 'pipeline' ? `→ ${esc(n.pipeline)}${n.from || n.until ? `<div class="muted">${esc(n.from || 'entry')} … ${esc(n.until || 'end')}</div>` : ''}${n.params && Object.keys(n.params).length ? `<div class="muted">params: ${Object.keys(n.params).sort().map(esc).join(', ')}</div>` : ''}` : esc(n.runtime || '—')}${contextLabel(n.context) ? `<div class="muted">${esc(contextLabel(n.context))}</div>` : ''}${integrationsLabel(n.model, n.mcp) ? `<div class="muted">${integrationsLabel(n.model, n.mcp)}</div>` : ''}${n.output ? `<div class="muted">${esc(outputLabel(n.output))}</div>` : ''}</td>
+            <td class="mono">${n.type === 'code' ? `${esc(n.language)}<div class="muted">${esc(n.code_source)}</div>` : n.type === 'session' ? `<div class="muted">${(n.participants || []).map(esc).join(', ')}</div><div class="muted">${n.max_rounds} rounds · ${esc(n.consensus ? n.consensus.method : '')}${n.chunks && n.chunks.enabled ? ' · chunks' : ''}</div>` : n.type === 'pipeline' ? `→ ${esc(n.pipeline)}${n.from || n.until ? `<div class="muted">${esc(n.from || 'entry')} … ${esc(n.until || 'end')}</div>` : ''}${n.params && Object.keys(n.params).length ? `<div class="muted">params: ${Object.keys(n.params).sort().map(esc).join(', ')}</div>` : ''}` : esc(n.runtime || '—')}${contextLabel(n.context) ? `<div class="muted">${esc(contextLabel(n.context))}</div>` : ''}${integrationsLabel(n.model, n.mcp) ? `<div class="muted">${integrationsLabel(n.model, n.mcp)}</div>` : ''}${n.output ? `<div class="muted">${esc(outputLabel(n.output))}</div>` : ''}${nodeFilesLabel(n) ? `<div class="muted">${esc(nodeFilesLabel(n))}</div>` : ''}</td>
             <td>${n.stages ? n.stages.map(s => `<div class="muted">stage <b>${esc(s.id)}</b> → ${s.agents.map(esc).join(', ')}</div>`).join('') : ''}
                 ${(n.handoff || []).map(route => typeof route === 'string' ? esc(route) : `${esc(route.to)}${route.condition ? ` (${esc(route.condition)})` : ''}`).join(', ') || (n.stages ? '' : '<span class="muted">terminates</span>')}</td>
           </tr>`).join('')}</tbody></table>

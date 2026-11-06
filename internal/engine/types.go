@@ -144,6 +144,8 @@ type NodeRun struct {
 	// ChildExecutions lists the executions a pipeline node started, oldest
 	// first; a retry starts a new one.
 	ChildExecutions []string `json:"child_executions,omitempty"`
+	// Files records the uploaded files delivered to the run.
+	Files *RunFiles `json:"files,omitempty"`
 
 	StartedAt  *time.Time `json:"started_at,omitempty"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
@@ -241,11 +243,13 @@ type Execution struct {
 	Input    string `json:"input"`
 	// Params are the resolved pipeline parameters, reused by reruns and
 	// restarts. They are stored in plain text, so they must not hold secrets.
-	Params       map[string]string `json:"params,omitempty"`
-	Status       Status            `json:"status"`
-	Error        string            `json:"error,omitempty"`
-	Runs         []*NodeRun        `json:"runs"`
-	FinalOutputs []FinalOutput     `json:"final_outputs,omitempty"`
+	Params map[string]string `json:"params,omitempty"`
+	// Files are the uploaded files attached when the execution started.
+	Files        []UploadedFile `json:"files,omitempty"`
+	Status       Status         `json:"status"`
+	Error        string         `json:"error,omitempty"`
+	Runs         []*NodeRun     `json:"runs"`
+	FinalOutputs []FinalOutput  `json:"final_outputs,omitempty"`
 	// Chunks are execution-scoped work items managed by sessions and people.
 	Chunks    []Chunk `json:"chunks,omitempty"`
 	NextChunk int     `json:"next_chunk,omitempty"`

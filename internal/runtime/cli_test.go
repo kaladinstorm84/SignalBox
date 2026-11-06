@@ -120,3 +120,58 @@ func TestCLIStdinModeAlwaysUsesStdin(t *testing.T) {
 		t.Fatalf("output = %q", out)
 	}
 }
+
+// TestFilesHelperProcess is a fake agent CLI that echoes its arguments, the
+// SIGNALBOX_FILES_DIR variable and stdin.
+func TestFilesHelperProcess(t *testing.T) {
+	if os.Getenv("SIGNALBOX_FILES_HELPER") != "1" {
+		return
+	}
+	args := os.Args
+	for i, a := range args {
+		if a == "--" {
+			args = args[i+1:]
+			break
+		}
+	}
+	stdin, _ := io.ReadAll(os.Stdin)
+	fmt.Printf("args=%s\nenv=%s\nstdin=%s", strings.Join(args, "|"), os.Getenv(FilesDirEnv), stdin)
+	os.Exit(0)
+}
+
+func TestCLIReceivesUploadedFiles(t *testing.T) {
+	dir := t.TempDir()
+	req := Request{Input: "go", FilesDir: dir, Files: []string{filepath.Join(dir, "a.csv")}}
+
+	t.Setenv("SIGNALBOX_FILES_HELPER", "1")
+	rt, err := newCLI("agent", config.RuntimeConfig{Type: "codex", Command: os.Args[0], Args: []string{"-test.run=^TestFilesHelperProcess$", "--"}, PromptMode: "stdin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := rt.Invoke(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "env="+dir+"\n") || !strings.Contains(out, "Attached files (read-only copies in "+dir+"):\n- "+filepath.Join(dir, "a.csv")) || strings.Contains(out, "--add-dir") {
+		t.Fatalf("codex output = %q", out)
+	}
+	out, err = rt.Invoke(context.Background(), Request{Input: "go"})
+	if err != nil || strings.Contains(out, "Attached files") || !strings.Contains(out, "env=\n") {
+		t.Fatalf("no-files output = %q %v", out, err)
+	}
+
+	for kind, want := range map[string]string{"claude": "--add-dir " + dir, "copilot": "--add-dir " + dir, "codex": "", "cli": ""} {
+		c := &cliRuntime{kind: kind}
+		args, env := c.filesArgs(req)
+		if strings.Join(args, " ") != want || len(env) != 1 || env[0] != FilesDirEnv+"="+dir {
+			t.Fatalf("%s filesArgs = %v %v", kind, args, env)
+		}
+	}
+	code := &cliRuntime{kind: "claude", code: true}
+	if args, env := code.filesArgs(req); len(args) != 0 || len(env) != 1 {
+		t.Fatalf("code filesArgs = %v %v", args, env)
+	}
+	if args, env := (&cliRuntime{kind: "claude"}).filesArgs(Request{}); args != nil || env != nil {
+		t.Fatalf("no files = %v %v", args, env)
+	}
+}

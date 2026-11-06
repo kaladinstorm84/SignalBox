@@ -9,9 +9,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
+	"mime"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -79,6 +82,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/executions", s.handleListExecutions)
 	mux.HandleFunc("POST /api/executions", s.handleStartExecution)
 	mux.HandleFunc("GET /api/executions/{id}", s.handleGetExecution)
+	mux.HandleFunc("GET /api/executions/{id}/files/{name}", s.handleDownloadFile)
 	mux.HandleFunc("POST /api/executions/{id}/approve", s.handleApprove)
 	mux.HandleFunc("POST /api/executions/{id}/manual-edit", s.handleManualEdit)
 	mux.HandleFunc("POST /api/executions/{id}/retry", s.handleRetry)
@@ -144,18 +148,27 @@ func writeErr(w http.ResponseWriter, status int, err error) {
 }
 
 func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"project": s.project})
+	limits := s.eng.UploadLimits()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project": s.project,
+		"uploads": map[string]any{
+			"max_bytes":          limits.MaxBytes,
+			"max_files":          limits.MaxFiles,
+			"allowed_extensions": limits.AllowedExtensions,
+		},
+	})
 }
 
 // pipelineView is the API projection of a pipeline definition.
 type pipelineView struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description,omitempty"`
-	Entry       string      `json:"entry"`
-	Params      []paramView `json:"params,omitempty"`
-	Sources     []string    `json:"sources,omitempty"`
-	InputSchema string      `json:"input_schema,omitempty"`
-	Nodes       []nodeView  `json:"nodes"`
+	Name        string              `json:"name"`
+	Description string              `json:"description,omitempty"`
+	Entry       string              `json:"entry"`
+	Params      []paramView         `json:"params,omitempty"`
+	Sources     []string            `json:"sources,omitempty"`
+	InputSchema string              `json:"input_schema,omitempty"`
+	Files       *pipeline.FilesSpec `json:"files,omitempty"`
+	Nodes       []nodeView          `json:"nodes"`
 }
 
 type paramView struct {
@@ -192,6 +205,8 @@ type nodeView struct {
 	Until          string                  `json:"until,omitempty"`
 	Params         map[string]string       `json:"params,omitempty"`
 	Output         *outputView             `json:"output,omitempty"`
+	Files          string                  `json:"files,omitempty"`
+	FilesBudget    int                     `json:"files_budget,omitempty"`
 }
 
 // outputView is a node's structured-output contract with defaults applied.
@@ -221,7 +236,7 @@ func (s *Server) handlePipelines(w http.ResponseWriter, r *http.Request) {
 	out := []pipelineView{}
 	for _, name := range pipeline.Names(ps) {
 		p := ps[name]
-		pv := pipelineView{Name: p.Name, Description: p.Description, Entry: p.Entry, Sources: p.Sources, InputSchema: p.InputSchema()}
+		pv := pipelineView{Name: p.Name, Description: p.Description, Entry: p.Entry, Sources: p.Sources, InputSchema: p.InputSchema(), Files: p.Files}
 		for _, param := range p.ParamNames() {
 			pv.Params = append(pv.Params, paramView{Name: param, Param: *p.Params[param]})
 		}
@@ -252,6 +267,8 @@ func (s *Server) handlePipelines(w http.ResponseWriter, r *http.Request) {
 				From:           n.From,
 				Until:          n.Until,
 				Params:         n.Params,
+				Files:          n.Files,
+				FilesBudget:    n.FilesBudget,
 			}
 			if n.Output != nil {
 				nv.Output = &outputView{Schema: n.Output.Schema, OnInvalid: n.InvalidPolicy(), MaxRepairs: n.RepairLimit()}
@@ -318,7 +335,14 @@ func (s *Server) handleStartExecution(w http.ResponseWriter, r *http.Request) {
 		Input    string            `json:"input"`
 		Params   map[string]string `json:"params"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var files []engine.FileInput
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		var err error
+		if files, err = s.readMultipartStart(w, r, &req.Pipeline, &req.Input, &req.Params); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+	} else if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid JSON body: %w", err))
 		return
 	}
@@ -326,13 +350,95 @@ func (s *Server) handleStartExecution(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("pipeline is required"))
 		return
 	}
-	id, err := s.eng.StartWithParams(req.Pipeline, req.Input, req.Params)
+	id, err := s.eng.StartWith(engine.StartOptions{Pipeline: req.Pipeline, Input: req.Input, Params: req.Params, Files: files})
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	log.Printf("started execution %s (pipeline %q)", id, req.Pipeline)
+	if len(files) > 0 {
+		log.Printf("started execution %s (pipeline %q, %d file(s))", id, req.Pipeline, len(files))
+	} else {
+		log.Printf("started execution %s (pipeline %q)", id, req.Pipeline)
+	}
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
+}
+
+// readMultipartStart reads a multipart start request: pipeline, input, and
+// params (a JSON object) fields plus any number of "file" parts. The body
+// is bounded by the upload limits before anything is buffered.
+func (s *Server) readMultipartStart(w http.ResponseWriter, r *http.Request, pipelineName, input *string, params *map[string]string) ([]engine.FileInput, error) {
+	limits := s.eng.UploadLimits()
+	r.Body = http.MaxBytesReader(w, r.Body, limits.MaxBytes*int64(limits.MaxFiles)+(1<<20))
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			return nil, fmt.Errorf("upload is larger than %d file(s) of %d bytes (uploads limits)", limits.MaxFiles, limits.MaxBytes)
+		}
+		return nil, fmt.Errorf("invalid multipart body: %w", err)
+	}
+	defer r.MultipartForm.RemoveAll()
+	*pipelineName = r.FormValue("pipeline")
+	*input = r.FormValue("input")
+	if raw := r.FormValue("params"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), params); err != nil {
+			return nil, fmt.Errorf("params must be a JSON object of strings: %w", err)
+		}
+	}
+	headers := r.MultipartForm.File["file"]
+	if len(headers) > limits.MaxFiles {
+		return nil, fmt.Errorf("%d files attached; at most %d are allowed per execution (uploads.max_files)", len(headers), limits.MaxFiles)
+	}
+	files := make([]engine.FileInput, 0, len(headers))
+	for _, fh := range headers {
+		if fh.Size > limits.MaxBytes {
+			return nil, fmt.Errorf("file %q is %d bytes; the limit is %d (uploads.max_bytes)", fh.Filename, fh.Size, limits.MaxBytes)
+		}
+		f, err := fh.Open()
+		if err != nil {
+			return nil, err
+		}
+		data, err := io.ReadAll(io.LimitReader(f, limits.MaxBytes+1))
+		_ = f.Close()
+		if err != nil {
+			return nil, fmt.Errorf("reading file %q: %w", fh.Filename, err)
+		}
+		files = append(files, engine.FileInput{Name: fh.Filename, Data: data})
+	}
+	return files, nil
+}
+
+// safeDownloadTypes are served with their own content type; anything else
+// (HTML, SVG, scripts) is sent as application/octet-stream.
+var safeDownloadTypes = map[string]bool{
+	"text/plain": true, "text/csv": true, "text/markdown": true, "text/tab-separated-values": true,
+	"application/json": true, "application/yaml": true, "application/pdf": true,
+	"image/png": true, "image/jpeg": true, "image/gif": true, "image/webp": true,
+}
+
+// handleDownloadFile serves one uploaded file as an attachment. Uploads are
+// never rendered inline or executed.
+func (s *Server) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
+	path, meta, err := s.eng.UploadedFile(r.PathValue("id"), r.PathValue("name"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("file %q is no longer available", meta.Name))
+		return
+	}
+	defer f.Close()
+	ctype := "application/octet-stream"
+	if base, _, _ := strings.Cut(meta.ContentType, ";"); safeDownloadTypes[strings.TrimSpace(base)] {
+		ctype = meta.ContentType
+	}
+	w.Header().Set("Content-Type", ctype)
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": meta.Name}))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "sandbox")
+	w.Header().Set("Cache-Control", "no-store")
+	http.ServeContent(w, r, "", time.Time{}, f)
 }
 
 func (s *Server) handleGetExecution(w http.ResponseWriter, r *http.Request) {
@@ -500,7 +606,7 @@ func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, fmt.Errorf("execution %s is part of execution %s (pipeline node %q); rerun or restart that execution instead", src.ID, src.Parent.Execution, src.Parent.NodeID))
 		return
 	}
-	id, err := s.eng.StartWithParams(src.Pipeline, src.Input, src.Params)
+	id, err := s.eng.StartWith(engine.StartOptions{Pipeline: src.Pipeline, Input: src.Input, Params: src.Params, FilesFrom: src.ID})
 	if err != nil {
 		writeErr(w, http.StatusConflict, err)
 		return

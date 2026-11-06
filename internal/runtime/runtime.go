@@ -26,7 +26,16 @@ type Request struct {
 	// OpenAI runtimes request it natively; CLI runtimes receive it as prompt
 	// instructions; the mock returns a conforming sample.
 	Schema *schema.Schema
+	// FilesDir, when set, is a per-run folder holding copies of the
+	// execution's uploaded files (files: path). Files lists their absolute
+	// paths. CLI runtimes are told about them in the prompt; code nodes and
+	// CLIs receive the folder as SIGNALBOX_FILES_DIR.
+	FilesDir string
+	Files    []string
 }
+
+// FilesDirEnv names the environment variable that carries Request.FilesDir.
+const FilesDirEnv = "SIGNALBOX_FILES_DIR"
 
 // MCPGrant records one MCP server and the tools an agent was allowed to use.
 // It never contains environment values.

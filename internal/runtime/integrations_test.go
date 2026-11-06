@@ -179,3 +179,20 @@ func TestValidateProjectWatcherParams(t *testing.T) {
 		t.Fatalf("unknown pipeline: %v", err)
 	}
 }
+
+func TestValidateUploadDelivery(t *testing.T) {
+	cfg := &config.Config{Runtimes: map[string]config.RuntimeConfig{"api": {Type: "openai"}, "mock": {Type: "mock"}},
+		Watchers: []config.WatcherConfig{{Name: "w", Pipeline: "p"}}}
+	byPath, _ := pipeline.Parse([]byte("name: p\nagents:\n  - id: a\n    runtime: api\n    files: path\n"))
+	if err := ValidatePipeline(cfg, byPath); err == nil || !strings.Contains(err.Error(), "files: path") {
+		t.Fatalf("openai path delivery: %v", err)
+	}
+	inline, _ := pipeline.Parse([]byte("name: p\nagents:\n  - id: a\n    runtime: api\n    files: inline\n"))
+	if err := ValidatePipeline(cfg, inline); err != nil {
+		t.Fatalf("openai inline delivery: %v", err)
+	}
+	required, _ := pipeline.Parse([]byte("name: p\nfiles: {required: true}\nagents:\n  - id: a\n    runtime: mock\n"))
+	if err := ValidateProject(cfg, map[string]*pipeline.Pipeline{"p": required}); err == nil || !strings.Contains(err.Error(), "files") {
+		t.Fatalf("watcher with required files: %v", err)
+	}
+}

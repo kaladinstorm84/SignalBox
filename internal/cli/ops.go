@@ -16,7 +16,7 @@ import (
 const opsUsage = `Execution commands (talk to a running signalbox serve):
   signalbox list [--page N] [--page-size N]
   signalbox show <execution> [--json]
-  signalbox start <pipeline> [--input text] [--param k=v]...
+  signalbox start <pipeline> [--input text] [--param k=v]... [--file path]...
   signalbox approve <execution> [--run id] [--comment text] [--by name]
   signalbox reject <execution> [--run id] [--comment text] [--by name]
   signalbox edit <execution> [--run id] (--output text | --file path) [--by name]
@@ -113,7 +113,7 @@ func cmdOps(command string, args []string, out io.Writer) error {
 	valueFlags := map[string][]string{
 		"list":    {"page", "page-size"},
 		"show":    nil,
-		"start":   {"input", "param"},
+		"start":   {"input", "param", "file"},
 		"approve": {"run", "comment", "by"},
 		"reject":  {"run", "comment", "by"},
 		"edit":    {"run", "output", "file", "by"},
@@ -291,6 +291,13 @@ func opsStart(base string, a opsArgs, out io.Writer) error {
 	var started struct {
 		ID string `json:"id"`
 	}
+	if paths := a.values["file"]; len(paths) > 0 {
+		if err := startMultipart(base+"/executions", a.positional[0], a.value("input"), params, paths, &started); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "started %s (%d file(s) attached)\n", started.ID, len(paths))
+		return nil
+	}
 	body := map[string]any{"pipeline": a.positional[0], "input": a.value("input"), "params": params}
 	if err := apiRequest(http.MethodPost, base+"/executions", body, &started); err != nil {
 		return err
@@ -357,6 +364,16 @@ func opsShow(execURL string, asJSON bool, out io.Writer) error {
 		}
 	}
 	fmt.Fprintln(out)
+	for _, f := range exec.Files {
+		note := ""
+		if f.ReusedFrom != "" {
+			note = ", reused from " + f.ReusedFrom
+		}
+		fmt.Fprintf(out, "File:      %s (%d bytes, %s%s)\n", f.Name, f.Size, f.ContentType, note)
+	}
+	if len(exec.Files) > 0 {
+		fmt.Fprintln(out)
+	}
 	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "RUN\tNODE\tTYPE\tSTATUS\tNOTE")
 	for _, run := range exec.Runs {
@@ -370,6 +387,9 @@ func opsShow(execURL string, asJSON bool, out io.Writer) error {
 		}
 		if n := len(run.ChildExecutions); n > 0 {
 			notes = append(notes, "child "+run.ChildExecutions[n-1])
+		}
+		if run.Files != nil {
+			notes = append(notes, fmt.Sprintf("files %s: %d", run.Files.Mode, len(run.Files.Names)))
 		}
 		if run.Error != "" {
 			notes = append(notes, oneLine(run.Error, 60))

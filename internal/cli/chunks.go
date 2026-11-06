@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -149,6 +151,47 @@ func apiRequest(method, target string, body, result any) error {
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	return doAPI(req, result)
+}
+
+// startMultipart starts an execution with attached files.
+func startMultipart(target, pipelineName, input string, params map[string]string, paths []string, result any) error {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		return err
+	}
+	for _, field := range [][2]string{{"pipeline", pipelineName}, {"input", input}, {"params", string(encoded)}} {
+		if err := mw.WriteField(field[0], field[1]); err != nil {
+			return err
+		}
+	}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		part, err := mw.CreateFormFile("file", filepath.Base(path))
+		if err != nil {
+			return err
+		}
+		if _, err := part.Write(data); err != nil {
+			return err
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPost, target, &buf)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	return doAPI(req, result)
+}
+
+func doAPI(req *http.Request, result any) error {
 	resp, err := apiHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("contacting SignalBox server (is `signalbox serve` running?): %w", err)

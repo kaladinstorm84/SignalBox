@@ -1,0 +1,5 @@
+order,customer,item,amount
+1001,Acme Rail,Signal relay,900.00
+1002,Acme Rail,Cabling,340.00
+1003,Northwind,Point motor,1275.50
+1004,Northwind,Track circuit,610.25

@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -42,7 +43,14 @@ func (m *Mock) Invoke(ctx context.Context, req Request) (string, error) {
 	if role == "" {
 		role = "agent"
 	}
-	return fmt.Sprintf("[mock:%s] %s\n\nProcessed input:\n%s", m.Name(), role, req.Input), nil
+	out := fmt.Sprintf("[mock:%s] %s\n\nProcessed input:\n%s", m.Name(), role, req.Input)
+	if len(req.Files) > 0 {
+		out += "\n\nFiles received at " + FilesDirEnv + ":"
+		for _, path := range req.Files {
+			out += "\n- " + filepath.Base(path)
+		}
+	}
+	return out, nil
 }
 
 func firstLine(s string) string {

@@ -1,0 +1,10 @@
+{
+  "invoice": "INV-1042",
+  "supplier": "Northwind Rail Parts",
+  "total": 1240.0,
+  "currency": "GBP",
+  "lines": [
+    {"item": "Signal relay", "amount": 900.0},
+    {"item": "Cabling", "amount": 340.0}
+  ]
+}

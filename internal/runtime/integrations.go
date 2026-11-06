@@ -209,6 +209,9 @@ func ValidatePipeline(cfg *config.Config, p *pipeline.Pipeline) error {
 		if n.Model != "" && !SupportsModel(rc) {
 			return fmt.Errorf("pipeline %q: agent %q sets model but runtime %q (type cli) has no model_arg", p.Name, n.ID, n.Runtime)
 		}
+		if n.FilesMode() == pipeline.FilesPath && rc.Type == "openai" {
+			return fmt.Errorf("pipeline %q: agent %q uses files: path but runtime %q is type openai, which cannot read local files; use files: inline or a CLI runtime", p.Name, n.ID, n.Runtime)
+		}
 		if len(n.MCP) > 0 {
 			if !mcpRuntimes[rc.Type] {
 				return fmt.Errorf("pipeline %q: agent %q uses mcp but runtime %q is type %s; MCP needs a codex, claude, or copilot runtime", p.Name, n.ID, n.Runtime, rc.Type)
@@ -236,6 +239,9 @@ func ValidateProject(cfg *config.Config, pipelines map[string]*pipeline.Pipeline
 		}
 		if required := p.RequiredParamsWithoutDefault(); len(required) > 0 {
 			return fmt.Errorf("watcher %q starts pipeline %q, which requires param(s) %s; watchers use defaults, so give them defaults", w.Name, w.Pipeline, strings.Join(required, ", "))
+		}
+		if p.Files != nil && p.Files.Required {
+			return fmt.Errorf("watcher %q starts pipeline %q, which requires uploaded files; watchers cannot attach files", w.Name, w.Pipeline)
 		}
 	}
 	return nil
