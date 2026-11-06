@@ -139,6 +139,16 @@ func (p *Pipeline) validateParams() error {
 			}
 		}
 	}
+	for i := range p.Nodes {
+		n := &p.Nodes[i]
+		for key, value := range n.Params {
+			for _, match := range paramRefPattern.FindAllStringSubmatch(value, -1) {
+				if _, ok := p.Params[match[1]]; !ok {
+					return fmt.Errorf("agent %q params.%s references unknown param %q", n.ID, key, match[1])
+				}
+			}
+		}
+	}
 	return nil
 }
 
@@ -248,10 +258,25 @@ func (p *Pipeline) WithParams(values map[string]string) (*Pipeline, map[string]s
 		return p, nil, nil
 	}
 	clone := p.clone()
-	for _, field := range clone.paramFields() {
-		*field.value = paramRefPattern.ReplaceAllStringFunc(*field.value, func(ref string) string {
+	substitute := func(s string) string {
+		return paramRefPattern.ReplaceAllStringFunc(s, func(ref string) string {
 			return resolved[paramRefPattern.FindStringSubmatch(ref)[1]]
 		})
+	}
+	for _, field := range clone.paramFields() {
+		*field.value = substitute(*field.value)
+	}
+	// Child-pipeline params are a map, so they are substituted into a copy.
+	for i := range clone.Nodes {
+		n := &clone.Nodes[i]
+		if n.Params == nil {
+			continue
+		}
+		values := make(map[string]string, len(n.Params))
+		for key, value := range n.Params {
+			values[key] = substitute(value)
+		}
+		n.Params = values
 	}
 	if err := clone.validate(); err != nil {
 		return nil, nil, fmt.Errorf("after applying params: %w", err)

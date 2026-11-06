@@ -1,0 +1,39 @@
+# Demo: pipeline chaining. The "produce" node runs the whole content-line
+# pipeline (looked up by name) as a linked child execution, passing it params
+# built from this pipeline's own params. Its sign-off approval appears on this
+# execution's page under "Waiting in linked pipelines"; approve it there (or
+# with: signalbox approve <this-exec-id>). The child's final output is handed
+# to "wrap".
+name: chain-express
+version: 1.0.0
+description: >-
+  Pipeline chaining demo: briefs a topic, runs the whole content-line pipeline
+  as a linked child execution, then wraps its result.
+params:
+  subject:
+    default: rail timetables
+    description: Topic passed down to content-line.
+entry: brief
+
+agents:
+  - id: brief
+    runtime: mock
+    description: Frames the request for the content line.
+    prompt: Frame a brief about ${{ params.subject }}.
+    handoff: [produce]
+
+  - id: produce
+    type: pipeline
+    pipeline: content-line
+    description: Runs content-line end to end.
+    params:
+      topic: ${{ params.subject }}
+      tone: upbeat
+    # A failed child is retried with a fresh child execution.
+    retry: { count: 1, backoff: 1s }
+    handoff: [wrap]
+
+  - id: wrap
+    runtime: mock
+    description: Wraps the published copy for delivery.
+    prompt: Wrap the published copy with a short cover note.

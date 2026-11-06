@@ -147,6 +147,7 @@ func (s *Server) handleSavePipelineFile(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	others := map[string]*pipeline.Pipeline{}
 	for _, entry := range entries {
 		if !entry.Type().IsRegular() || !validPipelineFilename(entry.Name()) || strings.EqualFold(entry.Name(), filename) {
 			continue
@@ -156,6 +157,13 @@ func (s *Server) handleSavePipelineFile(w http.ResponseWriter, r *http.Request) 
 			writeErr(w, http.StatusConflict, fmt.Errorf("pipeline name %q is already used by %s", p.Name, entry.Name()))
 			return
 		}
+		if err == nil {
+			others[other.Name] = other
+		}
+	}
+	if err := newReferenceError(others, filepath.Join(dir, filename), p, opts); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
 	}
 	path := filepath.Join(dir, filename)
 	info, err := os.Lstat(path)
@@ -223,6 +231,38 @@ func createPipelineFile(path string, content []byte) error {
 			return writeErr
 		}
 		return closeErr
+	}
+	return nil
+}
+
+// newReferenceError reports pipeline-chaining problems that saving p to
+// path would introduce (a broken reference from or to p, or a cycle).
+// Problems already present before the save are not blamed on it.
+func newReferenceError(others map[string]*pipeline.Pipeline, path string, p *pipeline.Pipeline, opts pipeline.Options) error {
+	with := func(extra *pipeline.Pipeline) map[string]*pipeline.Pipeline {
+		set := make(map[string]*pipeline.Pipeline, len(others)+1)
+		for name, other := range others {
+			set[name] = other
+		}
+		if extra != nil {
+			set[extra.Name] = extra
+		}
+		return set
+	}
+	existing := map[string]bool{}
+	if previous, err := pipeline.Load(path, opts); err == nil {
+		for _, err := range pipeline.CheckReferences(with(previous)) {
+			existing[err.Error()] = true
+		}
+	} else {
+		for _, err := range pipeline.CheckReferences(with(nil)) {
+			existing[err.Error()] = true
+		}
+	}
+	for _, err := range pipeline.CheckReferences(with(p)) {
+		if !existing[err.Error()] {
+			return err
+		}
 	}
 	return nil
 }

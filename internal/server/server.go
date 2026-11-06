@@ -185,6 +185,10 @@ type nodeView struct {
 	Context        *pipeline.ContextConfig `json:"context,omitempty"`
 	Model          string                  `json:"model,omitempty"`
 	MCP            []pipeline.MCPUse       `json:"mcp,omitempty"`
+	Pipeline       string                  `json:"pipeline,omitempty"`
+	From           string                  `json:"from,omitempty"`
+	Until          string                  `json:"until,omitempty"`
+	Params         map[string]string       `json:"params,omitempty"`
 }
 
 type handoffView struct {
@@ -234,6 +238,10 @@ func (s *Server) handlePipelines(w http.ResponseWriter, r *http.Request) {
 				Context:        n.Context,
 				Model:          n.Model,
 				MCP:            n.MCP,
+				Pipeline:       n.Pipeline,
+				From:           n.From,
+				Until:          n.Until,
+				Params:         n.Params,
 			}
 			for _, route := range n.Handoff {
 				nv.Handoff = append(nv.Handoff, handoffView{To: route.To, Condition: route.Condition})
@@ -331,6 +339,7 @@ func (s *Server) handleGetExecution(w http.ResponseWriter, r *http.Request) {
 		}
 		run.OutputHTML = rendered.String()
 	}
+	exec.Surfaced = s.eng.SurfacedRuns(exec.ID)
 	writeJSON(w, http.StatusOK, exec)
 }
 
@@ -472,6 +481,10 @@ func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.refreshPipelines(); err != nil {
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("reloading pipelines: %w", err))
+		return
+	}
+	if src.Parent != nil {
+		writeErr(w, http.StatusConflict, fmt.Errorf("execution %s is part of execution %s (pipeline node %q); rerun or restart that execution instead", src.ID, src.Parent.Execution, src.Parent.NodeID))
 		return
 	}
 	id, err := s.eng.StartWithParams(src.Pipeline, src.Input, src.Params)

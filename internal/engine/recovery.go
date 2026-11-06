@@ -195,7 +195,7 @@ func (eng *Engine) RestartFromInterrupted(execID, runID string) (string, error) 
 // resumed in place by RestartFromInterrupted.
 func restartableType(t pipeline.NodeType) bool {
 	switch t {
-	case pipeline.TypeStandard, pipeline.TypeCode, pipeline.TypeLLMGate, pipeline.TypeSession:
+	case pipeline.TypeStandard, pipeline.TypeCode, pipeline.TypeLLMGate, pipeline.TypeSession, pipeline.TypePipeline:
 		return true
 	}
 	return false
@@ -223,6 +223,9 @@ func (eng *Engine) Restart(execID string, opts RestartOptions) (string, error) {
 	}
 	if !source.Status.Terminal() {
 		return "", fmt.Errorf("execution %q is still %s; cancel it before restarting", execID, source.Status)
+	}
+	if source.Parent != nil {
+		return "", fmt.Errorf("execution %q was started by pipeline node %q of execution %s; restart that execution from %q instead", execID, source.Parent.NodeID, source.Parent.Execution, source.Parent.NodeID)
 	}
 	selected, stageName, err := selectRestartRun(source, opts)
 	if err != nil {

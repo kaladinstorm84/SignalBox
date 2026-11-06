@@ -120,6 +120,9 @@ type NodeRun struct {
 	// ReusedFrom names the execution that produced this run when it was
 	// carried into a restarted execution instead of being repeated.
 	ReusedFrom string `json:"reused_from,omitempty"`
+	// ChildExecutions lists the executions a pipeline node started, oldest
+	// first; a retry starts a new one.
+	ChildExecutions []string `json:"child_executions,omitempty"`
 
 	StartedAt  *time.Time `json:"started_at,omitempty"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
@@ -229,9 +232,40 @@ type Execution struct {
 	// can detect edits made since.
 	Definition *Definition `json:"definition,omitempty"`
 	// Recovery is set when the execution was restarted from another one.
-	Recovery   *Recovery  `json:"recovery,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	Recovery *Recovery `json:"recovery,omitempty"`
+	// Parent links a child execution to the pipeline node that started it;
+	// Section records the from/until agents it was limited to.
+	Parent     *ParentLink `json:"parent,omitempty"`
+	Section    *Section    `json:"section,omitempty"`
+	CreatedAt  time.Time   `json:"created_at"`
+	FinishedAt *time.Time  `json:"finished_at,omitempty"`
+	// Surfaced lists runs waiting for a person in live child executions. It
+	// is filled in for API responses only and never persisted.
+	Surfaced []SurfacedRun `json:"surfaced,omitempty"`
+}
+
+// ParentLink identifies the pipeline node run that started a child
+// execution. Depth is 1 for a direct child.
+type ParentLink struct {
+	Execution string `json:"execution"`
+	RunID     string `json:"run_id"`
+	NodeID    string `json:"node_id"`
+	Depth     int    `json:"depth"`
+}
+
+// Section is the part of a pipeline a child execution was limited to.
+type Section struct {
+	From  string `json:"from,omitempty"`
+	Until string `json:"until,omitempty"`
+}
+
+// SurfacedRun is a run waiting in a descendant execution, shown on the
+// parent so it can be handled from there.
+type SurfacedRun struct {
+	Execution string   `json:"execution"`
+	Pipeline  string   `json:"pipeline"`
+	ParentRun string   `json:"parent_run_id"`
+	Run       *NodeRun `json:"run"`
 }
 
 // Summary is the list-view projection of an execution.
@@ -243,6 +277,7 @@ type Summary struct {
 	Waiting     int        `json:"waiting_approvals"`
 	ManualEdits int        `json:"waiting_manual_edits"`
 	Retrying    int        `json:"waiting_retries"`
+	Parent      string     `json:"parent,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
 	FinishedAt  *time.Time `json:"finished_at,omitempty"`
 }

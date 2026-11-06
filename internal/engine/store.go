@@ -382,6 +382,9 @@ func summarizeExecution(e *Execution) Summary {
 		CreatedAt:  e.CreatedAt,
 		FinishedAt: e.FinishedAt,
 	}
+	if e.Parent != nil {
+		item.Parent = e.Parent.Execution
+	}
 	for _, run := range e.Runs {
 		switch run.Status {
 		case StatusWaitingApproval:

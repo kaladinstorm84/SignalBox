@@ -171,6 +171,10 @@
   .type.orchestrator { border-top-color: var(--purple); }
   .type.final { border-top-color: var(--ok); }
   .type.session { border-top-color: #2f6fd0; }
+  .type.pipeline { border-top-color: #d08a2f; }
+  /* Linked pipelines: child executions point back at the parent's junction. */
+  .link-banner { background: var(--bg2); border: 1px solid var(--border); border-left: 4px solid #d08a2f; border-radius: 6px; padding: 8px 12px; margin: 10px 0; }
+  .child-links { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   /* Session transcript: each round is a block section, each turn a train. */
   .session-box { margin-top: 10px; }
   .session-banner { display: inline-block; font: 700 11px var(--sign); letter-spacing: 1px; text-transform: uppercase; border-radius: 3px; padding: 2px 8px; margin-bottom: 6px; }
@@ -473,12 +477,12 @@ async function showExecutions() {
     const rows = list.map(x => `
       <tr class="row" onclick="location.hash='#/exec/${encodeURIComponent(x.id)}'">
         <td class="mono">${esc(x.id)}</td>
-        <td>${esc(x.pipeline)}</td>
+        <td>${esc(x.pipeline)}${x.parent ? `<div class="muted">part of <span class="mono">${esc(x.parent)}</span></div>` : ''}</td>
         <td>${pill(x.status)}${x.waiting_approvals ? ` <span class="pill waiting_approval">${x.waiting_approvals} to approve</span>` : ''}${x.waiting_manual_edits ? ` <span class="pill waiting_manual_edit">${x.waiting_manual_edits} to edit</span>` : ''}${x.waiting_retries ? ` <span class="pill waiting_retry">${x.waiting_retries} failed · retry</span>` : ''}</td>
         <td class="muted">${esc(x.input)}</td>
         <td class="muted">${fmtTime(x.created_at)}</td>
         <td class="actions" onclick="event.stopPropagation()">
-          <button class="secondary sm" onclick="rerunExec('${esc(x.id)}', this)">Rerun</button>${isTerminal(x.status) ? `<button class="danger sm" onclick="deleteExec('${esc(x.id)}', this)">Delete</button>` : ''}</td>
+          ${x.parent ? '' : `<button class="secondary sm" onclick="rerunExec('${esc(x.id)}', this)">Rerun</button>`}${isTerminal(x.status) ? `<button class="danger sm" onclick="deleteExec('${esc(x.id)}', this)">Delete</button>` : ''}</td>
       </tr>`).join('');
     $main.innerHTML = `
       <div class="topline"><div><h2>Executions</h2><div class="page-sub">Every pipeline run, newest first.</div></div>
@@ -544,11 +548,13 @@ async function showExecution(id) {
         <div class="page-sub">Pipeline <b>${esc(x.pipeline)}</b> · started ${fmtTime(x.created_at)}
         ${x.finished_at ? '· finished ' + fmtTime(x.finished_at) : ''}</div></div>
         <div style="display:flex;gap:8px;align-items:center">${pill(x.status)}
-        <button class="secondary" onclick="rerunExec('${esc(x.id)}', this)">Rerun</button>
+        ${x.parent ? '' : `<button class="secondary" onclick="rerunExec('${esc(x.id)}', this)">Rerun</button>`}
         ${!isTerminal(x.status) ? `<button class="danger" onclick="cancelExec('${esc(x.id)}')">Cancel</button>` : `<button class="danger" onclick="deleteExec('${esc(x.id)}', this)">Delete</button>`}</div>
       </div>
+      ${x.parent ? `<div class="link-banner">Part of <a class="mono" href="#/exec/${encodeURIComponent(x.parent.execution)}">${esc(x.parent.execution)}</a> · pipeline node <b>${esc(x.parent.node_id)}</b>${x.section ? ` · section <b>${esc(x.section.from || 'entry')}</b> → <b>${esc(x.section.until || 'end')}</b>` : ''}<div class="muted">Restart or rerun the parent execution from that node to run this pipeline again.</div></div>` : ''}
       ${diagram ? `<div class="execution-diagram">${diagram}</div>` : ''}
       ${x.error ? `<div class="err-banner">${esc(x.error)}</div>` : ''}
+      ${renderSurfaced(x)}
       ${renderRecovery(x)}
       <div class="card"><label style="margin-top:0">Input</label><pre class="out">${esc(x.input)}</pre>
       ${x.params && Object.keys(x.params).length ? `<label>Parameters</label><table class="params-table"><tbody>${Object.keys(x.params).sort().map(k => `<tr><td class="mono">${esc(k)}</td><td>${x.params[k] === '' ? '<span class="muted">(empty)</span>' : esc(x.params[k])}</td></tr>`).join('')}</tbody></table>` : ''}</div>
@@ -576,18 +582,30 @@ async function showExecution(id) {
 
 function isTerminal(s) { return ['completed','failed','rejected','canceled','interrupted'].includes(s); }
 
+// renderSurfaced lists runs waiting for a person inside linked child
+// executions. They are handled through this execution's endpoints, which
+// forward to the child.
+function renderSurfaced(x) {
+  const list = x.surfaced || [];
+  if (!list.length) return '';
+  return `<h2 style="font-size:16px;margin:20px 0 10px">Waiting in linked pipelines</h2>` + list.map(s => `
+    <div class="link-banner" style="margin-bottom:0">Pipeline <b>${esc(s.pipeline)}</b> · execution <a class="mono" href="#/exec/${encodeURIComponent(s.execution)}">${esc(s.execution)}</a></div>
+    ${renderRun({id: x.id, status: x.status, surfaced: true}, s.run)}`).join('');
+}
+
 function renderRun(x, r) {
   const waiting = r.status === 'waiting_approval';
   const manualEdit = r.status === 'waiting_manual_edit';
   const retryable = r.status === 'waiting_retry';
-  const interrupted = r.status === 'interrupted' && ['standard', 'code', 'llm_gate', 'session'].includes(r.type);
+  const interrupted = !x.parent && r.status === 'interrupted' && ['standard', 'code', 'llm_gate', 'session', 'pipeline'].includes(r.type);
   // Any top-level run of a finished execution can be a restart point; stage
-  // runs restart through their orchestrator's stage.
-  const restartable = isTerminal(x.status) && !r.orch_run_id && !r.reused_from && !interrupted;
+  // runs restart through their orchestrator's stage. Child executions are
+  // restarted through their parent.
+  const restartable = !x.parent && isTerminal(x.status) && !r.orch_run_id && !r.reused_from && !interrupted;
   const stages = (r.stages || []).map(s => `
     <div class="stage">
       <div class="runhead"><span class="nodeid">stage: ${esc(s.stage_id)}</span>${pill(s.status)}
-      ${isTerminal(x.status) && !r.reused_from && s.status !== 'pending' ? `<button class="secondary sm" style="margin-left:auto" title="New execution that keeps earlier stages and reruns from this one" onclick="restartRun('${esc(x.id)}', {run_id: '${esc(r.id)}', stage: '${esc(s.stage_id)}'}, this)">Restart from this stage</button>` : ''}</div>
+      ${!x.parent && isTerminal(x.status) && !r.reused_from && s.status !== 'pending' ? `<button class="secondary sm" style="margin-left:auto" title="New execution that keeps earlier stages and reruns from this one" onclick="restartRun('${esc(x.id)}', {run_id: '${esc(r.id)}', stage: '${esc(s.stage_id)}'}, this)">Restart from this stage</button>` : ''}</div>
       ${(s.outputs || []).map((o, i) => `<details data-key="${esc(r.id)}:${esc(s.stage_id)}:${i}"><summary>result from ${esc(o.node_id)}</summary><pre class="out">${esc(o.output)}</pre></details>`).join('')}
       ${s.context ? `<details data-key="${esc(r.id)}:${esc(s.stage_id)}:context"><summary>stage context</summary><pre class="out">${esc(s.context)}</pre></details>` : ''}
     </div>`).join('');
@@ -609,6 +627,7 @@ function renderRun(x, r) {
       ${restartable ? `<button class="secondary sm" title="New execution that keeps unaffected completed work and reruns this node and everything after it" onclick="restartRun('${esc(x.id)}', {run_id: '${esc(r.id)}'}, this)">Restart from here</button>` : ''}
     </div>
     ${integrationsLabel(r.model, r.mcp, r.node_id) ? `<div class="muted integrations">${integrationsLabel(r.model, r.mcp, r.node_id)}</div>` : ''}
+    ${(r.child_executions || []).length ? `<div class="child-links"><span class="muted">${r.child_executions.length === 1 ? 'Linked execution' : 'Linked executions'}:</span>${r.child_executions.map((c, i) => `<a class="mono" href="#/exec/${encodeURIComponent(c)}">${esc(c)}</a>${i < r.child_executions.length - 1 ? '<span class="muted">(earlier attempt)</span>' : ''}`).join('')}</div>` : ''}
     ${r.error ? `<div class="err-banner" style="margin:8px 0 0">${esc(r.error)}</div>` : ''}
     ${retryable ? `
       <div class="approve-actions" style="margin-top:8px">
@@ -892,6 +911,9 @@ const TRACK_COLOURS = [INK, '#2fb44a', '#f08a24', '#2f6fd0'];
 const DIAGRAM_FONT = "'Arial Narrow','Helvetica Neue',Arial,sans-serif";
 const D = {curve: 34, gap: 20, lead: 54, pad: 28, top: 92, rowGap: 6, cell: 22, platform: 18};
 const measureCtx = document.createElement('canvas').getContext('2d');
+function pipelineLineLabel(n) {
+  return `→ ${n.pipeline || '?'}${n.from || n.until ? ` (${n.from || 'entry'}…${n.until || 'end'})` : ''}`;
+}
 let diagramSerial = 0;
 function textWidth(text, font) { measureCtx.font = font; return measureCtx.measureText(text).width; }
 
@@ -984,6 +1006,10 @@ function flowDiagram(p, execution = null) {
         it.pw = Math.max(0, ...names.map(name => textWidth(name, `400 9px ${DIAGRAM_FONT}`)));
         it.w = Math.max(names.length * 12 + 14, it.tw, it.pw + 4);
         it.up = 22; it.down = 30 + names.length * 10;
+      }
+      else if (type === 'pipeline') {
+        it.pw = textWidth(pipelineLineLabel(it.n), `400 9px ${DIAGRAM_FONT}`);
+        it.w = Math.max(50, it.tw, it.pw + 4); it.up = 22; it.down = 40;
       }
       else { it.w = Math.max(36, it.tw); it.up = 22; it.down = 20; }
     } else if (it.kind === 'seq') {
@@ -1078,7 +1104,7 @@ function flowDiagram(p, execution = null) {
       nodePositions.set(n.id, {
         x: mid + (n.type === 'approval' ? 9 : 0),
         y: y - (n.type === 'approval' ? 18 : 0),
-        halfWidth: n.type === 'orchestrator' ? it.w / 2 : n.type === 'approval' ? 13 : n.type === 'session' ? ((n.participants || []).length * 12 + 10) / 2 : 17,
+        halfWidth: n.type === 'orchestrator' ? it.w / 2 : n.type === 'approval' ? 13 : n.type === 'session' ? ((n.participants || []).length * 12 + 10) / 2 : n.type === 'pipeline' ? 23 : 17,
         labelLeft: mid - it.tw / 2,
         labelRight: mid + it.tw / 2,
       });
@@ -1086,8 +1112,9 @@ function flowDiagram(p, execution = null) {
     const status = runStatusByNode[n.id] || '';
     const sessionTip = n.type === 'session'
       ? ` · participants: ${(n.participants || []).join(', ')} · ${n.turn_order === 'moderator' ? `moderated by ${n.moderator}` : 'round robin'} · up to ${n.max_rounds} rounds · ${n.consensus && n.consensus.method === 'moderator_decides' ? `${n.summary_agent} decides` : `consensus: ${(n.consensus && n.consensus.require) || 'all'} vote`}${n.chunks && n.chunks.enabled ? ' · chunks' : ''}`
-      : '';
-    const contextTip = contextLabel(n.context) ? ' · ' + contextLabel(n.context) : '';
+      : n.type === 'pipeline'
+        ? ` · runs pipeline ${n.pipeline}${n.from || n.until ? ` from ${n.from || 'its entry'} until ${n.until || 'the end'}` : ''}${n.params && Object.keys(n.params).length ? ' · params: ' + Object.keys(n.params).sort().map(k => `${k}=${n.params[k]}`).join(', ') : ''}`
+        : '';            const contextTip = contextLabel(n.context) ? ' · ' + contextLabel(n.context) : '';
     const tip = n.type === 'ref' ? (it.missing ? `${n.id} (not defined)` : `continues at ${n.id}`) : `${it.num}. ${n.id} · ${n.type}${n.description ? ' — ' + n.description : ''}${sessionTip}${contextTip}${status ? ' · ' + status : ''}`;
     out.push(`<g class="node" data-node-id="${esc(n.id)}"><title>${esc(tip)}</title>`);
     if (n.type === 'orchestrator') {
@@ -1116,6 +1143,16 @@ function flowDiagram(p, execution = null) {
       text(mid, y - 13, label, 'label', 'middle');
       text(mid, y + 21, it.num, 'num', 'middle');
       names.forEach((name, i) => text(mid, y + 33 + i * 10, name, 'participant', 'middle'));
+    } else if (n.type === 'pipeline') {
+      // An interchange with another line: an amber capsule with a spur
+      // leaving it, labelled with the pipeline it runs.
+      out.push(`<path d="M${mid + 10} ${y + 6}L${mid + 18} ${y + 14}H${mid + 26}" stroke="#d08a2f" stroke-width="3" fill="none" stroke-linecap="round" />`,
+        `<rect x="${mid - 23}" y="${y - 7}" width="46" height="14" rx="7" fill="#f6d9a8" stroke="${INK}" stroke-width="2.2" />`,
+        `<circle cx="${mid - 13}" cy="${y}" r="3.4" fill="#fff" stroke="${INK}" stroke-width="1.2" />`,
+        `<circle cx="${mid + 13}" cy="${y}" r="3.4" fill="#d08a2f" stroke="${INK}" stroke-width="1.2" />`);
+      text(mid, y - 12, label, 'label', 'middle');
+      text(mid, y + 24, it.num, 'num', 'middle');
+      text(mid, y + 35, pipelineLineLabel(n), 'participant', 'middle');
     } else {
       out.push(`<rect x="${mid - 17}" y="${y - 6.5}" width="34" height="13" rx="6.5" fill="#fff" stroke="${INK}" stroke-width="2.2" />`);
       text(mid, y - 12, label, 'label', 'middle');
@@ -1556,7 +1593,7 @@ async function showPipelines() {
             <td><b>${esc(n.id)}</b>${n.id === p.entry ? ' <span class="muted">(entry)</span>' : ''}
             ${n.description ? `<div class="muted">${esc(n.description)}</div>` : ''}</td>
             <td><span class="type ${esc(n.type)}">${esc(n.type)}</span></td>
-            <td class="mono">${n.type === 'code' ? `${esc(n.language)}<div class="muted">${esc(n.code_source)}</div>` : n.type === 'session' ? `<div class="muted">${(n.participants || []).map(esc).join(', ')}</div><div class="muted">${n.max_rounds} rounds · ${esc(n.consensus ? n.consensus.method : '')}${n.chunks && n.chunks.enabled ? ' · chunks' : ''}</div>` : esc(n.runtime || '—')}${contextLabel(n.context) ? `<div class="muted">${esc(contextLabel(n.context))}</div>` : ''}${integrationsLabel(n.model, n.mcp) ? `<div class="muted">${integrationsLabel(n.model, n.mcp)}</div>` : ''}</td>
+            <td class="mono">${n.type === 'code' ? `${esc(n.language)}<div class="muted">${esc(n.code_source)}</div>` : n.type === 'session' ? `<div class="muted">${(n.participants || []).map(esc).join(', ')}</div><div class="muted">${n.max_rounds} rounds · ${esc(n.consensus ? n.consensus.method : '')}${n.chunks && n.chunks.enabled ? ' · chunks' : ''}</div>` : n.type === 'pipeline' ? `→ ${esc(n.pipeline)}${n.from || n.until ? `<div class="muted">${esc(n.from || 'entry')} … ${esc(n.until || 'end')}</div>` : ''}${n.params && Object.keys(n.params).length ? `<div class="muted">params: ${Object.keys(n.params).sort().map(esc).join(', ')}</div>` : ''}` : esc(n.runtime || '—')}${contextLabel(n.context) ? `<div class="muted">${esc(contextLabel(n.context))}</div>` : ''}${integrationsLabel(n.model, n.mcp) ? `<div class="muted">${integrationsLabel(n.model, n.mcp)}</div>` : ''}</td>
             <td>${n.stages ? n.stages.map(s => `<div class="muted">stage <b>${esc(s.id)}</b> → ${s.agents.map(esc).join(', ')}</div>`).join('') : ''}
                 ${(n.handoff || []).map(route => typeof route === 'string' ? esc(route) : `${esc(route.to)}${route.condition ? ` (${esc(route.condition)})` : ''}`).join(', ') || (n.stages ? '' : '<span class="muted">terminates</span>')}</td>
           </tr>`).join('')}</tbody></table>

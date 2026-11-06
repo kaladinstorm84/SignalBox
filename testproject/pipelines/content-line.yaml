@@ -1,0 +1,48 @@
+# Demo library line for pipeline chaining. It runs on its own, but it is
+# mainly here to be referenced by name from chain-express (the whole line)
+# and chain-section (only part of it).
+name: content-line
+version: 1.0.0
+description: >-
+  Reusable content line: outline, draft, a human sign-off, polish, and
+  publish. Other pipelines run it, or a section of it, through a pipeline node.
+params:
+  topic:
+    required: true
+    description: What the content is about.
+  tone:
+    values: [plain, upbeat, formal]
+    default: plain
+    description: Writing tone.
+entry: outline
+
+agents:
+  - id: outline
+    runtime: mock
+    description: Outlines a piece about ${{ params.topic }}.
+    prompt: Outline a short piece about ${{ params.topic }}.
+    handoff: [draft]
+
+  - id: draft
+    runtime: mock
+    description: Drafts the piece in a ${{ params.tone }} tone.
+    prompt: Draft the piece about ${{ params.topic }} in a ${{ params.tone }} tone.
+    handoff: [signoff]
+
+  # When another pipeline runs a section containing this approval, it is
+  # surfaced on that pipeline's execution page and can be approved there.
+  - id: signoff
+    type: approval
+    description: A person checks the draft.
+    handoff: [polish]
+
+  - id: polish
+    runtime: mock
+    description: Tidies the approved draft.
+    prompt: Polish the approved draft.
+    handoff: [publish]
+
+  - id: publish
+    runtime: mock
+    description: Produces the final copy.
+    prompt: Produce the final copy.
