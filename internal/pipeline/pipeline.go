@@ -38,7 +38,14 @@ const (
 	// TypeSession runs a multi-round discussion between participant agents
 	// until they reach consensus or the round limit.
 	TypeSession NodeType = "session"
+	// TypePipeline runs another pipeline (or a section of it) as a linked
+	// child execution and hands off the child's final output.
+	TypePipeline NodeType = "pipeline"
 )
+
+// MaxPipelineDepth bounds how deeply pipeline nodes may nest child
+// executions at run time.
+const MaxPipelineDepth = 5
 
 // Session defaults and limits.
 const (
@@ -177,6 +184,14 @@ type Node struct {
 	Consensus    *Consensus   `yaml:"consensus,omitempty"`
 	SummaryAgent string       `yaml:"summary_agent,omitempty"`
 	Chunks       *ChunkConfig `yaml:"chunks,omitempty"`
+
+	// Pipeline fields are only valid on pipeline nodes. Pipeline names the
+	// child pipeline; From and Until select a section of it (default: its
+	// entry, running to completion); Params are passed to the child.
+	Pipeline string            `yaml:"pipeline,omitempty"`
+	From     string            `yaml:"from,omitempty"`
+	Until    string            `yaml:"until,omitempty"`
+	Params   map[string]string `yaml:"params,omitempty"`
 }
 
 // ChunksEnabled reports whether a session tracks chunks.
@@ -384,6 +399,7 @@ func LoadDir(dir string, opts ...Options) (map[string]*Pipeline, []error) {
 		}
 		out[p.Name] = p
 	}
+	errs = append(errs, CheckReferences(out)...)
 	return out, errs
 }
 
@@ -426,9 +442,9 @@ func (p *Pipeline) validate() error {
 			n.Type = TypeStandard
 		}
 		switch n.Type {
-		case TypeStandard, TypeOrchestrator, TypeApproval, TypeLLMGate, TypeManualEdit, TypeCode, TypeSession:
+		case TypeStandard, TypeOrchestrator, TypeApproval, TypeLLMGate, TypeManualEdit, TypeCode, TypeSession, TypePipeline:
 		default:
-			return fmt.Errorf("pipeline %q: agent %q has unknown type %q (want standard, orchestrator, approval, llm_gate, manual_edit, code, or session)", p.Name, n.ID, n.Type)
+			return fmt.Errorf("pipeline %q: agent %q has unknown type %q (want standard, orchestrator, approval, llm_gate, manual_edit, code, session, or pipeline)", p.Name, n.ID, n.Type)
 		}
 		p.byID[n.ID] = n
 	}
@@ -687,7 +703,7 @@ func (p *Pipeline) validateNode(n *Node) error {
 	}
 	if n.Retry != nil {
 		switch n.Type {
-		case TypeStandard, TypeCode, TypeLLMGate, TypeOrchestrator, TypeSession:
+		case TypeStandard, TypeCode, TypeLLMGate, TypeOrchestrator, TypeSession, TypePipeline:
 		default:
 			return fmt.Errorf("agent %q: retry is only supported on callable nodes", n.ID)
 		}
@@ -715,8 +731,23 @@ func (p *Pipeline) validateNode(n *Node) error {
 	if n.Type != TypeSession && (len(n.Participants) > 0 || n.TurnOrder != "" || n.Moderator != "" || n.MaxRounds != 0 || n.Consensus != nil || n.SummaryAgent != "" || n.Chunks != nil) {
 		return fmt.Errorf("agent %q: participants, turn_order, moderator, max_rounds, consensus, summary_agent, and chunks are only supported on session nodes", n.ID)
 	}
+	if n.Type != TypePipeline && (n.Pipeline != "" || n.From != "" || n.Until != "" || n.Params != nil) {
+		return fmt.Errorf("agent %q: pipeline, from, until, and params are only supported on pipeline nodes", n.ID)
+	}
 
 	switch n.Type {
+	case TypePipeline:
+		if strings.TrimSpace(n.Pipeline) == "" {
+			return fmt.Errorf("pipeline agent %q is missing pipeline (the name of the pipeline to run)", n.ID)
+		}
+		if n.Runtime != "" || n.Prompt != "" || len(n.Stages) > 0 {
+			return fmt.Errorf("pipeline agent %q may not define runtime, prompt, or stages", n.ID)
+		}
+		for name := range n.Params {
+			if !paramNamePattern.MatchString(name) {
+				return fmt.Errorf("pipeline agent %q: param %q is not a valid param name", n.ID, name)
+			}
+		}
 	case TypeSession:
 		return p.validateSession(n)
 	case TypeCode:

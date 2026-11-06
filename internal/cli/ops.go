@@ -329,6 +329,19 @@ func opsShow(execURL string, asJSON bool, out io.Writer) error {
 	if exec.Error != "" {
 		fmt.Fprintf(out, "Error:     %s\n", exec.Error)
 	}
+	if p := exec.Parent; p != nil {
+		fmt.Fprintf(out, "Part of:   %s (pipeline node %s, run %s)\n", p.Execution, p.NodeID, p.RunID)
+	}
+	if s := exec.Section; s != nil {
+		from, until := s.From, s.Until
+		if from == "" {
+			from = "entry"
+		}
+		if until == "" {
+			until = "end"
+		}
+		fmt.Fprintf(out, "Section:   %s .. %s\n", from, until)
+	}
 	if r := exec.Recovery; r != nil {
 		from := r.NodeID
 		if r.Stage != "" {
@@ -355,6 +368,9 @@ func opsShow(execURL string, asJSON bool, out io.Writer) error {
 		if run.ReusedFrom != "" {
 			notes = append(notes, "reused from "+run.ReusedFrom)
 		}
+		if n := len(run.ChildExecutions); n > 0 {
+			notes = append(notes, "child "+run.ChildExecutions[n-1])
+		}
 		if run.Error != "" {
 			notes = append(notes, oneLine(run.Error, 60))
 		}
@@ -362,6 +378,9 @@ func opsShow(execURL string, asJSON bool, out io.Writer) error {
 			notes = append(notes, stage.StageID+":"+string(stage.Status))
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", run.ID, node, run.Type, run.Status, strings.Join(notes, "; "))
+	}
+	for _, s := range exec.Surfaced {
+		fmt.Fprintf(w, "%s\t  %s\t%s\t%s\t%s\n", s.Run.ID, s.Run.NodeID, s.Run.Type, s.Run.Status, "in child "+s.Execution+" ("+s.Pipeline+")")
 	}
 	return w.Flush()
 }
@@ -380,6 +399,11 @@ func pickWaitingRun(execURL, runID string, want engine.Status) (string, error) {
 	for _, run := range exec.Runs {
 		if run.Status == want {
 			matches = append(matches, run.ID+" ("+run.NodeID+")")
+		}
+	}
+	for _, s := range exec.Surfaced {
+		if s.Run.Status == want {
+			matches = append(matches, s.Run.ID+" ("+s.Run.NodeID+" in "+s.Execution+")")
 		}
 	}
 	switch len(matches) {

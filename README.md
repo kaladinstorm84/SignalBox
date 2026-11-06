@@ -23,6 +23,7 @@ and script interpreters are installed separately when needed.
 | `manual_edit` | Pauses for a person to edit the incoming payload in the web UI or terminal, then hands the edited text downstream. |
 | `code` | Executes a local script with its input on stdin, then hands stdout to downstream nodes. No AI runtime is required. |
 | `session` | A multi-round discussion between participant agents. Participants take turns, each seeing the transcript, until they reach consensus or the round limit. See [Sessions and chunks](#sessions-and-chunks). |
+| `pipeline` | Runs another pipeline (or a section of it) by name as a linked child execution and hands off its final output. See [Pipeline chaining](#pipeline-chaining). |
 
 ### Handoffs
 
@@ -308,6 +309,78 @@ agents:
   shared file is picked up the next time pipelines reload.
 
 Demo: `review-kit` with `shared/review-kit.yaml`.
+
+### Pipeline chaining
+
+A `type: pipeline` node runs another loaded pipeline, looked up by its
+`name`, as a linked **child execution**. Imports copy agent definitions into
+a pipeline; chaining runs another pipeline as it stands, with its own
+execution page.
+
+```yaml
+  - id: review_copy
+    type: pipeline
+    pipeline: content-line   # name of the pipeline to run
+    from: draft              # optional: start here instead of its entry
+    until: signoff           # optional: stop after this agent
+    params:                  # optional: values for the child's params
+      topic: ${{ params.subject }}
+    retry: { count: 1, backoff: 2s }
+    handoff: [collate]
+```
+
+- **Input and output.** The child gets the node's input (including any
+  `additional-input`) as its run input. When it completes, its final output
+  is handed off. If it has several final outputs, they are joined and
+  labelled by agent.
+- **Sections.** `from` and `until` must be top-level agents of the child
+  (not ones reached only inside a stage or session), and `until` must be
+  reachable from the start through handoffs.
+  - `until` only stops that agent's handoffs. Parallel branches that bypass
+    it still run, and their outputs are included.
+  - Agents in the section cannot take `additional-input` from agents outside
+    it.
+- **Params.** `params` values may use the parent's own
+  `${{ params.x }}`. Each key must be declared by the child, and the child's
+  required params must be supplied.
+- **Approvals surface on the parent.** Approvals, manual edits, and failed
+  calls waiting in a child (or grandchild) are listed on the parent's page
+  under **Waiting in linked pipelines**. You can handle them there, from
+  `signalbox approve|reject|edit|retry <parent-id>`, or from the parent's
+  API endpoints with the child run's `run_id`. Each run card for a pipeline
+  node links to its child execution, and the child page links back to its
+  parent.
+- **Outcomes.**
+  - **Completed child:** its output is handed off.
+  - **Rejected child:** the node is rejected, and the usual rework rules
+    apply in the parent. A rejection inside the child follows the child's
+    own rules first; for example, rejecting an approval reworks the agent
+    before it, so the child only ends rejected when nothing upstream remains.
+  - **Failed or canceled child:** handled like a failed agent call. It is
+    retried per the node's `retry` policy, then waits for a manual retry,
+    which starts a fresh child execution. Earlier attempts stay linked.
+  - **Canceled parent:** cancelling or failing the parent cancels its
+    running children.
+- **Restarts.** A child execution cannot be restarted or rerun on its own.
+  Restart the parent from the pipeline node instead, which runs a new child.
+  The parent's definition fingerprint does not include the child pipeline,
+  so changes to the child do not trigger the changed-definition check.
+- **Validation.** Errors are reported for:
+  - unknown pipelines, `from`, or `until`;
+  - undeclared or missing params;
+  - reference cycles (for example `a -> b -> a`, including a pipeline that
+    runs itself).
+
+  Nesting is limited to 5 levels. Saving a pipeline in the editor is refused
+  only for reference errors the save would introduce.
+- **Registry.** Publishing a pipeline does not bundle the pipelines it
+  references, so install those too.
+
+Demos:
+- `content-line`: the reusable line, with a param and a human sign-off.
+- `chain-express`: runs all of `content-line` and passes params.
+- `chain-section`: runs two sections of `content-line` in parallel, and
+  surfaces the sign-off on the parent.
 
 ### Model overrides
 
@@ -959,14 +1032,14 @@ output stable between polls unless a new pipeline run is intended.
 | `PUT /api/pipeline-files/{filename}` | Validate and create/edit YAML: `{"content": "...", "version": "..."}`; use an empty version to create a new file |
 | `GET /api/settings` | Project configuration YAML and file version |
 | `PUT /api/settings` | Validate and save project YAML: `{"content": "...", "version": "..."}` |
-| `GET /api/executions?page=1&page_size=20` | Paginated execution summaries (newest first); page sizes are multiples of 10 from 10 to 100. Returns `executions`, `page`, `page_size`, `total`, and `total_pages`. |
+| `GET /api/executions?page=1&page_size=20` | Paginated execution summaries (newest first); page sizes are multiples of 10 from 10 to 100. Returns `executions`, `page`, `page_size`, `total`, and `total_pages`. Child executions of pipeline nodes carry `parent` (the parent execution ID). |
 | `POST /api/executions` | Start a run: `{"pipeline": "default", "input": "...", "params": {"topic": "..."}}` (`params` optional; 400 if invalid) |
-| `GET /api/executions/{id}` | Full execution detail |
-| `POST /api/executions/{id}/approve` | Resolve a gate: `{"run_id": "...", "approved": true, "approved_by": "...", "comment": "..."}` |
+| `GET /api/executions/{id}` | Full execution detail. Child executions include `parent` (`execution`, `run_id`, `node_id`, `depth`) and `section` (`from`, `until`); pipeline-node runs list `child_executions`; `surfaced` lists runs waiting in live descendants (`execution`, `pipeline`, `parent_run_id`, `run`) |
+| `POST /api/executions/{id}/approve` | Resolve a gate: `{"run_id": "...", "approved": true, "approved_by": "...", "comment": "..."}`. `run_id` may be a surfaced run of a child execution (the same applies to `manual-edit` and `retry`) |
 | `POST /api/executions/{id}/retry` | Retry a failed agent call awaiting retry: `{"run_id": "..."}` |
 | `POST /api/executions/{id}/restart` | Start a new execution from a run of a finished execution: `{"run_id": "...", "node_id": "...", "stage": "...", "force": false}` (all optional; with no run, the latest failed/interrupted/canceled run). Returns 201 `{"id": "..."}`; 409 `{"error", "definition_changed": true, "changes": [...]}` when the pipeline changed and `force` is not set |
 | `POST /api/executions/{id}/cancel` | Cancel a running execution |
-| `POST /api/executions/{id}/rerun` | Start a new execution with the same pipeline, input, and params; returns `{"id": "..."}` |
+| `POST /api/executions/{id}/rerun` | Start a new execution with the same pipeline, input, and params; returns `{"id": "..."}` (409 for child executions; restart the parent instead) |
 | `DELETE /api/executions/{id}` | Delete a finished execution (409 while it is still running) |
 | `GET /api/executions/{id}/chunks` | List the execution's chunks |
 | `POST /api/executions/{id}/chunks` | Add a chunk: `{"title": "...", "by": "..."}`; returns the chunk (409 once the execution has finished) |

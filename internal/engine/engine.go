@@ -50,6 +50,19 @@ type liveExec struct {
 	// joins holds fan-in nodes outside any stage still waiting for inputs.
 	joins        map[string][]deliveredInput
 	joinExpected map[string]int
+	// entry overrides the pipeline entry for a child started part-way in;
+	// stopAt names an agent whose handoffs are not followed.
+	entry  string
+	stopAt string
+	// children maps a pipeline-node run ID to its live child execution.
+	children map[string]*liveExec
+}
+
+func (le *liveExec) entryID() string {
+	if le.entry != "" {
+		return le.entry
+	}
+	return le.p.Entry
 }
 
 // pendingRetry is a run parked after a failed agent call.
@@ -162,25 +175,48 @@ func (eng *Engine) Start(pipelineName, input string) (string, error) {
 // validated against the pipeline's declarations before anything runs.
 func (eng *Engine) StartWithParams(pipelineName, input string, params map[string]string) (string, error) {
 	eng.mu.Lock()
-	template, ok := eng.pipelines[pipelineName]
-	if !ok {
-		eng.mu.Unlock()
-		return "", fmt.Errorf("unknown pipeline %q", pipelineName)
-	}
-	p, resolved, err := template.WithParams(params)
+	defer eng.mu.Unlock()
+	le, err := eng.startLocked(startSpec{pipeline: pipelineName, input: input, params: params})
 	if err != nil {
-		eng.mu.Unlock()
 		return "", err
+	}
+	return le.exec.ID, nil
+}
+
+// startSpec describes a new execution. from, until, and parent are set for
+// child executions started by pipeline nodes.
+type startSpec struct {
+	pipeline    string
+	input       string
+	params      map[string]string
+	from, until string
+	parent      *ParentLink
+}
+
+func (eng *Engine) startLocked(spec startSpec) (*liveExec, error) {
+	template, ok := eng.pipelines[spec.pipeline]
+	if !ok {
+		return nil, fmt.Errorf("unknown pipeline %q", spec.pipeline)
+	}
+	p, resolved, err := template.WithParams(spec.params)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range []string{spec.from, spec.until} {
+		if id != "" && p.Node(id) == nil {
+			return nil, fmt.Errorf("pipeline %q has no agent %q", spec.pipeline, id)
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	le := &liveExec{
 		exec: &Execution{
 			ID:         newExecID(),
-			Pipeline:   pipelineName,
-			Input:      input,
+			Pipeline:   spec.pipeline,
+			Input:      spec.input,
 			Params:     resolved,
 			Status:     StatusRunning,
 			Definition: fingerprint(p),
+			Parent:     spec.parent,
 			CreatedAt:  time.Now().UTC(),
 		},
 		p:              p,
@@ -192,13 +228,20 @@ func (eng *Engine) StartWithParams(pipelineName, input string, params map[string
 		orchs:          map[string]*orchInstance{},
 		outputsChanged: make(chan struct{}),
 		joinExpected:   p.JoinCounts(pipeline.TopScope),
+		entry:          spec.from,
+		stopAt:         spec.until,
+	}
+	if spec.from != "" {
+		le.joinExpected = joinCountsFrom(p, spec.from)
+	}
+	if spec.from != "" || spec.until != "" {
+		le.exec.Section = &Section{From: spec.from, Until: spec.until}
 	}
 
 	eng.execs[le.exec.ID] = le
-	eng.deliverLocked(le, p.Entry, input, "", nil)
+	eng.deliverLocked(le, le.entryID(), spec.input, "", nil)
 	eng.persistLocked(le)
-	eng.mu.Unlock()
-	return le.exec.ID, nil
+	return le, nil
 }
 
 // Approve resolves a pending approval gate.
@@ -209,6 +252,7 @@ func (eng *Engine) Approve(execID, runID string, approved bool, approvedBy, comm
 	if !ok {
 		return fmt.Errorf("unknown execution %q", execID)
 	}
+	le = ownerLocked(le, func(x *liveExec) bool { _, ok := x.approvals[runID]; return ok })
 	ch, ok := le.approvals[runID]
 	if !ok {
 		return fmt.Errorf("no pending approval %q in execution %q", runID, execID)
@@ -226,12 +270,13 @@ func (eng *Engine) SubmitManualEdit(execID, runID, output, editedBy string) erro
 	if !ok {
 		return fmt.Errorf("unknown execution %q", execID)
 	}
+	le = ownerLocked(le, func(x *liveExec) bool { _, ok := x.manualEdits[runID]; return ok })
 	ch, ok := le.manualEdits[runID]
 	if !ok {
 		return fmt.Errorf("no pending manual edit %q in execution %q", runID, execID)
 	}
 	if le.exec.Status.Terminal() {
-		return fmt.Errorf("execution %q is already finished (%s)", execID, le.exec.Status)
+		return fmt.Errorf("execution %q is already finished (%s)", le.exec.ID, le.exec.Status)
 	}
 	delete(le.manualEdits, runID)
 	ch <- manualEditDecision{output: output, editedBy: editedBy}
@@ -247,6 +292,7 @@ func (eng *Engine) ResolveFailure(execID, runID string, retry bool) error {
 	if !ok {
 		return fmt.Errorf("unknown execution %q", execID)
 	}
+	le = ownerLocked(le, func(x *liveExec) bool { _, ok := x.retries[runID]; return ok })
 	pending, ok := le.retries[runID]
 	if !ok {
 		return fmt.Errorf("no failed run %q awaiting retry in execution %q", runID, execID)
@@ -285,6 +331,7 @@ func (eng *Engine) Cancel(execID string) error {
 	if le.cancel != nil {
 		le.cancel()
 	}
+	eng.cancelChildrenLocked(le, fmt.Sprintf("parent execution %s was canceled", execID))
 	eng.persistLocked(le)
 	return nil
 }
@@ -441,13 +488,80 @@ func (eng *Engine) runsWithStatus(execID string, status Status) []*NodeRun {
 		return nil
 	}
 	var out []*NodeRun
-	for _, r := range le.exec.Runs {
-		if r.Status == status {
-			cp := *r
-			out = append(out, &cp)
+	var collect func(x *liveExec)
+	collect = func(x *liveExec) {
+		for _, r := range x.exec.Runs {
+			if r.Status == status {
+				cp := *r
+				out = append(out, &cp)
+			}
+		}
+		// Runs waiting in child executions are included so they can be
+		// handled through the parent (see ownerLocked).
+		for _, child := range sortedChildren(x) {
+			collect(child)
 		}
 	}
+	collect(le)
 	return out
+}
+
+// SurfacedRuns lists runs waiting for a person (approval, manual edit, or
+// retry) in the live descendants of an execution.
+func (eng *Engine) SurfacedRuns(execID string) []SurfacedRun {
+	eng.mu.Lock()
+	defer eng.mu.Unlock()
+	le, ok := eng.execs[execID]
+	if !ok {
+		return nil
+	}
+	var out []SurfacedRun
+	var collect func(x *liveExec)
+	collect = func(x *liveExec) {
+		for _, child := range sortedChildren(x) {
+			for _, r := range child.exec.Runs {
+				switch r.Status {
+				case StatusWaitingApproval, StatusWaitingManualEdit, StatusWaitingRetry:
+					cp := *r
+					cp.Snapshot = nil
+					out = append(out, SurfacedRun{Execution: child.exec.ID, Pipeline: child.exec.Pipeline, ParentRun: child.exec.Parent.RunID, Run: &cp})
+				}
+			}
+			collect(child)
+		}
+	}
+	collect(le)
+	return out
+}
+
+// ownerLocked returns the execution, among le and its live descendants,
+// for which has reports true; le itself when none match.
+func ownerLocked(le *liveExec, has func(*liveExec) bool) *liveExec {
+	var find func(x *liveExec) *liveExec
+	find = func(x *liveExec) *liveExec {
+		if has(x) {
+			return x
+		}
+		for _, child := range x.children {
+			if owner := find(child); owner != nil {
+				return owner
+			}
+		}
+		return nil
+	}
+	if owner := find(le); owner != nil {
+		return owner
+	}
+	return le
+}
+
+func sortedChildren(le *liveExec) []*liveExec {
+	children := make([]*liveExec, 0, len(le.children))
+	for _, child := range le.children {
+		children = append(children, child)
+	}
+	sort.Slice(children, func(i, j int) bool { return children[i].exec.ID < children[j].exec.ID })
+	return children
 }
 
 // Wait returns a channel closed when the execution finishes.
@@ -491,7 +605,7 @@ func (eng *Engine) deliverLocked(le *liveExec, nodeID, input, from string, octx 
 		oi := le.orchs[nodeID]
 		if oi == nil {
 			expected := le.joinExpected[nodeID]
-			if nodeID == le.p.Entry {
+			if nodeID == le.entryID() {
 				expected = 1
 			}
 			oi = &orchInstance{
@@ -625,6 +739,10 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 	}
 	if node.Type == pipeline.TypeSession {
 		eng.runSession(le, run, node, octx)
+		return
+	}
+	if node.Type == pipeline.TypePipeline {
+		eng.runPipelineNode(le, run, node, octx)
 		return
 	}
 
@@ -808,7 +926,7 @@ func (eng *Engine) finishRunRejected(le *liveExec, run *NodeRun, node *pipeline.
 	run.FinishedAt = &finished
 	run.Comment = note
 	run.Output = output
-	if node.Type == pipeline.TypeCode {
+	if node.Type == pipeline.TypeCode || node.Type == pipeline.TypePipeline {
 		run.Error = note
 	}
 	work := le.reworks[run.ID]
@@ -992,6 +1110,11 @@ func (eng *Engine) finishRunOK(le *liveExec, run *NodeRun, node *pipeline.Node, 
 		work = nil
 	}
 	selected := selectHandoffs(node, outcome)
+	if run.NodeID == le.stopAt && octx == nil {
+		// The end of a chained section: nothing after it runs, and its
+		// output is a final output of the child execution.
+		selected = nil
+	}
 	eng.deactivateHandoffsLocked(le, node, selected, octx, work)
 	now := time.Now().UTC()
 	run.Output = output
@@ -1440,6 +1563,13 @@ func joinCountsFrom(p *pipeline.Pipeline, root string) map[string]int {
 // The caller's stage and live-run counters stay held while parked, so
 // parallel branches continue but nothing downstream proceeds without it.
 func (eng *Engine) invokeRetrying(le *liveExec, run *NodeRun, policy *pipeline.RetryPolicy, invoke func() (string, error)) (string, error) {
+	return eng.invokeWithRetries(le, run, policy, true, invoke)
+}
+
+// invokeWithRetries is invokeRetrying with control over the call slot.
+// Pipeline nodes do not take one: their child execution's own agent calls
+// need the slots, and holding one while waiting could deadlock.
+func (eng *Engine) invokeWithRetries(le *liveExec, run *NodeRun, policy *pipeline.RetryPolicy, useSlot bool, invoke func() (string, error)) (string, error) {
 	var maxRetries int
 	var backoff time.Duration
 	if policy != nil {
@@ -1455,18 +1585,26 @@ func (eng *Engine) invokeRetrying(le *liveExec, run *NodeRun, policy *pipeline.R
 		if err := le.ctx.Err(); err != nil {
 			return "", err
 		}
-		select {
-		case eng.callSlots <- struct{}{}:
-		case <-le.ctx.Done():
-			return "", le.ctx.Err()
+		if useSlot {
+			select {
+			case eng.callSlots <- struct{}{}:
+			case <-le.ctx.Done():
+				return "", le.ctx.Err()
+			}
 		}
 		out, err := invoke()
-		<-eng.callSlots
+		if useSlot {
+			<-eng.callSlots
+		}
 		if err == nil {
 			return out, nil
 		}
 		var outcome *runtime.CodeOutcomeError
 		if errors.As(err, &outcome) {
+			return out, err
+		}
+		var rejected *childRejectedError
+		if errors.As(err, &rejected) {
 			return out, err
 		}
 

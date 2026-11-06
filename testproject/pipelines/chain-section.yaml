@@ -1,0 +1,48 @@
+# Demo: running sections of another pipeline. Two pipeline nodes run in
+# parallel, each limited to part of content-line with from/until:
+#
+#   review_copy   from: draft  until: signoff   (draft, then a human sign-off)
+#   finish_copy   from: polish                  (polish and publish only)
+#
+# The sign-off inside review_copy's child execution is surfaced here, so it
+# can be approved or rejected from this page. Rejecting it follows the usual
+# approval rules inside the child: the draft is reworked with your notes and
+# the sign-off asks again.
+name: chain-section
+version: 1.0.0
+description: >-
+  Pipeline section demo: runs two parts of content-line in parallel with
+  from/until, surfacing the child's approval on this execution, then collates.
+entry: intake
+
+agents:
+  - id: intake
+    runtime: mock
+    description: Splits the request into a review path and a finishing path.
+    prompt: Restate the request for both paths.
+    handoff: [review_copy, finish_copy]
+
+  - id: review_copy
+    type: pipeline
+    pipeline: content-line
+    from: draft
+    until: signoff
+    description: Drafts and gets a human sign-off.
+    params:
+      topic: the request
+      tone: formal
+    handoff: [collate]
+
+  - id: finish_copy
+    type: pipeline
+    pipeline: content-line
+    from: polish
+    description: Polishes and publishes the input as it is.
+    params:
+      topic: the request
+    handoff: [collate]
+
+  - id: collate
+    runtime: mock
+    description: Joins both paths.
+    prompt: Combine the signed-off draft and the finished copy.
