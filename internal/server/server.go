@@ -72,6 +72,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handleSaveSettings)
 	mux.HandleFunc("GET /api/pipelines", s.handlePipelines)
+	mux.HandleFunc("GET /api/schemas", s.handleSchemas)
 	mux.HandleFunc("GET /api/pipeline-files", s.handleListPipelineFiles)
 	mux.HandleFunc("GET /api/pipeline-files/{filename}", s.handleGetPipelineFile)
 	mux.HandleFunc("PUT /api/pipeline-files/{filename}", s.handleSavePipelineFile)
@@ -153,6 +154,7 @@ type pipelineView struct {
 	Entry       string      `json:"entry"`
 	Params      []paramView `json:"params,omitempty"`
 	Sources     []string    `json:"sources,omitempty"`
+	InputSchema string      `json:"input_schema,omitempty"`
 	Nodes       []nodeView  `json:"nodes"`
 }
 
@@ -189,6 +191,14 @@ type nodeView struct {
 	From           string                  `json:"from,omitempty"`
 	Until          string                  `json:"until,omitempty"`
 	Params         map[string]string       `json:"params,omitempty"`
+	Output         *outputView             `json:"output,omitempty"`
+}
+
+// outputView is a node's structured-output contract with defaults applied.
+type outputView struct {
+	Schema     string `json:"schema"`
+	OnInvalid  string `json:"on_invalid"`
+	MaxRepairs int    `json:"max_repairs"`
 }
 
 type handoffView struct {
@@ -211,7 +221,7 @@ func (s *Server) handlePipelines(w http.ResponseWriter, r *http.Request) {
 	out := []pipelineView{}
 	for _, name := range pipeline.Names(ps) {
 		p := ps[name]
-		pv := pipelineView{Name: p.Name, Description: p.Description, Entry: p.Entry, Sources: p.Sources}
+		pv := pipelineView{Name: p.Name, Description: p.Description, Entry: p.Entry, Sources: p.Sources, InputSchema: p.InputSchema()}
 		for _, param := range p.ParamNames() {
 			pv.Params = append(pv.Params, paramView{Name: param, Param: *p.Params[param]})
 		}
@@ -242,6 +252,9 @@ func (s *Server) handlePipelines(w http.ResponseWriter, r *http.Request) {
 				From:           n.From,
 				Until:          n.Until,
 				Params:         n.Params,
+			}
+			if n.Output != nil {
+				nv.Output = &outputView{Schema: n.Output.Schema, OnInvalid: n.InvalidPolicy(), MaxRepairs: n.RepairLimit()}
 			}
 			for _, route := range n.Handoff {
 				nv.Handoff = append(nv.Handoff, handoffView{To: route.To, Condition: route.Condition})

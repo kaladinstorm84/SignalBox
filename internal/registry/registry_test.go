@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -256,5 +257,35 @@ func TestInstallRejectsTamperingInvalidPackagesAndClashes(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(target.Root, "pipelines", "flow.yaml")); !os.IsNotExist(err) {
 		t.Fatal("refused install wrote files")
+	}
+}
+
+func TestPublishBundlesSchemasAndInstallMapsSchemasDir(t *testing.T) {
+	r := newRegistry(t)
+	pub := project(t, "version: 1\nschemas_dir: contracts\nruntimes:\n  mock: {type: mock}\n", map[string]string{
+		"pipelines/typed.yaml":   "name: typed\ninput: {schema: request}\nentry: a\nagents:\n  - id: a\n    runtime: mock\n    output: {schema: result}\n",
+		"contracts/request.json": `{"type":"object"}`,
+		"contracts/result.yaml":  "type: object\nrequired: [ok]\n",
+		"contracts/unused.json":  `{"type":"object"}`,
+	})
+	m, err := r.Publish(pub, "typed", PublishOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, f := range m.Files {
+		paths = append(paths, f.Path)
+	}
+	if m.SchemasDir != "contracts" || strings.Join(paths, ",") != "contracts/request.json,contracts/result.yaml,pipelines/typed.yaml" {
+		t.Fatalf("manifest = %+v", m)
+	}
+	consumer := project(t, "version: 1\nruntimes:\n  mock: {type: mock}\n", nil)
+	result, err := r.Install(consumer, "typed", InstallOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(result.Written)
+	if strings.Join(result.Written, ",") != "pipelines/typed.yaml,schemas/request.json,schemas/result.yaml" {
+		t.Fatalf("written = %v", result.Written)
 	}
 }

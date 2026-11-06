@@ -59,12 +59,15 @@ type Manifest struct {
 	PublishedBy   string    `json:"published_by,omitempty"`
 	// Entry is the pipeline file's path; PipelinesDir is the publisher's
 	// pipelines directory, so installs can map it to the consumer's.
-	Entry        string   `json:"entry"`
-	PipelinesDir string   `json:"pipelines_dir"`
-	Runtimes     []string `json:"runtimes,omitempty"`
-	Params       []string `json:"params,omitempty"`
-	Files        []File   `json:"files"`
-	Digest       string   `json:"digest"`
+	Entry        string `json:"entry"`
+	PipelinesDir string `json:"pipelines_dir"`
+	// SchemasDir is the publisher's schemas directory, when the package
+	// bundles JSON Schema files.
+	SchemasDir string   `json:"schemas_dir,omitempty"`
+	Runtimes   []string `json:"runtimes,omitempty"`
+	Params     []string `json:"params,omitempty"`
+	Files      []File   `json:"files"`
+	Digest     string   `json:"digest"`
 }
 
 // Summary is one package in search results.
@@ -372,11 +375,29 @@ func (r *Registry) Publish(cfg *config.Config, name string, opts PublishOptions)
 		}
 	}
 
+	schemasDir := ""
+	for _, name := range p.SchemaNames() {
+		sch := p.SchemaFor(name)
+		if sch == nil {
+			return nil, fmt.Errorf("schema %q is not loaded", name)
+		}
+		if err := add(sch.Path, "schema"); err != nil {
+			return nil, err
+		}
+		if schemasDir == "" {
+			if schemasDir, err = filepath.Rel(root, cfg.SchemasPath()); err != nil {
+				return nil, err
+			}
+			schemasDir = filepath.ToSlash(schemasDir)
+		}
+	}
+
 	pipelinesDir, err := filepath.Rel(root, cfg.PipelinesPath())
 	if err != nil {
 		return nil, err
 	}
 	m := &Manifest{
+		SchemasDir:    schemasDir,
 		Name:          name,
 		Version:       version,
 		Description:   p.Description,
@@ -472,9 +493,17 @@ func (r *Registry) Install(cfg *config.Config, ref string, opts InstallOptions) 
 		return nil, err
 	}
 	pipelinesDir = path.Clean(filepath.ToSlash(pipelinesDir))
+	schemasDir, err := filepath.Rel(root, cfg.SchemasPath())
+	if err != nil {
+		return nil, err
+	}
+	schemasDir = path.Clean(filepath.ToSlash(schemasDir))
 	targets := map[string]string{}
 	for rel := range contents {
 		target := mapPath(rel, m.PipelinesDir, pipelinesDir)
+		if m.SchemasDir != "" && strings.HasPrefix(rel, path.Clean(m.SchemasDir)+"/") {
+			target = mapPath(rel, m.SchemasDir, schemasDir)
+		}
 		if err := safeRel(target); err != nil {
 			return nil, fmt.Errorf("package %s@%s: %w", name, version, err)
 		}
@@ -502,7 +531,7 @@ func (r *Registry) Install(cfg *config.Config, ref string, opts InstallOptions) 
 	}
 	stageCfg := *cfg
 	stageCfg.Root = stage
-	p, err := pipeline.Load(filepath.Join(stage, filepath.FromSlash(entryTarget)), pipeline.Options{Root: stage})
+	p, err := pipeline.Load(filepath.Join(stage, filepath.FromSlash(entryTarget)), pipeline.Options{Root: stage, SchemasDir: filepath.Join(stage, filepath.FromSlash(schemasDir))})
 	if err != nil {
 		return nil, fmt.Errorf("package %s@%s is not a valid pipeline: %w", name, version, err)
 	}
@@ -654,7 +683,7 @@ func writeAtomic(dst string, data []byte) error {
 
 // Publishable lists project pipelines that can be published, by name.
 func Publishable(cfg *config.Config) ([]string, error) {
-	pipelines, errs := pipeline.LoadDir(cfg.PipelinesPath(), pipeline.Options{Root: cfg.Root, AllowExternal: cfg.AllowExternalImports})
+	pipelines, errs := pipeline.LoadDir(cfg.PipelinesPath(), pipeline.Options{Root: cfg.Root, AllowExternal: cfg.AllowExternalImports, SchemasDir: cfg.SchemasPath()})
 	if len(errs) > 0 && len(pipelines) == 0 {
 		return nil, errs[0]
 	}
@@ -675,7 +704,7 @@ func findPipeline(cfg *config.Config, name string) (string, *pipeline.Pipeline, 
 	if err != nil {
 		return "", nil, err
 	}
-	opts := pipeline.Options{Root: cfg.Root, AllowExternal: cfg.AllowExternalImports}
+	opts := pipeline.Options{Root: cfg.Root, AllowExternal: cfg.AllowExternalImports, SchemasDir: cfg.SchemasPath()}
 	var loadErrs []string
 	for _, e := range entries {
 		ext := strings.ToLower(filepath.Ext(e.Name()))

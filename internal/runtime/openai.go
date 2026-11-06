@@ -51,8 +51,20 @@ func newOpenAI(name string, rc config.RuntimeConfig) (Runtime, error) {
 func (o *openAI) Name() string { return o.name }
 
 type chatRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
+	Model          string          `json:"model"`
+	Messages       []chatMessage   `json:"messages"`
+	ResponseFormat *responseFormat `json:"response_format,omitempty"`
+}
+
+type responseFormat struct {
+	Type       string          `json:"type"`
+	JSONSchema *jsonSchemaSpec `json:"json_schema,omitempty"`
+}
+
+type jsonSchemaSpec struct {
+	Name   string          `json:"name"`
+	Schema json.RawMessage `json:"schema"`
+	Strict bool            `json:"strict"`
 }
 
 type chatMessage struct {
@@ -84,7 +96,7 @@ func (o *openAI) Invoke(ctx context.Context, req Request) (string, error) {
 	if req.Model != "" {
 		model = req.Model
 	}
-	body, err := json.Marshal(chatRequest{Model: model, Messages: messages})
+	body, err := json.Marshal(chatRequest{Model: model, Messages: messages, ResponseFormat: responseFormatFor(req)})
 	if err != nil {
 		return "", err
 	}
@@ -119,6 +131,40 @@ func (o *openAI) Invoke(ctx context.Context, req Request) (string, error) {
 		return "", fmt.Errorf("API returned no choices")
 	}
 	return strings.TrimSpace(parsed.Choices[0].Message.Content), nil
+}
+
+// responseFormatFor requests native structured output. Strict mode is off
+// because it only accepts a subset of JSON Schema; SignalBox validates the
+// response itself.
+func responseFormatFor(req Request) *responseFormat {
+	if req.Schema == nil {
+		return nil
+	}
+	return &responseFormat{Type: "json_schema", JSONSchema: &jsonSchemaSpec{
+		Name:   openAISchemaName(req.Schema.Name),
+		Schema: json.RawMessage(req.Schema.JSON),
+	}}
+}
+
+// openAISchemaName keeps to the API's name rules: a-z, A-Z, 0-9, _ and -,
+// at most 64 characters.
+func openAISchemaName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if r == '_' || r == '-' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	out := b.String()
+	if out == "" {
+		out = "response"
+	}
+	if len(out) > 64 {
+		out = out[:64]
+	}
+	return out
 }
 
 func truncate(s string, n int) string {

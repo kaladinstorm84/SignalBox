@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Support ticket",
+  "description": "Input accepted by the structured-triage pipeline.",
+  "type": "object",
+  "required": ["customer", "summary"],
+  "properties": {
+    "customer": {"type": "string", "minLength": 1},
+    "summary": {"type": "string", "minLength": 5},
+    "amount": {"type": "number", "minimum": 0}
+  },
+  "additionalProperties": false
+}

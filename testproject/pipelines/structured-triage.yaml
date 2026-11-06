@@ -1,0 +1,89 @@
+# Demo: structured responses with routing on output fields.
+#
+# Run it with JSON input that matches schemas/ticket.json, for example:
+#
+#   {"customer": "Acme", "summary": "Invoice total does not match the order", "amount": 1200}
+#
+# Anything else (plain text, a missing summary, extra fields) is rejected
+# before the execution starts.
+#
+# The triage agent must answer with JSON matching schemas/triage.json. The
+# mock runtime generates a conforming sample (severity "high"); a real agent
+# gets the schema in its prompt (or as response_format for openai) and is
+# re-run with the validation errors if it gets it wrong.
+#
+# Handoffs read the validated fields: severity "high" goes to on_call with a
+# template built from the fields, anything else goes to the support queue.
+# The review gate's verdict is validated against review-verdict.yaml and its
+# "confidence" field decides whether a human double-checks the answer.
+name: structured-triage
+description: >-
+  Structured responses: JSON input and output schemas, routing on output
+  fields, {{ output.field }} templates and a schema-validated gate verdict.
+input:
+  schema: ticket
+entry: triage
+
+agents:
+  - id: triage
+    runtime: mock
+    description: Classifies the ticket into schema-validated JSON.
+    prompt: |
+      Classify the support ticket. Pick a category and severity, summarise
+      the problem and list the next actions with an owner for each.
+    output:
+      schema: triage
+      max_repairs: 2
+    handoff:
+      - to: on_call
+        condition: output.severity == "high"
+        input: |
+          Escalation: {{ output.category }} issue — {{ output.summary }}
+          First action ({{ output.actions.0.owner }}): {{ output.actions.0.step }}
+
+          Full triage:
+          {{ output }}
+      - to: support_queue
+        condition: output.severity != "high"
+
+  - id: on_call
+    runtime: mock
+    description: Drafts the reply for a high-severity ticket.
+    prompt: |
+      Draft an urgent customer reply from the escalation notes.
+    handoff: [review]
+
+  - id: support_queue
+    runtime: mock
+    description: Drafts a standard reply.
+    prompt: |
+      Draft a standard reply from the triage.
+    handoff: [review]
+
+  - id: review
+    type: llm_gate
+    runtime: mock
+    description: Checks the reply; the verdict is validated against review-verdict.
+    prompt: |
+      Check the reply is accurate, polite and answers the ticket. Say how
+      confident you are.
+    output:
+      schema: review-verdict
+    reject-to: on_call
+    max_reworks: 1
+    handoff:
+      - to: send
+        condition: output.confidence == "high"
+      - to: double_check
+        condition: output.confidence == "low"
+
+  - id: double_check
+    type: approval
+    description: A human checks replies the reviewer was unsure about.
+    handoff: [send]
+
+  - id: send
+    runtime: mock
+    description: Formats the approved reply.
+    prompt: |
+      Format the reply for sending.

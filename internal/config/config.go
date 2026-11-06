@@ -83,9 +83,12 @@ type WatcherConfig struct {
 
 // Config is the parsed signalbox.yaml.
 type Config struct {
-	Version            int                      `yaml:"version"`
-	Project            string                   `yaml:"project"`
-	PipelinesDir       string                   `yaml:"pipelines_dir,omitempty"`
+	Version      int    `yaml:"version"`
+	Project      string `yaml:"project"`
+	PipelinesDir string `yaml:"pipelines_dir,omitempty"`
+	// SchemasDir holds JSON Schema files for structured output (default
+	// schemas). It must stay inside the project root.
+	SchemasDir         string                   `yaml:"schemas_dir,omitempty"`
 	StateDir           string                   `yaml:"state_dir,omitempty"`
 	ExecutionRetention *int                     `yaml:"execution_retention,omitempty"`
 	MaxConcurrentCalls int                      `yaml:"max_concurrent_calls,omitempty"`
@@ -168,6 +171,9 @@ func (c *Config) applyDefaults() {
 	if c.PipelinesDir == "" {
 		c.PipelinesDir = "pipelines"
 	}
+	if c.SchemasDir == "" {
+		c.SchemasDir = "schemas"
+	}
 	if c.StateDir == "" {
 		c.StateDir = ".signalbox"
 	}
@@ -195,6 +201,9 @@ func (c *Config) validate() error {
 	}
 	if len(c.Runtimes) == 0 {
 		return fmt.Errorf("no runtimes defined")
+	}
+	if rel := filepath.Clean(filepath.FromSlash(c.SchemasDir)); filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("schemas_dir %q must be a relative path inside the project root", c.SchemasDir)
 	}
 	for name, r := range c.Runtimes {
 		switch r.Type {
@@ -265,6 +274,9 @@ func (c *Config) validate() error {
 
 // PipelinesPath returns the absolute pipelines directory.
 func (c *Config) PipelinesPath() string { return filepath.Join(c.Root, c.PipelinesDir) }
+
+// SchemasPath returns the schemas directory.
+func (c *Config) SchemasPath() string { return filepath.Join(c.Root, filepath.FromSlash(c.SchemasDir)) }
 
 // StatePath returns the absolute state directory (execution history).
 func (c *Config) StatePath() string { return filepath.Join(c.Root, c.StateDir) }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/kaladinstorm84/SignalBox/internal/config"
 	"github.com/kaladinstorm84/SignalBox/internal/pipeline"
+	"github.com/kaladinstorm84/SignalBox/internal/schema"
 )
 
 // Request is a single agent invocation.
@@ -21,6 +22,10 @@ type Request struct {
 	Model string
 	// MCP lists the MCP servers and tools granted to this call.
 	MCP []MCPGrant
+	// Schema, when set, is the JSON Schema the response must conform to.
+	// OpenAI runtimes request it natively; CLI runtimes receive it as prompt
+	// instructions; the mock returns a conforming sample.
+	Schema *schema.Schema
 }
 
 // MCPGrant records one MCP server and the tools an agent was allowed to use.

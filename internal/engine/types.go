@@ -63,6 +63,18 @@ type StageRun struct {
 	ownerRunID string
 }
 
+// SchemaAttempt is one validation of a run's output against its schema.
+type SchemaAttempt struct {
+	Attempt int  `json:"attempt"`
+	Valid   bool `json:"valid"`
+	// Errors lists validation failures; empty when valid.
+	Errors []string `json:"errors,omitempty"`
+	// Output is the raw answer (truncated), kept for invalid attempts and
+	// for valid ones whose text differs from the normalized document.
+	Output string    `json:"output,omitempty"`
+	At     time.Time `json:"at"`
+}
+
 // NodeRun is one invocation of a pipeline node within an execution.
 type NodeRun struct {
 	ID                      string            `json:"id"`
@@ -99,6 +111,15 @@ type NodeRun struct {
 	DecisionSource string `json:"decision_source,omitempty"`
 	Decision       string `json:"decision,omitempty"`
 	GateReworks    int    `json:"gate_reworks,omitempty"`
+
+	// Schema names the JSON Schema the run's output (or, for an llm_gate,
+	// its verdict) must conform to.
+	Schema string `json:"schema,omitempty"`
+	// SchemaAttempts records each validation of the output; repairs add
+	// attempts.
+	SchemaAttempts []SchemaAttempt `json:"schema_attempts,omitempty"`
+	// Verdict is an llm_gate's schema-validated verdict document.
+	Verdict string `json:"verdict,omitempty"`
 
 	// Session is populated for session runs: rounds, turns, and outcome.
 	Session *SessionRun `json:"session,omitempty"`

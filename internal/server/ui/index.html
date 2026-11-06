@@ -237,6 +237,15 @@
   .recovery-warnings { margin: 8px 0 0; padding-left: 20px; color: var(--warn); font-size: 12.5px; }
   .reused-badge { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; padding: 1px 7px; border-radius: 3px;
                   border: 1px dashed var(--purple); color: var(--purple); text-decoration: none; }
+  .schema-badge { font-size: 11px; letter-spacing: .4px; padding: 1px 7px; border-radius: 3px; font-family: ui-monospace, Consolas, monospace;
+                  border: 1px solid var(--accent2); color: var(--accent2); }
+  .schema-badge.bad { border-color: var(--err); color: var(--err); }
+  .schema-attempt { margin: 8px 0; padding: 6px 10px; border-left: 3px solid var(--err); }
+  .schema-attempt.ok { border-left-color: var(--ok); }
+  .schema-attempt ul { margin: 4px 0; padding-left: 20px; font-size: 12.5px; }
+  .schema-ok { color: var(--ok); }
+  .schema-bad { color: var(--err); }
+  .schemas-card details { margin-top: 8px; }
   .registry-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 14px; align-items: start; }
   .registry-grid > div { min-width: 0; }
   .registry-grid pre.out { max-width: 100%; overflow: auto; }
@@ -611,7 +620,7 @@ function renderRun(x, r) {
     </div>`).join('');
   const outputContent = r.format
     ? `<div class="markdown">${r.output_html || esc(r.output)}<details data-key="${esc(r.id)}:raw"><summary>raw Markdown</summary><pre class="out">${esc(r.output)}</pre></details></div>`
-    : `<pre class="out">${esc(r.output)}</pre>`;
+    : `<pre class="out">${esc(r.output)}</pre>${r.type !== 'llm_gate' ? rawAnswer(r) : ''}`;
 
   return `
   <div class="runcard ${waiting || manualEdit ? 'waiting' : ''} ${retryable ? 'retry' : ''} st-${esc(r.status)}">
@@ -622,6 +631,7 @@ function renderRun(x, r) {
       ${r.from_node_id ? `<span class="muted">← ${esc(r.from_node_id)}</span>` : '<span class="muted">entry</span>'}
       ${r.stage_id ? `<span class="muted">in stage ${esc(r.stage_id)}</span>` : ''}
       ${r.retries ? `<span class="muted">${r.retries} ${r.retries === 1 ? 'retry' : 'retries'}</span>` : ''}
+      ${schemaBadge(r)}
       ${r.reused_from ? `<a class="reused-badge" href="#/exec/${encodeURIComponent(r.reused_from)}" title="Carried over from ${esc(r.reused_from)} instead of being repeated">reused</a>` : ''}
       <span class="muted" style="margin-left:auto">${fmtTime(r.started_at)}</span>
       ${restartable ? `<button class="secondary sm" title="New execution that keeps unaffected completed work and reruns this node and everything after it" onclick="restartRun('${esc(x.id)}', {run_id: '${esc(r.id)}'}, this)">Restart from here</button>` : ''}
@@ -643,7 +653,9 @@ function renderRun(x, r) {
     ${r.context ? renderContext(r) : ''}
     ${r.session ? renderSession(r) : ''}
     ${stages}
-    ${r.output ? `<details data-key="${esc(r.id)}:output" ${!r.stages ? 'open' : ''}><summary>${r.format ? 'formatted output' : 'output'}</summary>${outputContent}</details>` : ''}
+    ${renderSchemaCheck(r)}
+    ${r.output ? `<details data-key="${esc(r.id)}:output" ${!r.stages ? 'open' : ''}><summary>${r.format ? 'formatted output' : r.schema && r.type !== 'llm_gate' ? `output <span class="muted">(${esc(r.schema)} JSON)</span>` : 'output'}</summary>${outputContent}</details>` : ''}
+    ${r.verdict ? `<details data-key="${esc(r.id)}:verdict" open><summary>verdict <span class="muted">(${esc(r.schema)} JSON)</span></summary><pre class="out">${esc(r.verdict)}</pre>${rawAnswer(r)}</details>` : ''}
     ${r.edited_by ? `<div class="muted" style="margin-top:8px">Edited by ${esc(r.edited_by)}</div>` : ''}
     ${r.decision_source === 'llm_gate' ? `<div class="muted" style="margin-top:8px">LLM gate ${esc(r.decision || r.status)}${r.gate_reworks ? ` · rework ${r.gate_reworks}` : ''}${r.comment ? ': ' + esc(r.comment) : ''}</div>` : ''}
     ${r.approved_by ? `<div class="muted" style="margin-top:8px">${r.status === 'rejected' ? 'Rejected' : 'Approved'} by ${esc(r.approved_by)}${r.comment ? ': ' + esc(r.comment) : ''}</div>` : ''}
@@ -673,6 +685,42 @@ function applyParams(p, params) {
   if (!params) return p;
   const sub = s => s && s.replace(/\$\{\{\s*params\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g, (m, k) => k in params ? params[k] : m);
   return {...p, description: sub(p.description), nodes: p.nodes.map(n => ({...n, description: sub(n.description), model: sub(n.model)}))};
+}
+
+// outputLabel describes a node's structured-output contract.
+function outputLabel(o) {
+  if (!o) return '';
+  const policy = o.on_invalid === 'fail' ? 'fails if invalid' : `up to ${o.max_repairs} ${o.max_repairs === 1 ? 'repair' : 'repairs'}`;
+  return `output schema ${o.schema} · ${policy}`;
+}
+
+// renderSchemaCheck lists each validation of a run's output; repairs show
+// the rejected output and the errors fed back to the agent.
+function renderSchemaCheck(r) {
+  const attempts = r.schema_attempts || [];
+  if (!attempts.length || (attempts.length === 1 && attempts[0].valid)) return '';
+  return `<details data-key="${esc(r.id)}:schema" ${attempts.some(a => a.valid) ? '' : 'open'}><summary>schema checks (${attempts.length})</summary>
+    ${attempts.map(a => `<div class="schema-attempt ${a.valid ? 'ok' : 'bad'}"><b>Attempt ${a.attempt}</b> ${a.valid ? '<span class="schema-ok">valid</span>' : '<span class="schema-bad">invalid</span>'}
+      ${(a.errors || []).length ? `<ul>${a.errors.map(e => `<li class="mono">${esc(e)}</li>`).join('')}</ul>` : ''}
+      ${a.output && !a.valid ? `<details data-key="${esc(r.id)}:schema:${a.attempt}"><summary>rejected output</summary><pre class="out">${esc(a.output)}</pre></details>` : ''}</div>`).join('')}
+  </details>`;
+}
+
+// rawAnswer is the accepted answer as the agent wrote it, when SignalBox
+// extracted the JSON from surrounding text.
+function rawAnswer(r) {
+  const attempts = r.schema_attempts || [];
+  const last = attempts[attempts.length - 1];
+  return last && last.valid && last.output ? `<details data-key="${esc(r.id)}:rawanswer"><summary>raw answer</summary><pre class="out">${esc(last.output)}</pre></details>` : '';
+}
+
+function schemaBadge(r) {
+  if (!r.schema) return '';
+  const attempts = r.schema_attempts || [];
+  const last = attempts[attempts.length - 1];
+  const state = !last ? '' : last.valid ? ' ✓' : ' ✗';
+  const repairs = attempts.length > 1 ? ` · ${attempts.length - 1} ${attempts.length === 2 ? 'repair' : 'repairs'}` : '';
+  return `<span class="schema-badge ${last && !last.valid ? 'bad' : ''}" title="Output validated against schema ${esc(r.schema)}">schema ${esc(r.schema)}${state}${repairs}</span>`;
 }
 
 // integrationsLabel describes a model override and MCP servers/tools. Session
@@ -1115,7 +1163,8 @@ function flowDiagram(p, execution = null) {
       : n.type === 'pipeline'
         ? ` · runs pipeline ${n.pipeline}${n.from || n.until ? ` from ${n.from || 'its entry'} until ${n.until || 'the end'}` : ''}${n.params && Object.keys(n.params).length ? ' · params: ' + Object.keys(n.params).sort().map(k => `${k}=${n.params[k]}`).join(', ') : ''}`
         : '';            const contextTip = contextLabel(n.context) ? ' · ' + contextLabel(n.context) : '';
-    const tip = n.type === 'ref' ? (it.missing ? `${n.id} (not defined)` : `continues at ${n.id}`) : `${it.num}. ${n.id} · ${n.type}${n.description ? ' — ' + n.description : ''}${sessionTip}${contextTip}${status ? ' · ' + status : ''}`;
+    const outputTip = n.output ? ' · ' + outputLabel(n.output) : '';
+    const tip = n.type === 'ref' ? (it.missing ? `${n.id} (not defined)` : `continues at ${n.id}`) : `${it.num}. ${n.id} · ${n.type}${n.description ? ' — ' + n.description : ''}${sessionTip}${contextTip}${outputTip}${status ? ' · ' + status : ''}`;
     out.push(`<g class="node" data-node-id="${esc(n.id)}"><title>${esc(tip)}</title>`);
     if (n.type === 'orchestrator') {
       out.push(`<rect x="${x}" y="${y - 11}" width="${it.w}" height="22" fill="#c8732a" stroke="#7a3f12" stroke-width="1" />`);
@@ -1546,6 +1595,7 @@ async function showNewRun() {
       ? `<div class="params-form"><div class="params-title">Parameters</div>${p.params.map(paramField).join('')}</div>` : '';
     if (!p) { info.textContent = ''; return; }
     info.innerHTML = `${p.description ? esc(p.description) + '<br>' : ''}
+      ${p.input_schema ? `<div class="muted">Input must be a JSON document matching schema <span class="mono">${esc(p.input_schema)}</span> (see Pipelines → Schemas).</div>` : ''}
       <div style="margin-top:6px">${flowDiagram(p)}</div>`;
   };
   sel.addEventListener('change', describe); describe();
@@ -1573,7 +1623,8 @@ async function showPipelines() {
   const actions = `<div class="topline"><h2>Pipelines</h2><div class="approve-actions" style="margin-top:0">
     <button class="secondary" onclick="location.hash='#/pipelines/edit'">Edit pipeline files</button>
     <button onclick="location.hash='#/pipelines/new'">New pipeline</button></div></div>`;
-  try { [pipelines, files] = await Promise.all([api('/pipelines', {cache: 'no-store'}), api('/pipeline-files', {cache: 'no-store'})]); }
+  let schemas = {schemas: []};
+  try { [pipelines, files, schemas] = await Promise.all([api('/pipelines', {cache: 'no-store'}), api('/pipeline-files', {cache: 'no-store'}), api('/schemas', {cache: 'no-store'}).catch(() => ({schemas: []}))]); }
   catch (e) { $main.innerHTML = `${actions}<div class="err-banner" role="alert">${esc(e.message)}</div>`; return; }
   const filenameByName = new Map(files.filter(file => file.name).map(file => [file.name, file.filename]));
   $main.innerHTML = `
@@ -1583,7 +1634,8 @@ async function showPipelines() {
         <div class="topline"><div><b style="font-size:16px">${esc(p.name)}</b>
         ${p.description ? `<div class="muted">${esc(p.description)}</div>` : ''}
         ${p.params && p.params.length ? `<div class="muted">params: ${p.params.map(q => `<span class="mono">${esc(q.name)}</span>${q.required ? '*' : ''}`).join(', ')}</div>` : ''}
-        ${p.sources && p.sources.length ? `<div class="muted">imports: ${p.sources.map(src => `<span class="mono">${esc(src)}</span>`).join(', ')}</div>` : ''}</div>
+        ${p.sources && p.sources.length ? `<div class="muted">imports: ${p.sources.map(src => `<span class="mono">${esc(src)}</span>`).join(', ')}</div>` : ''}
+        ${p.input_schema ? `<div class="muted">input schema: <span class="mono">${esc(p.input_schema)}</span></div>` : ''}</div>
         <div class="approve-actions" style="margin-top:0">${filenameByName.has(p.name) ? `<button class="secondary" data-edit-file="${esc(filenameByName.get(p.name))}">Edit</button>` : ''}
         <button class="secondary" onclick="location.hash='#/new'">Run</button></div></div>
         <div style="margin-top:10px">${flowDiagram(p)}</div>
@@ -1593,11 +1645,17 @@ async function showPipelines() {
             <td><b>${esc(n.id)}</b>${n.id === p.entry ? ' <span class="muted">(entry)</span>' : ''}
             ${n.description ? `<div class="muted">${esc(n.description)}</div>` : ''}</td>
             <td><span class="type ${esc(n.type)}">${esc(n.type)}</span></td>
-            <td class="mono">${n.type === 'code' ? `${esc(n.language)}<div class="muted">${esc(n.code_source)}</div>` : n.type === 'session' ? `<div class="muted">${(n.participants || []).map(esc).join(', ')}</div><div class="muted">${n.max_rounds} rounds · ${esc(n.consensus ? n.consensus.method : '')}${n.chunks && n.chunks.enabled ? ' · chunks' : ''}</div>` : n.type === 'pipeline' ? `→ ${esc(n.pipeline)}${n.from || n.until ? `<div class="muted">${esc(n.from || 'entry')} … ${esc(n.until || 'end')}</div>` : ''}${n.params && Object.keys(n.params).length ? `<div class="muted">params: ${Object.keys(n.params).sort().map(esc).join(', ')}</div>` : ''}` : esc(n.runtime || '—')}${contextLabel(n.context) ? `<div class="muted">${esc(contextLabel(n.context))}</div>` : ''}${integrationsLabel(n.model, n.mcp) ? `<div class="muted">${integrationsLabel(n.model, n.mcp)}</div>` : ''}</td>
+            <td class="mono">${n.type === 'code' ? `${esc(n.language)}<div class="muted">${esc(n.code_source)}</div>` : n.type === 'session' ? `<div class="muted">${(n.participants || []).map(esc).join(', ')}</div><div class="muted">${n.max_rounds} rounds · ${esc(n.consensus ? n.consensus.method : '')}${n.chunks && n.chunks.enabled ? ' · chunks' : ''}</div>` : n.type === 'pipeline' ? `→ ${esc(n.pipeline)}${n.from || n.until ? `<div class="muted">${esc(n.from || 'entry')} … ${esc(n.until || 'end')}</div>` : ''}${n.params && Object.keys(n.params).length ? `<div class="muted">params: ${Object.keys(n.params).sort().map(esc).join(', ')}</div>` : ''}` : esc(n.runtime || '—')}${contextLabel(n.context) ? `<div class="muted">${esc(contextLabel(n.context))}</div>` : ''}${integrationsLabel(n.model, n.mcp) ? `<div class="muted">${integrationsLabel(n.model, n.mcp)}</div>` : ''}${n.output ? `<div class="muted">${esc(outputLabel(n.output))}</div>` : ''}</td>
             <td>${n.stages ? n.stages.map(s => `<div class="muted">stage <b>${esc(s.id)}</b> → ${s.agents.map(esc).join(', ')}</div>`).join('') : ''}
                 ${(n.handoff || []).map(route => typeof route === 'string' ? esc(route) : `${esc(route.to)}${route.condition ? ` (${esc(route.condition)})` : ''}`).join(', ') || (n.stages ? '' : '<span class="muted">terminates</span>')}</td>
           </tr>`).join('')}</tbody></table>
-      </div>`).join('') || '<div class="empty">No pipelines found.</div>'}`;
+      </div>`).join('') || '<div class="empty">No pipelines found.</div>'}
+    ${(schemas.schemas || []).length || (schemas.errors || []).length ? `
+      <div class="card schemas-card"><b style="font-size:16px">Schemas</b>
+        <div class="muted">JSON Schema files in <span class="mono">${esc(schemas.dir || 'schemas')}/</span> that structure and validate agent output.</div>
+        ${(schemas.errors || []).map(e => `<div class="err-banner" style="margin:8px 0 0">${esc(e)}</div>`).join('')}
+        ${(schemas.schemas || []).map(s => `<details data-key="schema:${esc(s.name)}"><summary><b class="mono">${esc(s.name)}</b> <span class="muted">${esc(s.file)}${s.used_by && s.used_by.length ? ' · used by ' + s.used_by.map(esc).join(', ') : ' · unused'}</span></summary><pre class="out">${esc(JSON.stringify(s.schema, null, 2))}</pre></details>`).join('')}
+      </div>` : ''}`;
   $main.querySelectorAll('[data-edit-file]').forEach(button => button.addEventListener('click', () => {
     location.hash = '#/pipelines/edit/' + encodeURIComponent(button.dataset.editFile);
   }));

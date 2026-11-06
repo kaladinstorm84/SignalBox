@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaladinstorm84/SignalBox/internal/schema"
 	"gopkg.in/yaml.v3"
 )
 
@@ -165,6 +166,8 @@ type Node struct {
 	AdditionalInput []string `yaml:"additional-input,omitempty"`
 	// Context selects earlier execution outputs to append to runtime input.
 	Context *ContextConfig `yaml:"context,omitempty"`
+	// Output requires JSON output conforming to a project schema.
+	Output *OutputSpec `yaml:"output,omitempty"`
 	// Format requests rendered Markdown presentation for this node's output.
 	Format         bool           `yaml:"format,omitempty"`
 	Language       string         `yaml:"language,omitempty"`
@@ -238,10 +241,13 @@ type Pipeline struct {
 	// Params declares typed values supplied when an execution starts and
 	// referenced as ${{ params.name }}.
 	Params map[string]*Param `yaml:"params,omitempty"`
+	// Input optionally validates the initial input against a schema.
+	Input *InputSpec `yaml:"input,omitempty"`
 	// Sources lists files merged in through imports, in load order.
 	Sources []string `yaml:"-"`
 
-	byID map[string]*Node
+	byID    map[string]*Node
+	schemas map[string]*schema.Schema
 	// joins maps a scope key (TopScope or StageScope) to the number of
 	// deliveries each non-orchestrator node receives within that scope.
 	joins  map[string]map[string]int
@@ -380,6 +386,10 @@ func LoadDir(dir string, opts ...Options) (map[string]*Pipeline, []error) {
 	if err != nil {
 		return out, []error{err}
 	}
+	if len(opts) > 0 && opts[0].Schemas == nil && opts[0].SchemasDir != "" {
+		opts = []Options{opts[0]}
+		opts[0].Schemas, _ = schema.LoadDir(opts[0].SchemasDir)
+	}
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -427,6 +437,9 @@ func (p *Pipeline) validate() error {
 		return fmt.Errorf("pipeline %q has no agents", p.Name)
 	}
 	if err := p.validateParams(); err != nil {
+		return fmt.Errorf("pipeline %q: %w", p.Name, err)
+	}
+	if err := p.validateInputSpec(); err != nil {
 		return fmt.Errorf("pipeline %q: %w", p.Name, err)
 	}
 	p.byID = map[string]*Node{}
@@ -654,9 +667,21 @@ func (p *Pipeline) validateNode(n *Node) error {
 		seenAdditional[id] = true
 	}
 
+	if err := validateOutputSpec(n); err != nil {
+		return err
+	}
+	structured := n.OutputSchema() != ""
 	seenRoutes := map[string]bool{}
 	for i := range n.Handoff {
 		route := &n.Handoff[i]
+		if schema.IsFieldCondition(route.Condition) {
+			if !structured {
+				return fmt.Errorf("agent %q: field condition %q requires output.schema on the agent", n.ID, route.Condition)
+			}
+			if _, err := schema.ParseCondition(route.Condition); err != nil {
+				return fmt.Errorf("agent %q: %w", n.ID, err)
+			}
+		}
 		switch route.Condition {
 		case "", "always":
 		case "on_approve", "on_reject":
@@ -668,7 +693,9 @@ func (p *Pipeline) validateNode(n *Node) error {
 				return fmt.Errorf("agent %q: handoff condition %q is only supported on session nodes", n.ID, route.Condition)
 			}
 		default:
-			return fmt.Errorf("agent %q: unknown handoff condition %q (want always, on_approve, on_reject, on_consensus, or on_no_consensus)", n.ID, route.Condition)
+			if !schema.IsFieldCondition(route.Condition) {
+				return fmt.Errorf("agent %q: unknown handoff condition %q (want always, on_approve, on_reject, on_consensus, on_no_consensus, or a field comparison such as output.risk == \"high\")", n.ID, route.Condition)
+			}
 		}
 		if route.To == "" {
 			return fmt.Errorf("agent %q has a handoff with no target", n.ID)
@@ -684,7 +711,7 @@ func (p *Pipeline) validateNode(n *Node) error {
 			return fmt.Errorf("agent %q repeats handoff to %q for condition %q", n.ID, route.To, route.Condition)
 		}
 		seenRoutes[key] = true
-		if err := validateHandoffTemplate(stripParamRefs(route.Input)); err != nil {
+		if err := validateHandoffTemplate(stripParamRefs(route.Input), structured); err != nil {
 			return fmt.Errorf("agent %q handoff to %q: %w", n.ID, route.To, err)
 		}
 	}
@@ -852,7 +879,7 @@ func (p *Pipeline) validateNode(n *Node) error {
 	return nil
 }
 
-func validateHandoffTemplate(template string) error {
+func validateHandoffTemplate(template string, structured bool) error {
 	for remaining := template; ; {
 		start := strings.Index(remaining, "{{")
 		if start < 0 {
@@ -872,7 +899,16 @@ func validateHandoffTemplate(template string) error {
 		switch name {
 		case "input", "output", "comment":
 		default:
-			return fmt.Errorf("unknown input template value %q (want input, output, or comment)", name)
+			_, isField, err := schema.ParseFieldRef(name)
+			if !isField {
+				return fmt.Errorf("unknown input template value %q (want input, output, output.<field>, or comment)", name)
+			}
+			if err != nil {
+				return err
+			}
+			if !structured {
+				return fmt.Errorf("input template %q requires output.schema on the agent", name)
+			}
 		}
 		remaining = remaining[start+2+end+2:]
 	}

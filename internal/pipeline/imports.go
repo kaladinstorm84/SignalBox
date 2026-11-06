@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/kaladinstorm84/SignalBox/internal/schema"
 	"gopkg.in/yaml.v3"
 )
 
@@ -24,6 +25,11 @@ type Options struct {
 	// AllowExternal permits imports outside Root (signalbox.yaml
 	// allow_external_imports).
 	AllowExternal bool
+	// SchemasDir holds the project's JSON Schema files (default
+	// Root/schemas).
+	SchemasDir string
+	// Schemas, when set, is used instead of loading SchemasDir.
+	Schemas *schema.Set
 }
 
 // ParseFile validates pipeline YAML read from path, resolving imports
@@ -76,7 +82,16 @@ func parse(data []byte, path string, opts Options) (*Pipeline, error) {
 	if err := p.validate(); err != nil {
 		return nil, err
 	}
+	if err := p.resolveSchemas(opts); err != nil {
+		return nil, err
+	}
 	return &p, nil
+}
+
+// ParseWith validates pipeline YAML from memory using opts for schema
+// resolution. Imports are not available without a file location.
+func ParseWith(data []byte, opts Options) (*Pipeline, error) {
+	return parse(data, "", opts)
 }
 
 type entry struct {

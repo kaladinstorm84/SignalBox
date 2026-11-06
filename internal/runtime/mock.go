@@ -35,6 +35,9 @@ func (m *Mock) Invoke(ctx context.Context, req Request) (string, error) {
 	if m.Handler != nil {
 		return m.Handler(ctx, req)
 	}
+	if req.Schema != nil {
+		return req.Schema.Sample(), nil
+	}
 	role := firstLine(req.SystemPrompt)
 	if role == "" {
 		role = "agent"

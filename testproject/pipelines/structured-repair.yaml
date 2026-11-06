@@ -1,0 +1,46 @@
+# Demo: schema repair.
+#
+# libs/invoice_extract.py prints an invoice that breaks schemas/invoice.json
+# on its first call. With on_invalid: repair, SignalBox feeds the validation
+# errors back and runs it again; the second answer conforms. Open the
+# extract run to see both schema checks, the rejected output and the errors.
+#
+# Code nodes fail on invalid output by default (deterministic scripts rarely
+# fix themselves); agents repair by default. Set on_invalid: fail to stop at
+# the first invalid answer, or max_repairs to change the number of retries.
+#
+# The routing after extract reads the validated currency field.
+name: structured-repair
+description: >-
+  Structured responses: a script's invalid JSON is repaired using the schema
+  validation errors, then the validated total routes the invoice.
+entry: extract
+
+agents:
+  - id: extract
+    type: code
+    language: python
+    code-source: libs/invoice_extract.py
+    description: Sloppy extractor — invalid first, fixed after repair feedback.
+    output:
+      schema: invoice
+      on_invalid: repair
+      max_repairs: 2
+    handoff:
+      - to: domestic
+        condition: output.currency == "GBP"
+        input: "{{ output.supplier }} invoice {{ output.invoice }}: {{ output.total }} {{ output.currency }} across {{ output.lines.0.item }} and more"
+      - to: foreign_exchange
+        condition: output.currency != "GBP"
+
+  - id: domestic
+    runtime: mock
+    description: Books a sterling invoice.
+    prompt: |
+      Summarise the invoice for the finance team.
+
+  - id: foreign_exchange
+    runtime: mock
+    description: Books a foreign-currency invoice.
+    prompt: |
+      Convert the invoice total to GBP and summarise it.

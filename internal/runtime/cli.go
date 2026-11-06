@@ -113,6 +113,9 @@ func (c *cliRuntime) Invoke(ctx context.Context, req Request) (string, error) {
 	if req.SystemPrompt != "" {
 		prompt = req.SystemPrompt + "\n\n---\n\n" + req.Input
 	}
+	if req.Schema != nil {
+		prompt += "\n\n---\n\n" + req.Schema.Instructions()
+	}
 
 	extra, env, cleanup, err := c.integrationArgs(req)
 	if err != nil {

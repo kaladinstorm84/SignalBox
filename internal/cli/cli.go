@@ -17,6 +17,7 @@ import (
 	"github.com/kaladinstorm84/SignalBox/internal/engine"
 	"github.com/kaladinstorm84/SignalBox/internal/pipeline"
 	"github.com/kaladinstorm84/SignalBox/internal/runtime"
+	"github.com/kaladinstorm84/SignalBox/internal/schema"
 	"github.com/kaladinstorm84/SignalBox/internal/server"
 	"github.com/kaladinstorm84/SignalBox/internal/watcher"
 )
@@ -146,6 +147,17 @@ func cmdValidate(args []string) error {
 		return err
 	}
 	fmt.Printf("config  %s: OK (%d runtimes)\n", config.FileName, len(cfg.Runtimes))
+	set, schemaErrs := schema.LoadDir(cfg.SchemasPath())
+	if len(schemaErrs) > 0 {
+		msgs := make([]string, len(schemaErrs))
+		for i, e := range schemaErrs {
+			msgs[i] = "  " + e.Error()
+		}
+		return fmt.Errorf("invalid schemas in %s:\n%s", cfg.SchemasDir, strings.Join(msgs, "\n"))
+	}
+	for _, sch := range set.List() {
+		fmt.Printf("schema  %q: OK (%s)\n", sch.Name, sch.File)
+	}
 	for _, name := range pipeline.Names(pipelines) {
 		p := pipelines[name]
 		fmt.Printf("pipeline %q: OK (%d agents, entry %q)\n", p.Name, len(p.Nodes), p.Entry)
@@ -349,6 +361,8 @@ func printProgress(eng *engine.Engine, execID string, seen map[string]engine.Sta
 		}
 		if r.Error != "" {
 			detail += ": " + r.Error
+		} else if n := len(r.SchemaAttempts); n > 1 && r.Status == engine.StatusCompleted {
+			detail += fmt.Sprintf(" (schema %s valid after %d repair(s))", r.Schema, n-1)
 		}
 		fmt.Printf("[%s] %-18s %s%s\n", time.Now().Format("15:04:05"), r.Status, r.NodeID, detail)
 	}
@@ -383,7 +397,7 @@ func loadProject() (*config.Config, map[string]*pipeline.Pipeline, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	pipelines, errs := pipeline.LoadDir(cfg.PipelinesPath(), pipeline.Options{Root: cfg.Root, AllowExternal: cfg.AllowExternalImports})
+	pipelines, errs := pipeline.LoadDir(cfg.PipelinesPath(), pipeline.Options{Root: cfg.Root, AllowExternal: cfg.AllowExternalImports, SchemasDir: cfg.SchemasPath()})
 	if len(errs) > 0 {
 		msgs := make([]string, len(errs))
 		for i, e := range errs {

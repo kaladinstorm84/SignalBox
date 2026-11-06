@@ -412,13 +412,13 @@ func (eng *Engine) Restart(execID string, opts RestartOptions) (string, error) {
 		if sourceNode == nil {
 			continue
 		}
-		for _, route := range selectHandoffs(sourceNode, runOutcome(run)) {
+		for _, route := range selectHandoffs(sourceNode, runOutcome(run), structuredDoc(run, run.Output)) {
 			if !downstream[route.To] || route.To == node.ID {
 				continue
 			}
 			input := run.Output
 			if route.Input != "" {
-				input = renderHandoffTemplate(route.Input, run.Input, run.Output, run.Comment)
+				input = renderHandoffTemplate(route.Input, run.Input, run.Output, run.Comment, structuredDoc(run, run.Output))
 			}
 			le.joinExpected[route.To]++
 			seeds = append(seeds, seed{to: route.To, input: input, from: run.NodeID})

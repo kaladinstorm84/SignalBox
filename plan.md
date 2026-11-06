@@ -95,6 +95,81 @@ Acceptance: Recovery tests verify that completed work is not repeated unnecessar
 
 Allow references to sections in other pipelines
 
+7. Structured responses
+Let an agent's output be constrained to a JSON Schema stored in the project, validated by the engine, and used by later nodes.
+
+### Schema files
+
+Add a schemas directory (`schemas_dir` in signalbox.yaml, default `schemas/`) holding JSON Schema files in JSON or YAML, referenced by name from a node: `output: { schema: invoice }`.
+Keep schema files inside the project root, with the same rules as imports. Validate every referenced schema at load time and in `signalbox validate`, reporting unknown names and invalid schemas.
+Support a documented JSON Schema draft through an existing Go validator library rather than a hand-written one.
+
+### Producing structured output
+
+Pass the schema to runtimes through the runtime request:
+- Use native support where it exists, for example OpenAI `response_format: json_schema`, or a CLI flag configured per runtime like `model_arg`.
+- Otherwise, append schema instructions to the prompt.
+- The mock runtime should return a sample document that matches the schema.
+
+Apply the same schema to code node stdout. Optionally allow `input: { schema: ... }` on a pipeline so the run input is validated before the execution starts.
+
+### Validation and repair
+
+Parse and validate every output against its schema; the first `{...}` or fenced JSON block may be extracted from surrounding text.
+On invalid output, apply `on_invalid: repair | fail` with a bounded `max_repairs`:
+- `repair` re-invokes the same agent with the validation errors appended.
+- Keep repairs distinct from runtime retries, which repeat a failed call, and from gate rework, which sends accepted output back for quality reasons.
+- Record each attempt and its validation errors on the run.
+
+### Using structured data downstream
+
+Expose validated fields to handoff payload templates and conditions, for example `${{ output.total }}` and a condition on `output.risk == "high"`.
+Extend the existing small template and condition language with field paths and simple comparisons only, with no arbitrary expressions.
+Let LLM gates and llm_gate feedback use a schema too, so verdicts are machine-checked.
+
+### UI, API, and distribution
+
+- Show the schema name on nodes and run cards.
+- Render validated output as formatted JSON with a collapsible raw view.
+- Show the validation errors for each attempt.
+- Serve schemas through `GET /api/schemas`.
+- Bundle referenced schemas when publishing to the registry.
+
+Acceptance: Pipelines without `output.schema` behave exactly as before. Tests cover schema loading and errors, valid and invalid outputs, JSON extraction, repair limits, failure reporting, field access in templates and conditions, and code node validation. Demo pipelines use the mock and code runtimes only.
+
+8. Upload files
+Allow files to be attached to an execution and made available to the agents that opt in.
+
+### Declaring and attaching files
+
+A pipeline declares the files it accepts, either as `files: { required, max_count, extensions }` or as params with `type: file`. Validation errors are reported before the execution starts.
+Attach files in three places: the New run form (drag-and-drop), `signalbox run|start --file path` (repeatable), and multipart `POST /api/executions`.
+Add project limits in signalbox.yaml (`uploads: { max_bytes, max_files, allowed_extensions }`) with safe defaults.
+
+### Storage
+
+Store uploads under `state_dir/uploads/<execution>/` with sanitised names (no path traversal), size, content type, and SHA-256 hash recorded on the execution.
+Never execute uploads. Serve downloads as attachments with `X-Content-Type-Options: nosniff`.
+Delete uploads with their execution and its retention. Reruns and restarts reuse the source execution's files, deduplicated by hash.
+
+### Giving files to agents
+
+Files are opt-in per node, `files: inline | path | none`, defaulting to `none` so existing pipelines are unchanged:
+- `inline` appends text files to the input with `--- file: name ---` headers, capped by a character budget. Binary files are listed but not inlined.
+- `path` copies the files into a per-run working folder and passes their paths to local CLI runtimes (codex, claude, copilot, cli) and to code nodes through `SIGNALBOX_FILES_DIR`.
+- Image and PDF support for API runtimes is a later step, limited to where the provider supports it.
+
+Pipeline nodes can pass files to child executions with `files: inherit`.
+Files that match a declared schema (item 7) can be validated on upload.
+
+### UI and API
+
+- List attached files on the execution page with sizes and download links.
+- Show which nodes received them.
+- Let approvers and manual editors open the files while reviewing.
+
+Acceptance: Uploads respect limits, are stored and served safely, survive reloads, and are removed with their execution. Tests cover validation, name sanitising, the inline budget, path delivery to CLI and code nodes, inheritance by child pipelines, and reuse by restart and rerun. The Docker setup documents that the state volume holds uploads. Demo pipelines use the mock and code runtimes only.
+
 
 ## Suggested delivery order
 - Routing and retry foundations, then automated gates.
@@ -102,4 +177,5 @@ Allow references to sections in other pipelines
 - Context assembly, since sessions and ordinary nodes can both benefit from it.
 - Parameters and local imports/inheritance, followed by MCP and any provider additions.
 - Stage-level recovery and CLI operations, then consider a registry once the schema is stable.
+- Structured responses before uploads, so uploaded data files can reuse schema validation.
 - Across all phases, add schema and engine tests first, then API/UI support; update the README with the user-facing YAML and behavior. Preserve existing pipeline semantics by making new fields opt-in and providing tests that demonstrate old pipeline files still validate and run.

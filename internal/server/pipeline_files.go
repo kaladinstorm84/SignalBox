@@ -215,7 +215,7 @@ func (s *Server) handleSavePipelineFile(w http.ResponseWriter, r *http.Request) 
 }
 
 func pipelineOptions(cfg *config.Config) pipeline.Options {
-	return pipeline.Options{Root: cfg.Root, AllowExternal: cfg.AllowExternalImports}
+	return pipeline.Options{Root: cfg.Root, AllowExternal: cfg.AllowExternalImports, SchemasDir: cfg.SchemasPath()}
 }
 
 func createPipelineFile(path string, content []byte) error {

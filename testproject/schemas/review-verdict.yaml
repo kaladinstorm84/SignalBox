@@ -1,0 +1,16 @@
+# YAML schema files work too. llm_gate verdict schemas must allow the
+# "decision" and "feedback" strings the gate needs; extra fields can be used
+# in handoff conditions and templates.
+title: Review verdict
+type: object
+required: [decision, feedback, confidence]
+properties:
+  decision:
+    enum: [approve, reject]
+  feedback:
+    type: string
+  confidence:
+    enum: [high, low]
+  issues:
+    type: array
+    items: {type: string}

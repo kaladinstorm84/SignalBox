@@ -19,6 +19,7 @@ import (
 
 	"github.com/kaladinstorm84/SignalBox/internal/pipeline"
 	"github.com/kaladinstorm84/SignalBox/internal/runtime"
+	"github.com/kaladinstorm84/SignalBox/internal/schema"
 )
 
 // Engine runs executions. One mutex guards all execution state; runtime
@@ -201,6 +202,11 @@ func (eng *Engine) startLocked(spec startSpec) (*liveExec, error) {
 	p, resolved, err := template.WithParams(spec.params)
 	if err != nil {
 		return nil, err
+	}
+	if spec.from == "" {
+		if err := validateInput(p, spec.input); err != nil {
+			return nil, err
+		}
 	}
 	for _, id := range []string{spec.from, spec.until} {
 		if id != "" && p.Node(id) == nil {
@@ -722,6 +728,9 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 	now := time.Now().UTC()
 	run.Status = StatusRunning
 	run.StartedAt = &now
+	run.Schema = node.OutputSchema()
+	run.SchemaAttempts = nil
+	run.Verdict = ""
 	if run.Context == nil && node.ContextStrategy() != pipeline.ContextNone {
 		run.Context = selectContext(node.Context, le.exec.Runs, run)
 	}
@@ -746,15 +755,16 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 		return
 	}
 
-	var invoke func() (string, error)
+	var invokeWith func(input string) (string, error)
+	sch := le.p.SchemaFor(node.OutputSchema())
 	if node.Type == pipeline.TypeCode {
 		rt, err := runtime.NewCode(node, eng.projectRoot)
 		if err != nil {
 			eng.finishRunErr(le, run, node, octx, err)
 			return
 		}
-		invoke = func() (string, error) {
-			return rt.Invoke(le.ctx, runtime.Request{Input: runtimeInput(run)})
+		invokeWith = func(input string) (string, error) {
+			return rt.Invoke(le.ctx, runtime.Request{Input: input})
 		}
 	} else {
 		rt, err := eng.registry.Get(node.Runtime)
@@ -762,19 +772,33 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 			eng.finishRunErr(le, run, node, octx, err)
 			return
 		}
-		invoke = func() (string, error) {
-			return rt.Invoke(le.ctx, agentRequest(run, node.Prompt, runtimeInput(run)))
+		invokeWith = func(input string) (string, error) {
+			req := agentRequest(run, node.Prompt, input)
+			req.Schema = sch
+			return rt.Invoke(le.ctx, req)
 		}
 	}
-	out, err := eng.invokeRetrying(le, run, node.Retry, invoke)
-	if err != nil {
+	retrying := func(input string) (string, error) {
+		return eng.invokeRetrying(le, run, node.Retry, func() (string, error) { return invokeWith(input) })
+	}
+	fail := func(out string, err error) {
 		var outcome *runtime.CodeOutcomeError
 		if errors.As(err, &outcome) && outcome.Outcome == "retry" {
 			eng.finishRunRejected(le, run, node, octx, outcome.Feedback, out)
 			return
 		}
 		eng.finishRunErr(le, run, node, octx, err)
+	}
+	out, err := retrying(runtimeInput(run))
+	if err != nil {
+		fail(out, err)
 		return
+	}
+	if sch != nil {
+		if out, err = eng.conform(le, run, node, sch, out, schemaCheck(sch), retrying); err != nil {
+			fail(out, err)
+			return
+		}
 	}
 	eng.finishRunOK(le, run, node, out, octx, "")
 }
@@ -837,35 +861,48 @@ func (eng *Engine) runLLMGate(le *liveExec, run *NodeRun, node *pipeline.Node, o
 		eng.finishRunErr(le, run, node, octx, err)
 		return
 	}
-	verdictText, err := eng.invokeRetrying(le, run, node.Retry, func() (string, error) {
-		prompt := node.Prompt + "\n\nReturn only one JSON object with exactly two string fields, decision and feedback. " +
-			`decision must be "approve" or "reject". Example: {"decision":"approve","feedback":"..."}.`
-		return rt.Invoke(le.ctx, agentRequest(run, prompt, runtimeInput(run)))
-	})
+	sch := le.p.SchemaFor(node.OutputSchema())
+	prompt := node.Prompt + "\n\nReturn only one JSON object with exactly two string fields, decision and feedback. " +
+		`decision must be "approve" or "reject". Example: {"decision":"approve","feedback":"..."}.`
+	if sch != nil {
+		prompt = node.Prompt + "\n\nReturn only one JSON object conforming to the schema below. It must include the string fields decision and feedback; " +
+			`decision must be "approve" or "reject".`
+	}
+	retrying := func(input string) (string, error) {
+		return eng.invokeRetrying(le, run, node.Retry, func() (string, error) {
+			req := agentRequest(run, prompt, input)
+			req.Schema = sch
+			return rt.Invoke(le.ctx, req)
+		})
+	}
+	verdictText, err := retrying(runtimeInput(run))
 	if err != nil {
 		eng.finishRunErr(le, run, node, octx, err)
 		return
 	}
 	var verdict gateVerdict
-	decoder := json.NewDecoder(strings.NewReader(verdictText))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&verdict); err != nil {
-		eng.finishRunErr(le, run, node, octx, fmt.Errorf("llm_gate %q returned invalid JSON verdict: %w", node.ID, err))
-		return
-	}
-	if err := decoder.Decode(new(any)); err == nil {
-		eng.finishRunErr(le, run, node, octx, fmt.Errorf("llm_gate %q returned more than one JSON value", node.ID))
-		return
-	} else if !errors.Is(err, io.EOF) {
-		eng.finishRunErr(le, run, node, octx, fmt.Errorf("llm_gate %q returned invalid trailing data: %w", node.ID, err))
-		return
-	}
-	if verdict.Decision == nil || verdict.Feedback == nil {
-		eng.finishRunErr(le, run, node, octx, fmt.Errorf("llm_gate %q verdict must include decision and feedback", node.ID))
-		return
-	}
-	if *verdict.Decision != "approve" && *verdict.Decision != "reject" {
-		eng.finishRunErr(le, run, node, octx, fmt.Errorf("llm_gate %q returned decision %q; want approve or reject", node.ID, *verdict.Decision))
+	if sch != nil {
+		check := func(text string) (string, []string) {
+			res := sch.Check(text)
+			if len(res.Errors) > 0 {
+				return res.JSON, res.Errors
+			}
+			return res.JSON, verdictErrors(res.Value)
+		}
+		normalized, err := eng.conform(le, run, node, sch, verdictText, check, retrying)
+		if err != nil {
+			eng.finishRunErr(le, run, node, octx, err)
+			return
+		}
+		if err := json.Unmarshal([]byte(normalized), &verdict); err != nil {
+			eng.finishRunErr(le, run, node, octx, fmt.Errorf("llm_gate %q returned invalid JSON verdict: %w", node.ID, err))
+			return
+		}
+		eng.mu.Lock()
+		run.Verdict = normalized
+		eng.mu.Unlock()
+	} else if verdict, err = parseStrictVerdict(node, verdictText); err != nil {
+		eng.finishRunErr(le, run, node, octx, err)
 		return
 	}
 
@@ -883,6 +920,29 @@ func (eng *Engine) runLLMGate(le *liveExec, run *NodeRun, node *pipeline.Node, o
 		return
 	}
 	eng.finishRunRejected(le, run, node, octx, *verdict.Feedback, run.Input)
+}
+
+// parseStrictVerdict parses a gate verdict without a schema: exactly one
+// JSON object with only decision and feedback.
+func parseStrictVerdict(node *pipeline.Node, verdictText string) (gateVerdict, error) {
+	var verdict gateVerdict
+	decoder := json.NewDecoder(strings.NewReader(verdictText))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&verdict); err != nil {
+		return verdict, fmt.Errorf("llm_gate %q returned invalid JSON verdict: %w", node.ID, err)
+	}
+	if err := decoder.Decode(new(any)); err == nil {
+		return verdict, fmt.Errorf("llm_gate %q returned more than one JSON value", node.ID)
+	} else if !errors.Is(err, io.EOF) {
+		return verdict, fmt.Errorf("llm_gate %q returned invalid trailing data: %w", node.ID, err)
+	}
+	if verdict.Decision == nil || verdict.Feedback == nil {
+		return verdict, fmt.Errorf("llm_gate %q verdict must include decision and feedback", node.ID)
+	}
+	if *verdict.Decision != "approve" && *verdict.Decision != "reject" {
+		return verdict, fmt.Errorf("llm_gate %q returned decision %q; want approve or reject", node.ID, *verdict.Decision)
+	}
+	return verdict, nil
 }
 
 func (eng *Engine) runManualEdit(le *liveExec, run *NodeRun, node *pipeline.Node, octx *stageState) {
@@ -956,7 +1016,7 @@ func (eng *Engine) finishRunRejected(le *liveExec, run *NodeRun, node *pipeline.
 		reworked = eng.reworkAfterRejectionLocked(le, run, node, octx, note, work)
 	}
 	if !reworked && !limitReached && !le.exec.Status.Terminal() {
-		selected := selectHandoffs(node, "reject")
+		selected := selectHandoffs(node, "reject", nil)
 		if hasExplicitRejectRoute(node) && len(selected) > 0 {
 			eng.deactivateHandoffsLocked(le, node, selected, octx, work)
 			eng.routeRunLocked(le, run, node, selected, output, octx, work)
@@ -1109,7 +1169,7 @@ func (eng *Engine) finishRunOK(le *liveExec, run *NodeRun, node *pipeline.Node, 
 	if work != nil && work.returnTo == run.NodeID {
 		work = nil
 	}
-	selected := selectHandoffs(node, outcome)
+	selected := selectHandoffs(node, outcome, structuredDoc(run, output))
 	if run.NodeID == le.stopAt && octx == nil {
 		// The end of a chained section: nothing after it runs, and its
 		// output is a final output of the child execution.
@@ -1146,7 +1206,7 @@ func (eng *Engine) finishRunOK(le *liveExec, run *NodeRun, node *pipeline.Node, 
 	eng.persistLocked(le)
 }
 
-func selectHandoffs(node *pipeline.Node, outcome string) []pipeline.HandoffRule {
+func selectHandoffs(node *pipeline.Node, outcome string, doc any) []pipeline.HandoffRule {
 	var selected []pipeline.HandoffRule
 	for _, route := range node.Handoff {
 		switch route.Condition {
@@ -1172,6 +1232,15 @@ func selectHandoffs(node *pipeline.Node, outcome string) []pipeline.HandoffRule 
 			if outcome == "reject" {
 				selected = append(selected, route)
 			}
+		default:
+			// A field comparison routes like an unconditional handoff when
+			// it holds against the structured output.
+			if outcome == "reject" || outcome == OutcomeNoConsensus {
+				continue
+			}
+			if cond, err := schema.ParseCondition(route.Condition); err == nil && cond.Eval(doc) {
+				selected = append(selected, route)
+			}
 		}
 	}
 	return selected
@@ -1187,16 +1256,17 @@ func hasExplicitRejectRoute(node *pipeline.Node) bool {
 }
 
 func (eng *Engine) routeRunLocked(le *liveExec, run *NodeRun, node *pipeline.Node, routes []pipeline.HandoffRule, output string, octx *stageState, work *reworkState) {
+	doc := structuredDoc(run, output)
 	for _, route := range routes {
 		input := output
 		if route.Input != "" {
-			input = renderHandoffTemplate(route.Input, run.Input, output, run.Comment)
+			input = renderHandoffTemplate(route.Input, run.Input, output, run.Comment, doc)
 		}
 		eng.deliverLocked(le, route.To, input, node.ID, octx, work)
 	}
 }
 
-func renderHandoffTemplate(template, input, output, comment string) string {
+func renderHandoffTemplate(template, input, output, comment string, doc any) string {
 	var rendered strings.Builder
 	for i := 0; i < len(template); {
 		start := strings.Index(template[i:], "{{")
@@ -1215,6 +1285,10 @@ func renderHandoffTemplate(template, input, output, comment string) string {
 			rendered.WriteString(output)
 		case "comment":
 			rendered.WriteString(comment)
+		default:
+			if path, ok, err := schema.ParseFieldRef(name); ok && err == nil {
+				rendered.WriteString(schema.Render(schema.Lookup(doc, path)))
+			}
 		}
 		i = end + 2
 	}

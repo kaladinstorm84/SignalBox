@@ -1124,3 +1124,84 @@ agents:
 		t.Fatalf("node view = %v", node)
 	}
 }
+
+func TestSchemasAPIAndStructuredPipelineView(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		config.FileName:        "version: 1\nruntimes:\n  mock: {type: mock}\n",
+		"schemas/triage.json":  `{"type":"object","required":["risk"],"properties":{"risk":{"enum":["low","high"]}}}`,
+		"schemas/broken.json":  `{"type":`,
+		"pipelines/typed.yaml": "name: typed\ninput: {schema: triage}\nentry: a\nagents:\n  - id: a\n    runtime: mock\n    output: {schema: triage}\n",
+	}
+	for rel, content := range files {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pipelines, errs := pipeline.LoadDir(cfg.PipelinesPath(), pipeline.Options{Root: root, SchemasDir: cfg.SchemasPath()})
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	registry, err := runtime.NewRegistry(cfg.Runtimes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng, err := engine.New(pipelines, registry, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := New(eng, "test", func() (map[string]*pipeline.Pipeline, error) { return pipelines, nil }, nil, nil, root).Handler()
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/schemas", nil))
+	var listing struct {
+		Dir     string `json:"dir"`
+		Schemas []struct {
+			Name   string         `json:"name"`
+			File   string         `json:"file"`
+			Schema map[string]any `json:"schema"`
+			UsedBy []string       `json:"used_by"`
+		} `json:"schemas"`
+		Errors []string `json:"errors"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &listing); err != nil {
+		t.Fatal(err)
+	}
+	if listing.Dir != "schemas" || len(listing.Schemas) != 1 || listing.Schemas[0].File != "triage.json" ||
+		listing.Schemas[0].Schema["type"] != "object" || strings.Join(listing.Schemas[0].UsedBy, ",") != "typed/input,typed/a" ||
+		len(listing.Errors) != 1 || !strings.Contains(listing.Errors[0], "broken") {
+		t.Fatalf("schemas = %s", response.Body.String())
+	}
+
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/pipelines", nil))
+	var views []struct {
+		InputSchema string `json:"input_schema"`
+		Nodes       []struct {
+			Output *struct {
+				Schema     string `json:"schema"`
+				OnInvalid  string `json:"on_invalid"`
+				MaxRepairs int    `json:"max_repairs"`
+			} `json:"output"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &views); err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 || views[0].InputSchema != "triage" || views[0].Nodes[0].Output == nil ||
+		*views[0].Nodes[0].Output != (struct {
+			Schema     string `json:"schema"`
+			OnInvalid  string `json:"on_invalid"`
+			MaxRepairs int    `json:"max_repairs"`
+		}{"triage", "repair", 2}) {
+		t.Fatalf("pipelines = %s", response.Body.String())
+	}
+}
