@@ -148,3 +148,43 @@ agents:
 const gitignoreTemplate = `# SignalBox execution state
 .signalbox/
 `
+
+const agentsTemplate = `# SignalBox Project Guide
+
+This directory is a SignalBox project. Pipelines are YAML files that define
+agents, code steps, quality gates and human approvals.
+
+## Project layout
+
+- signalbox.yaml configures runtimes, paths and the server.
+- pipelines/ contains executable pipeline definitions.
+- shared/ contains reusable pipeline and agent templates.
+- schemas/ contains JSON Schemas used by pipelines.
+- libs/ contains scripts used by code steps.
+- .signalbox/ stores local execution state; do not edit or commit it.
+
+## Working in this project
+
+- Check the existing config and pipeline conventions before making changes.
+- Keep changes within the requested project files; do not add runtimes or
+  change project configuration unless asked.
+- Never put API keys, passwords or other secrets in project files. Use
+  environment variables for credentials.
+- Prefer deterministic code steps for parsing, calculations and validation.
+  Prompts should specify the task, evidence requirements and expected output.
+- Run signalbox validate after changing signalbox.yaml, pipelines/, shared/
+  or schemas/, and address all reported errors.
+- Test code-step scripts with representative input, including error cases.
+
+## Pipeline conventions
+
+- Keep each pipeline in its own .yaml file under pipelines/.
+- Use descriptive agent IDs and prompts that state the role, task and output
+  format. Ask agents to cite evidence and identify uncertainty rather than
+  inventing facts.
+- Give approval and quality-gate nodes concrete review criteria.
+- Reuse shared templates where appropriate, and keep reusable files outside
+  pipelines/ so they are not loaded as standalone pipelines.
+- Include a sample command when documenting a pipeline:
+  signalbox run <pipeline> --input "..."
+`

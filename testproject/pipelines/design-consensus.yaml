@@ -1,0 +1,103 @@
+# Run: signalbox run design-consensus --input "Design a service for ..."
+name: design-consensus
+description: >-
+  A Codex, Copilot and Claude design council that debates a proposal and
+  produces a design only after all three participants agree.
+entry: design_brief
+
+agents:
+  - id: design_brief
+    type: standard
+    runtime: codex
+    description: Shapes the request into a concise design brief for review.
+    prompt: |
+      Turn the request into a concise design brief containing the goal, users,
+      important workflows, stated constraints and open questions. Keep known
+      facts separate from assumptions. Do not invent requirements or
+      implementation details. End with a proposed approach for the council to
+      review.
+    handoff: [design_council]
+
+  - id: design_council
+    type: session
+    description: Three-runtime design review requiring unanimous agreement.
+    participants: [codex_architect, copilot_designer, claude_reviewer]
+    turn_order: round_robin
+    max_rounds: 5
+    summary_agent: codex_architect
+    consensus:
+      method: vote
+      keyword: "VOTE: AGREE"
+      require: all
+    handoff:
+      - to: design_record
+        condition: on_consensus
+        input: |
+          The design council reached unanimous agreement. Write the final
+          design from this session summary:
+          {{ output }}
+      - to: unresolved_design
+        condition: on_no_consensus
+        input: |
+          The design council did not reach unanimous agreement. From the
+          session record, summarize the competing proposals, unresolved
+          questions and the decisions needed to proceed:
+          {{ output }}
+
+  - id: codex_architect
+    type: standard
+    runtime: codex
+    description: Develops the technical architecture and summarizes agreement.
+    prompt: |
+      You are the software architect. Evaluate whether the proposal is
+      coherent, feasible and appropriately simple. Identify component
+      boundaries, data flow and important trade-offs. Respond to specific
+      objections from the other participants and revise the proposal when
+      warranted. Vote only when you agree with the complete current design.
+      When asked for the final summary, record the agreed design, rationale,
+      alternatives rejected and remaining open questions.
+
+  - id: copilot_designer
+    type: standard
+    runtime: copilot
+    description: Reviews usability, workflows and product behavior.
+    prompt: |
+      You are the product and interaction designer. Evaluate whether the
+      proposed design supports the users' goals and workflows. Identify unclear
+      behavior, accessibility or usability concerns, and product trade-offs.
+      Suggest concrete changes and respond to the other participants' points.
+      Vote only when you agree with the complete current design; otherwise
+      state what must change before you can agree.
+
+  - id: claude_reviewer
+    type: standard
+    runtime: claude
+    description: Challenges assumptions and reviews reliability and risk.
+    prompt: |
+      You are the critical design reviewer. Challenge unsupported assumptions
+      and examine reliability, failure modes, privacy and operational risks
+      relevant to the proposal. Distinguish material issues from preferences,
+      and propose practical mitigations. Respond to the other participants'
+      reasoning. Vote only when you agree with the complete current design;
+      otherwise state the remaining blockers.
+
+  - id: design_record
+    type: standard
+    runtime: codex
+    format: true
+    description: Produces a concise record of the unanimously agreed design.
+    prompt: |
+      Write a concise design record with context, goals, the agreed design,
+      key decisions and rationale, consequences, and any remaining open
+      questions. Do not add decisions that were not agreed in the session.
+
+  - id: unresolved_design
+    type: standard
+    runtime: codex
+    format: true
+    description: Records disagreements and decisions needed after the session.
+    prompt: |
+      Write a concise unresolved-design report. List the competing proposals,
+      each unresolved concern, any facts or assumptions that need verification,
+      and the specific decisions needed to reach agreement. Do not present an
+      unapproved proposal as the final design.

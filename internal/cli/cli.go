@@ -28,7 +28,7 @@ var Version = "dev"
 const usage = `SignalBox - YAML based AI agent workflow system with human approvals.
 
 Usage:
-  signalbox init [dir] [--force]     Create signalbox.yaml and a default pipeline
+	signalbox init [dir] [--force]     Create a project config, pipeline and AGENTS.md
   signalbox validate                 Validate the config and all pipelines
   signalbox serve [--addr host:port] Serve the tracking & launch web UI
   signalbox run <pipeline> [--input text] [--param k=v]...  Run a pipeline in the terminal
@@ -109,6 +109,7 @@ func cmdInit(args []string) error {
 		filepath.Join(abs, config.FileName):             fmt.Sprintf(configTemplate, project),
 		filepath.Join(abs, "pipelines", "default.yaml"): defaultPipelineTemplate,
 		filepath.Join(abs, ".gitignore"):                gitignoreTemplate,
+		filepath.Join(abs, "AGENTS.md"):                 agentsTemplate,
 	}
 	for path, content := range files {
 		if _, err := os.Stat(path); err == nil && !*force {

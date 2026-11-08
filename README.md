@@ -913,6 +913,8 @@ prints the build version.
   and attention counts without counting the parent pipeline twice. Completed
   and failed totals cover retained execution history (including children), not
   just the latest page. Active runs and recent activity link to execution details.
+
+  ![SignalBox dashboard with pipeline activity and recent executions](image/dashboard.png)
 - **Executions** — live list of every run with status and pending-approval
   badges; click through to a per-agent timeline showing inputs, outputs,
   orchestrator stages, and errors. The execution page includes a live pipeline
@@ -920,6 +922,8 @@ prints the build version.
   work. Running nodes are green, failures/retry waits/rejections are red,
   waiting nodes are amber, completed nodes are green, and canceled/interrupted
   nodes are gray.
+
+  ![Completed execution showing its pipeline diagram and agent run details](image/workflow.png)
 - **New run** — pick a pipeline, preview its agent flow, and send an input
   into it. Opening New run (or clicking it again) reloads pipeline YAML from
   disk, so added and edited pipelines are available without restarting the server.
@@ -1182,6 +1186,10 @@ agents:
     runtime: mock
     prompt: You are the publisher. Format the approved draft for delivery.
 ```
+
+Example pipeline YAML in the editor:
+
+![Pipeline YAML definition shown in the editor](image/sample.png)
 
 Validation catches unknown handoff, additional-input, and rejection targets;
 normal handoff/dependency cycles; unreachable agents (including rejection-only

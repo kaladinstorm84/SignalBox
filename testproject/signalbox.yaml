@@ -28,11 +28,11 @@ runtimes:
   #   api_key_env: OPENAI_API_KEY   # key is read from this env var
   #   # base_url: https://api.openai.com/v1   # any OpenAI-compatible endpoint
 
-  # claude:
-  #   type: claude                  # runs: claude -p "<prompt>"
-  #   # command: claude
-  #   # args: ["-p"]
-  #   # timeout_seconds: 600
+  claude:
+    type: claude                    # runs: claude -p "<prompt>"
+    # command: claude
+    # args: ["-p"]
+    # timeout_seconds: 600
 
   codex:
      type: codex                   # runs: codex exec "<prompt>"
@@ -40,8 +40,8 @@ runtimes:
      # reasoning_effort: high      # depends on the selected model
      # speed: fast                 # fast uses priority service and may cost more
 
-  # copilot:
-  #   type: copilot                 # runs: copilot -p "<prompt>"
+  copilot:
+    type: copilot                   # runs: copilot -p "<prompt>"
 
   # custom:
   #   type: cli
