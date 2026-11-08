@@ -1,0 +1,274 @@
+# Manuscript assessment with editorial advice.
+#
+# Attach one manuscript (.txt, .md or .docx) and, optionally, describe your
+# goals as the run input:
+#
+#   signalbox run manuscript-review --file samples/manuscript-sample.md \
+#     --param genre="literary mystery" --param audience="adult" \
+#     --input "First novel; querying agents next spring. Worried the middle drags."
+#
+# A script profiles the manuscript (length, chapter map, prose heuristics).
+# Five specialist editors then read the full manuscript in parallel and return
+# schema-checked notes. A senior editor writes the editorial letter, a gate
+# checks it against the manuscript, and a human editor signs it off.
+#
+# Editors read the manuscript by path (files: path), so book-length work is
+# not truncated. This needs a CLI runtime (codex, claude or copilot); the
+# openai runtime cannot read files by path.
+name: manuscript-review
+description: >-
+  Assess an uploaded manuscript: profile it, gather structure, character,
+  prose, continuity and market notes in parallel, and produce a prioritised
+  editorial letter for human sign-off.
+files:
+  required: true
+  max_count: 1
+  extensions: [.txt, .md, .docx]
+params:
+  genre:
+    default: Not specified; infer it from the manuscript and say so.
+    description: Genre or category, e.g. "cosy mystery" or "literary fiction".
+  audience:
+    default: General adult readers
+    description: Intended readership, e.g. "middle grade" or "adult".
+  edit_depth:
+    values: [developmental, line, full]
+    default: full
+    description: Emphasis of the advice. Every editor still reports major problems.
+entry: manuscript_profile
+
+templates:
+  - id: editor
+    type: standard
+    runtime: codex
+    retry: {count: 2, backoff: 2s}
+
+  - id: specialist_editor
+    extends: editor
+    files: path
+    output:
+      schema: editorial-notes
+      on_invalid: repair
+      max_repairs: 2
+
+agents:
+  - id: manuscript_profile
+    type: code
+    language: python
+    code-source: libs/manuscript_profile.py
+    description: Profiles length, chapters and prose patterns; repeats the author brief.
+    files: path
+    timeout_seconds: 120
+    handoff: [editorial_board]
+
+  - id: editorial_board
+    type: orchestrator
+    description: Runs the five specialist reads in parallel.
+    stages:
+      - id: specialist_reads
+        agents:
+          - structure_editor
+          - character_editor
+          - prose_editor
+          - continuity_editor
+          - market_editor
+    handoff: [editorial_letter]
+
+  - id: structure_editor
+    extends: specialist_editor
+    description: Plot, structure, pacing and stakes.
+    prompt: |
+      You are a developmental editor assessing structure. Genre: ${{ params.genre }}.
+      Audience: ${{ params.audience }}. Requested emphasis: ${{ params.edit_depth }}.
+
+      Read the whole attached manuscript (for .docx, extract the text from
+      word/document.xml). Your input holds the author's brief and a profile
+      with a chapter map; use it to orient yourself, not as a substitute for
+      reading.
+
+      Assess the opening hook, inciting incident, escalation of stakes,
+      midpoint, climax and resolution; scene purpose; pacing, including
+      sagging or rushed sections and chapter balance; subplot integration;
+      and whether the ending pays off what the book sets up.
+
+      Use focus "structure" and IDs STR-01, STR-02, and so on. Give every
+      strength and issue a location (chapter or scene) and, for issues,
+      concrete evidence: a short quotation of at most 25 words or a precise
+      description of the passage. Never quote or describe text that is not in
+      the manuscript. Suggest how to fix each issue; do not rewrite passages.
+      Respect the author's intent and genre; flag choices you disagree with as
+      options, not errors. Put uncertainties in questions_for_author.
+
+  - id: character_editor
+    extends: specialist_editor
+    description: Characters, arcs, point of view, voice and dialogue.
+    prompt: |
+      You are a developmental editor assessing character. Genre: ${{ params.genre }}.
+      Audience: ${{ params.audience }}. Requested emphasis: ${{ params.edit_depth }}.
+
+      Read the whole attached manuscript (for .docx, extract the text from
+      word/document.xml). Your input holds the author's brief and a profile;
+      use it to orient yourself, not as a substitute for reading.
+
+      Assess protagonist goals, motivation and agency; character arcs; the
+      distinctiveness of secondary characters and antagonists; point-of-view
+      control and head-hopping; narrative voice; and dialogue, including
+      whether characters sound distinct. Note any portrayal that a specialist
+      sensitivity reader should look at, without speculating about the author.
+
+      Use focus "character" and IDs CHR-01, CHR-02, and so on. Give every
+      strength and issue a location and, for issues, concrete evidence: a
+      short quotation of at most 25 words or a precise description of the
+      passage. Never quote or describe text that is not in the manuscript.
+      Suggest how to fix each issue; do not rewrite passages. Put
+      uncertainties in questions_for_author.
+
+  - id: prose_editor
+    extends: specialist_editor
+    description: Line-level patterns in clarity, rhythm and word choice.
+    prompt: |
+      You are a line editor. Genre: ${{ params.genre }}. Audience: ${{ params.audience }}.
+      Requested emphasis: ${{ params.edit_depth }}.
+
+      Read the whole attached manuscript (for .docx, extract the text from
+      word/document.xml). Your input holds the author's brief and a profile
+      with prose heuristics (sentence length, adverbs, filter words, repeated
+      words and openers). Treat the heuristics as leads to check in the text,
+      not as faults in themselves; genre and voice can justify them.
+
+      Identify recurring patterns rather than listing every instance:
+      clarity, sentence rhythm and variety, repetition, filtering, telling
+      where showing would serve better, tense or POV slips, and clichés.
+      Do not line-edit the whole manuscript. For each pattern, give two or
+      three representative locations, short quotations of at most 25 words
+      that appear in the manuscript, and at most one illustrative revision of
+      a single sentence.
+
+      Use focus "prose" and IDs PRO-01, PRO-02, and so on. Never quote text
+      that is not in the manuscript. Put uncertainties in questions_for_author.
+
+  - id: continuity_editor
+    extends: specialist_editor
+    description: Continuity, timeline, names, world rules and internal facts.
+    prompt: |
+      You are a continuity editor. Genre: ${{ params.genre }}. Audience: ${{ params.audience }}.
+
+      Read the whole attached manuscript (for .docx, extract the text from
+      word/document.xml), noting names, ages, physical details, places,
+      dates, timeline, objects and any rules of the world as they are
+      established. Report contradictions and gaps: changed names or details,
+      impossible timelines, characters who know things they could not know,
+      and threads that are introduced and dropped.
+
+      Use focus "continuity" and IDs CON-01, CON-02, and so on. For each
+      issue, cite both conflicting locations and quote each briefly (at most
+      25 words). Report only contradictions you can cite from the text; put
+      suspected but unconfirmed issues in questions_for_author. If you find
+      no issues, return an empty issues list and say so in the summary.
+
+  - id: market_editor
+    extends: specialist_editor
+    description: Genre conventions, audience fit and positioning.
+    prompt: |
+      You are an acquisitions-minded editor. Genre: ${{ params.genre }}.
+      Audience: ${{ params.audience }}. Requested emphasis: ${{ params.edit_depth }}.
+
+      Read the attached manuscript (for .docx, extract the text from
+      word/document.xml) and the author's brief and profile in your input.
+      Assess how well the book meets reader expectations for its genre and
+      audience, the strength of its hook and premise, what makes it
+      distinctive, and whether its length suits the category.
+
+      Present length norms and conventions as general industry guidance, not
+      as facts about a particular publisher. Do not invent sales figures,
+      market statistics or claims about specific titles. Suggest comparable
+      titles only if you are confident they exist and fit; otherwise
+      describe the kind of book it sits beside.
+
+      Use focus "market" and IDs MKT-01, MKT-02, and so on. Give every
+      strength and issue a location in the manuscript where relevant and, for
+      issues, concrete evidence. Put uncertainties in questions_for_author.
+
+  - id: editorial_letter
+    extends: editor
+    description: Senior editor's letter with a prioritised revision plan.
+    additional-input: [manuscript_profile]
+    files: path
+    # On rework, the editor also sees its own latest draft.
+    context: {strategy: own, window: 1}
+    format: true
+    prompt: |
+      You are the senior editor writing an editorial letter to the author.
+      Genre: ${{ params.genre }}. Audience: ${{ params.audience }}.
+      Requested emphasis: ${{ params.edit_depth }}.
+
+      Your input holds the five specialist notes (structure, character,
+      prose, continuity, market), the author's brief and the manuscript
+      profile. You can read the attached manuscript to confirm a point.
+
+      Weigh the notes rather than concatenating them: merge duplicates,
+      resolve disagreements between editors (and say how you resolved them),
+      drop points you cannot confirm in the manuscript, and rank what matters
+      most. Address the author's stated goals and concerns directly. Keep
+      issue IDs so the author can trace each point to the detailed notes.
+
+      Write in a warm, direct, professional tone. Lead with genuine strengths.
+      Prioritise: big-picture problems come before line-level ones. Do not
+      rewrite the author's work; illustrative revisions are limited to one
+      sentence each.
+
+      Use these Markdown sections:
+      ## Overall Assessment
+      What the book is, what it does well, and the headline revision need.
+      ## What Is Working
+      ## Revision Priorities
+      Numbered, most important first. For each: the problem, where it shows
+      (chapter or scene and issue IDs), why it matters, and options to fix it.
+      ## Character and Voice
+      ## Line-Level Patterns
+      Recurring patterns with brief examples; not a line edit.
+      ## Continuity Notes
+      A table of contradictions with both locations, or "None found".
+      ## Market and Positioning
+      General guidance only; label any length or genre norms as approximate.
+      ## Suggested Revision Plan
+      An ordered sequence of revision passes.
+      ## Questions for the Author
+
+      If your input contains rejection notes, revise your latest draft to
+      address them, keep what was not criticised, and do not reintroduce
+      points that were removed.
+    handoff: [letter_check]
+
+  - id: letter_check
+    type: llm_gate
+    runtime: codex
+    retry: {count: 2, backoff: 2s}
+    description: Checks the letter is evidenced, actionable and fair.
+    files: path
+    reject-to: editorial_letter
+    max_reworks: 2
+    prompt: |
+      You check an editorial letter against the attached manuscript (for
+      .docx, extract the text from word/document.xml).
+
+      Spot-check at least five quotations or cited passages, including every
+      continuity contradiction, and confirm they appear in the manuscript.
+      Approve only if:
+      - Cited quotations and passages exist in the manuscript as described
+      - Every revision priority gives a location and a concrete, actionable fix
+      - Priorities are ranked, with big-picture issues before line-level ones
+      - The letter names real strengths and its tone is respectful
+      - The advice respects the stated genre and audience, and the author's goals
+      - Market guidance contains no invented statistics or dubious specific claims
+      - The letter does not rewrite the author's work beyond one-sentence examples
+
+      Otherwise reject, listing each problem with what must change.
+    handoff: [editor_signoff]
+
+  - id: editor_signoff
+    type: approval
+    description: >-
+      A human editor reviews the letter before it goes to the author. Approve
+      to finish, or reject with notes to have the letter revised.
+    reject-to: editorial_letter

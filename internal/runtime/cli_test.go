@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -27,6 +28,10 @@ func TestHelperProcess(t *testing.T) {
 		}
 	}
 	stdin, _ := io.ReadAll(os.Stdin)
+	if os.Getenv("SIGNALBOX_HELPER_ARGS") == "1" {
+		_ = json.NewEncoder(os.Stdout).Encode(args)
+		os.Exit(0)
+	}
 	last := ""
 	if len(args) > 0 {
 		last = args[len(args)-1]
@@ -86,6 +91,32 @@ func TestCLIShortPromptIsPassedAsArgument(t *testing.T) {
 	}
 	if out != "args=2 last=5 stdin=0" {
 		t.Fatalf("output = %q", out)
+	}
+}
+
+func TestCLIInvokesWithConfiguredOptions(t *testing.T) {
+	t.Setenv("SIGNALBOX_HELPER_ARGS", "1")
+	rt := helperRuntime(t, config.RuntimeConfig{
+		Type: "cli", Model: "default-model", ModelArg: "--model",
+		ReasoningEffort: "high", ReasoningEffortArg: "--effort",
+		Speed: "fast", SpeedArg: "--speed",
+	})
+	for _, model := range []string{"", "override-model"} {
+		output, err := rt.Invoke(context.Background(), Request{Input: "hello", Model: model})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var args []string
+		if err := json.Unmarshal([]byte(output), &args); err != nil {
+			t.Fatal(err)
+		}
+		if model == "" {
+			model = "default-model"
+		}
+		want := "exec|--model|" + model + "|--effort|high|--speed|fast|hello"
+		if strings.Join(args, "|") != want {
+			t.Fatalf("actual process arguments = %q, want %q", args, want)
+		}
 	}
 }
 

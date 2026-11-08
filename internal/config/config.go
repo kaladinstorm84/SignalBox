@@ -23,8 +23,13 @@ type RuntimeConfig struct {
 	// codex/claude/copilot are presets over the generic cli type.
 	Type string `yaml:"type"`
 
+	// Model is the default for every call; pipeline model overrides take precedence.
+	Model           string `yaml:"model,omitempty"`
+	ReasoningEffort string `yaml:"reasoning_effort,omitempty"`
+	// Speed is standard or fast (provider priority service, potentially higher cost).
+	Speed string `yaml:"speed,omitempty"`
+
 	// --- openai ---
-	Model     string `yaml:"model,omitempty"`
 	BaseURL   string `yaml:"base_url,omitempty"`
 	APIKeyEnv string `yaml:"api_key_env,omitempty"`
 
@@ -39,6 +44,9 @@ type RuntimeConfig struct {
 	// ModelArg is the flag a generic cli runtime uses to receive an agent's
 	// model override (for example --model). Presets already know theirs.
 	ModelArg string `yaml:"model_arg,omitempty"`
+	// Generic CLI flags receive the configured values as separate arguments.
+	ReasoningEffortArg string `yaml:"reasoning_effort_arg,omitempty"`
+	SpeedArg           string `yaml:"speed_arg,omitempty"`
 }
 
 // MCPConfig registers MCP servers agents may opt in to. Nothing is passed to
@@ -279,7 +287,11 @@ func (c *Config) validate() error {
 		if r.ModelArg != "" && (r.Type != "cli" || !strings.HasPrefix(r.ModelArg, "-") || strings.ContainsAny(r.ModelArg, " \t\r\n")) {
 			return fmt.Errorf("runtime %q: model_arg is only for cli runtimes and must be a single flag such as --model", name)
 		}
+		if err := ValidateRuntimeOptions(r); err != nil {
+			return fmt.Errorf("runtime %q: %w", name, err)
+		}
 	}
+
 	for name, server := range c.MCP.Servers {
 		if !mcpNamePattern.MatchString(name) {
 			return fmt.Errorf("mcp server name %q must be 1-64 letters, digits, '_' or '-'", name)
@@ -343,3 +355,57 @@ func (c *Config) StatePath() string { return filepath.Join(c.Root, c.StateDir) }
 
 // Addr returns the host:port for the web server.
 func (c *Config) Addr() string { return fmt.Sprintf("%s:%d", c.Server.Host, c.Server.Port) }
+
+// ValidateRuntimeOptions rejects settings that a runtime cannot pass through.
+func ValidateRuntimeOptions(r RuntimeConfig) error {
+	if r.Model != "" && (strings.HasPrefix(r.Model, "-") || strings.ContainsAny(r.Model, " \t\r\n")) {
+		return fmt.Errorf("model must be a single model name, not flags or whitespace")
+	}
+	if r.Type == "cli" && r.Model != "" && r.ModelArg == "" {
+		return fmt.Errorf("model requires model_arg for a cli runtime")
+	}
+	for field, flag := range map[string]string{"reasoning_effort_arg": r.ReasoningEffortArg, "speed_arg": r.SpeedArg} {
+		if flag != "" && (r.Type != "cli" || !strings.HasPrefix(flag, "-") || strings.ContainsAny(flag, " \t\r\n")) {
+			return fmt.Errorf("%s is only for cli runtimes and must be a single flag", field)
+		}
+	}
+	if r.Speed != "" && r.Speed != "standard" && r.Speed != "fast" {
+		return fmt.Errorf("speed must be standard or fast")
+	}
+	if effort := r.ReasoningEffort; effort != "" {
+		if strings.HasPrefix(effort, "-") || strings.ContainsAny(effort, " \t\r\n") {
+			return fmt.Errorf("reasoning_effort must be a single value")
+		}
+		levels := ""
+		switch r.Type {
+		case "openai":
+			levels = " none minimal low medium high xhigh "
+		case "codex":
+			levels = " none minimal low medium high xhigh max ultra "
+		case "claude":
+			levels = " low medium high xhigh max ultracode "
+		case "cli":
+			if r.ReasoningEffortArg == "" {
+				return fmt.Errorf("reasoning_effort requires reasoning_effort_arg for a cli runtime")
+			}
+			levels = " " + effort + " "
+		default:
+			return fmt.Errorf("reasoning_effort is not supported for runtime type %s", r.Type)
+		}
+		if !strings.Contains(levels, " "+effort+" ") {
+			return fmt.Errorf("unsupported reasoning_effort %q for runtime type %s", effort, r.Type)
+		}
+	}
+	if r.Speed != "" {
+		switch r.Type {
+		case "openai", "codex", "claude":
+		case "cli":
+			if r.SpeedArg == "" {
+				return fmt.Errorf("speed requires speed_arg for a cli runtime")
+			}
+		default:
+			return fmt.Errorf("speed is not supported for runtime type %s", r.Type)
+		}
+	}
+	return nil
+}

@@ -43,6 +43,9 @@ runtimes:
 
   # codex:
   #   type: codex                   # runs: codex exec "<prompt>"
+  #   model: gpt-5.4               # default; pipeline model overrides win
+  #   reasoning_effort: high       # model-dependent effort level
+  #   speed: standard              # fast requests priority service (extra cost)
 
   # copilot:
   #   type: copilot                 # runs: copilot -p "<prompt>"
@@ -52,6 +55,9 @@ runtimes:
   #   command: my-agent
   #   args: ["--quiet"]
   #   prompt_mode: stdin            # "arg" (default) or "stdin"
+  #   model_arg: --model
+  #   reasoning_effort_arg: --effort # only if the custom CLI supports it
+  #   speed_arg: --speed             # receives standard or fast
 
 # Optional polling triggers. A changed, non-empty command output starts the
 # named pipeline with that output as input. Watchers run under signalbox serve.

@@ -1,9 +1,45 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
+
+func TestRuntimeCallOptions(t *testing.T) {
+	for _, kind := range []string{"openai", "codex", "claude", "cli"} {
+		settings := "model: test-model\n    reasoning_effort: high\n    speed: fast\n"
+		if kind == "cli" {
+			settings += "    command: bot\n    model_arg: --model\n    reasoning_effort_arg: --effort\n    speed_arg: --speed\n"
+		}
+		cfg, err := Parse([]byte(fmt.Sprintf("version: 1\nruntimes:\n  ai:\n    type: %s\n    %s", kind, settings)), ".")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.Runtimes["ai"]; got.Model != "test-model" || got.ReasoningEffort != "high" || got.Speed != "fast" {
+			t.Fatalf("parsed settings = %+v", got)
+		}
+	}
+	for _, settings := range []string{
+		"type: codex\n    speed: turbo",
+		"type: codex\n    reasoning_effort: 'low medium'",
+		"type: claude\n    reasoning_effort: minimal",
+		"type: openai\n    reasoning_effort: max",
+		"type: copilot\n    speed: fast",
+		"type: copilot\n    reasoning_effort: high",
+		"type: mock\n    speed: standard",
+		"type: cli\n    command: bot\n    model: default",
+		"type: cli\n    command: bot\n    reasoning_effort: high",
+		"type: cli\n    command: bot\n    speed: fast",
+		"type: cli\n    command: bot\n    speed_arg: '--speed extra'",
+		"type: codex\n    reasoning_effort_arg: --effort",
+		"type: codex\n    model: '--bad flag'",
+	} {
+		if _, err := Parse([]byte("version: 1\nruntimes:\n  ai:\n    "+settings+"\n"), "."); err == nil {
+			t.Fatalf("accepted invalid settings: %s", settings)
+		}
+	}
+}
 
 func TestExecutionRetentionDefaultAndValidation(t *testing.T) {
 	base := "version: 1\nproject: test\nruntimes:\n  mock:\n    type: mock\n"

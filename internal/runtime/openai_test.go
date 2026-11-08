@@ -18,6 +18,7 @@ func TestOpenAIRequestsStructuredOutput(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Error(err)
 		}
+
 		bodies = append(bodies, body)
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":" {\"ok\": true} "}}]}`))
 	}))
@@ -47,5 +48,55 @@ func TestOpenAIRequestsStructuredOutput(t *testing.T) {
 	}
 	if _, present := bodies[1]["response_format"]; present {
 		t.Fatal("response_format sent without a schema")
+	}
+}
+
+func TestOpenAIRuntimeCallOptions(t *testing.T) {
+	t.Setenv("SB_TEST_KEY", "k")
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+	for _, speed := range []string{"fast", "standard", ""} {
+		rc := config.RuntimeConfig{Type: "openai", Model: "default-model", BaseURL: srv.URL, APIKeyEnv: "SB_TEST_KEY", Speed: speed}
+		if speed != "" {
+			rc.ReasoningEffort = "high"
+		}
+		rt, err := newOpenAI("ai", rc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, model := range []string{"", "override-model"} {
+			body = nil
+			if _, err := rt.Invoke(context.Background(), Request{Input: "hello", Model: model}); err != nil {
+				t.Fatal(err)
+			}
+			if model == "" {
+				model = "default-model"
+			}
+			if body["model"] != model {
+				t.Fatalf("model = %v, want %s", body["model"], model)
+			}
+			if speed == "" {
+				if _, ok := body["service_tier"]; ok {
+					t.Fatal("service tier sent when unset")
+				}
+				if _, ok := body["reasoning_effort"]; ok {
+					t.Fatal("reasoning effort sent when unset")
+				}
+			} else {
+				tier := "priority"
+				if speed == "standard" {
+					tier = "default"
+				}
+				if body["service_tier"] != tier || body["reasoning_effort"] != "high" {
+					t.Fatalf("call options = %v", body)
+				}
+			}
+		}
 	}
 }

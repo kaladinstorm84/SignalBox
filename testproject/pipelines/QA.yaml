@@ -1,55 +1,66 @@
 name: Full Pipeline QA
 description: >-
   Generate and review functional, negative, security, API, and exploratory
-  test scenarios, consolidate coverage, and pause for human approval.
+  test scenarios, consolidate coverage, run a Three Amigos review, and pause
+  for human approval with any unresolved disagreements explicitly identified.
 entry: requirements_loader
+
+templates:
+  - id: qa_agent
+    type: standard
+    runtime: codex
+    retry: {count: 2, backoff: 2s}
+
+  - id: test_plan_agent
+    extends: qa_agent
+    output:
+      schema: qa-test-plan
+      on_invalid: repair
+      max_repairs: 2
+
+  # Prompts are replaced, not appended, by extends. Each gate keeps its
+  # complete category-specific review criteria below.
+  - id: planner_gate
+    type: llm_gate
+    runtime: codex
+    retry: {count: 2, backoff: 2s}
+    additional-input: [requirements_loader]
+    max_reworks: 2
+
+  # Session retries belong to the session, not its participants.
+  - id: amigo
+    type: standard
+    runtime: codex
 
 agents:
   - id: requirements_loader
-    type: standard
+    extends: qa_agent
     description: Requirements Loader
-    runtime: codex
     prompt: |
       You are a test requirements analyst.
 
-      First determine whether the available input contains a Jira ID or story
-      content. Treat any plain-language description of a feature or behavior
-      as story content, even when it is not labeled as a story.
-
-      If given a Jira ID, retrieve the Jira story and available acceptance
-      criteria, linked defects, linked stories, comments and attachments.
       If story content is present, analyze it directly and skip Jira retrieval.
-      Never ask the user to provide or resend story content that is already
-      available. Do not require a Jira ID, acceptance criteria or supporting
-      details to begin; record missing information as assumptions or open
-      questions.
+      Treat any plain-language feature or behavior description as story content.
+      Otherwise, if given a Jira ID, retrieve the story and available acceptance
+      criteria, linked defects, linked stories, comments and attachments using
+      available tools. If retrieval is unavailable or fails, report that explicitly;
+      do not claim to have retrieved content or invent it.
+      Ask for input only when neither usable story content nor a retrievable
+      Jira story is available. Never ask for content already provided.
 
-      Ask the user for input only when neither a Jira ID nor story content is
-      available.
+      Produce a requirements summary with:
+      - Explicit requirements with stable IDs REQ-001, REQ-002, etc.
+      - Business objectives, actors and critical workflows
+      - Stated validation rules, security concerns and API interactions
+      - Risks tied to requirement IDs
+      - Proposed assumptions, clearly labeled as unconfirmed
+      - Open questions and unavailable supporting information
 
-      Analyze the available input and extract:
-
-      - Business objectives
-      - Actors
-      - Critical workflows
-      - Validation rules
-      - Security concerns
-      - API interactions
-      - Risks
-      - Open questions
-
-      Produce a structured requirements summary suitable for testing.
-
-      Do not make assumptions beyond what is explicitly stated in the requirements.
-
-      
+      Keep facts separate from assumptions. Do not invent acceptance criteria,
+      endpoints, limits, browser support or historical defects. Missing details
+      do not prevent planning; identify them as open questions.
     handoff: [qa_coordinator]
 
-  # Each planner hands off to its own llm_gate, which sends weak output back
-  # to that planner (up to two reworks) and forwards approved output to the
-  # category judge. The judge waits for both gated planners and then hands
-  # back to this coordinator. The stage ends
-  # once all five judges have reported.
   - id: qa_coordinator
     type: orchestrator
     description: Coordinates parallel test planning and category reviews.
@@ -69,568 +80,484 @@ agents:
     handoff: [master_judge]
 
   - id: functional_planner_a
-    type: standard
+    extends: test_plan_agent
     description: Functional Flow Planner
-    runtime: codex
     prompt: |
-      Create test scenarios covering:
-
-      - Happy paths
-      - Core workflows
-      - Multi-step user journeys
-      - End-to-end processes
-
-      Output:
-      - Test ID
-      - Scenario
-      - Preconditions
-      - Expected Outcome
-      - Priority
-      
-      Each test should be listed separately with a clear description and context.
-
+      Create functional tests for happy paths, core workflows, multi-step user
+      journeys and end-to-end processes supported by the requirements.
+      Use IDs FUNC-A-001, etc., and cite REQ IDs for every test.
+      Include actionable steps, preconditions, expected outcomes and priorities.
+      Do not invent behavior or duplicate tests. Record unsupported areas in
+      exclusions with reasons, and missing details in open_questions.
     handoff: [functional_planner_a_gate]
 
   - id: functional_planner_a_gate
-    type: llm_gate
+    extends: planner_gate
     description: Functional Flow Gate
-    runtime: codex
     reject-to: functional_planner_a
-    max_reworks: 2
     prompt: |
-      You are the quality gate for the functional_planner_a test scenarios.
-
-      Approve only if:
-      - Happy paths, core workflows, multi-step user journeys and end-to-end processes are covered
-      - Every test has a Test ID, Scenario, Preconditions, Expected Outcome and Priority
-      - Each test is listed separately with a clear description and context
-      - Tests stay within the feature scope described in the scenarios; nothing is invented or unrelated
-      - There are no duplicate or near-duplicate tests
-
-      Otherwise reject, and in feedback list the specific missing coverage,
-      unclear, duplicate or out-of-scope tests the planner must fix.
+      Review the functional flow test plan against the supplied requirements.
+      Approve only if applicable happy paths, core workflows, multi-step journeys
+      and end-to-end processes are meaningfully covered. Check that REQ references
+      are real, outcomes are supported, steps are actionable, priorities are
+      sensible, and tests are not duplicates. Justified exclusions are valid;
+      missing information must be explicit, not invented.
+      Otherwise reject with specific, actionable corrections.
     handoff: [functional_judge]
 
   - id: functional_planner_b
-    type: standard
+    extends: test_plan_agent
     description: Business Rules Planner
-    runtime: codex
     prompt: |
-      Create test scenarios covering:
-
-      - Business rules
-      - Validation logic
-      - State transitions
-      - Workflow branching
-
-      Each test should be listed separately with a clear description and context.
-
+      Create functional tests for business rules, validation logic, state
+      transitions and workflow branching supported by the requirements.
+      Use IDs FUNC-B-001, etc., and cite REQ IDs for every test.
+      Include actionable steps, preconditions, expected outcomes and priorities.
+      Do not invent rules or duplicate tests. Record unsupported areas in
+      exclusions with reasons, and missing details in open_questions.
     handoff: [functional_planner_b_gate]
 
   - id: functional_planner_b_gate
-    type: llm_gate
+    extends: planner_gate
     description: Business Rules Gate
-    runtime: codex
     reject-to: functional_planner_b
-    max_reworks: 2
     prompt: |
-      You are the quality gate for the functional_planner_b test scenarios.
-
-      Approve only if:
-      - Business rules, validation logic, state transitions and workflow branching are covered
-      - Each test is listed separately with a clear description and context
-      - Tests stay within the feature scope described in the scenarios; nothing is invented or unrelated
-      - There are no duplicate or near-duplicate tests
-
-      Otherwise reject, and in feedback list the specific missing coverage,
-      unclear, duplicate or out-of-scope tests the planner must fix.
+      Review the business rules test plan against the supplied requirements.
+      Approve only if applicable business rules, validation logic, state
+      transitions and workflow branching are meaningfully covered. Check real
+      REQ references, supported outcomes, actionable steps, sensible priorities
+      and no duplicate tests. Accept justified exclusions; do not require
+      invented rules. Otherwise reject with specific, actionable corrections.
     handoff: [functional_judge]
 
+  # Approved gates pass through both the plan and their requirements context.
+  # Judges use that context rather than appending another requirements copy.
   - id: functional_judge
-    type: standard
+    extends: test_plan_agent
     description: Functional Judge
-    runtime: codex
-    additional-input: [requirements_loader]
     prompt: |
-      Review all Functional outputs.
-      Your input contains the functional_planner_a and functional_planner_b
-      outputs.
-
-      Ensure:
-      - User journeys covered
-      - Business rules covered
-      - No duplicates
-      - Missing coverage identified
-
-      Return:
-      - Approved tests
-      - Rejected tests
-      - Coverage gaps
-
-      Each test should be listed separately with a clear description and context.
-
-      Ensure that all tests relate to aspects of the original requirements.
+      Consolidate both functional plans using the supplied requirements.
+      Preserve distinct journeys, business rules and REQ references, merge
+      equivalent tests, and remove unsupported or weak tests. Return a single
+      schema-conforming plan with actionable tests, justified exclusions,
+      coverage gaps and open questions. Explain removed coverage in coverage_gaps
+      when relevant. Never treat an unconfirmed assumption as a requirement.
 
   - id: negative_planner_a
-    type: standard
+    extends: test_plan_agent
     description: Negative Input Planner
-    runtime: codex
     prompt: |
-      Create tests covering:
-
-      - Invalid inputs
-      - Empty values
-      - Boundary values
-      - Invalid formats
-      - Mandatory field failures
-
-      Each test should be listed separately with a clear description and context.
+      Create negative tests for invalid inputs, empty values, boundaries,
+      invalid formats and mandatory fields supported by the requirements.
+      Use IDs NEG-A-001, etc., and cite REQ IDs for every test.
+      Include actionable steps, preconditions, expected outcomes and priorities.
+      Do not invent limits or duplicate tests. Record unsupported areas in
+      exclusions with reasons, and missing details in open_questions.
     handoff: [negative_planner_a_gate]
 
   - id: negative_planner_a_gate
-    type: llm_gate
+    extends: planner_gate
     description: Negative Input Gate
-    runtime: codex
     reject-to: negative_planner_a
-    max_reworks: 2
     prompt: |
-      You are the quality gate for the negative_planner_a test scenarios.
-
-      Approve only if:
-      - Invalid inputs, empty values, boundary values, invalid formats and mandatory field failures are covered
-      - Each test is listed separately with a clear description and context
-      - Tests stay within the feature scope described in the scenarios; nothing is invented or unrelated
-      - There are no duplicate or near-duplicate tests
-
-      Otherwise reject, and in feedback list the specific missing coverage,
-      unclear, duplicate or out-of-scope tests the planner must fix.
+      Review the negative input plan against the supplied requirements.
+      Approve only if applicable invalid inputs, empty values, boundaries,
+      formats and mandatory field failures are meaningfully covered. Check real
+      REQ references, supported outcomes, actionable steps, sensible priorities
+      and no duplicate tests. Accept justified exclusions and questions about
+      unspecified limits. Otherwise reject with specific, actionable corrections.
     handoff: [negative_judge]
 
   - id: negative_planner_b
-    type: standard
+    extends: test_plan_agent
     description: Failure Mode Planner
-    runtime: codex
     prompt: |
-      Create tests covering:
-
-      - Service failures
-      - Timeouts
-      - Dependency errors
-      - Browser issues
-      - Interrupted workflows
-
-      Each test should be listed separately with a clear description and context.
-
+      Create negative tests for service failures, timeouts, dependency errors,
+      browser issues, interrupted workflows and recovery where supported.
+      Use IDs NEG-B-001, etc., and cite REQ IDs for every test.
+      Include actionable steps, preconditions, expected outcomes and priorities.
+      Do not invent dependencies, browser support or recovery guarantees.
+      Avoid duplicates. Record unsupported areas in exclusions with reasons,
+      and missing details in open_questions.
     handoff: [negative_planner_b_gate]
 
   - id: negative_planner_b_gate
-    type: llm_gate
+    extends: planner_gate
     description: Failure Mode Gate
-    runtime: codex
     reject-to: negative_planner_b
-    max_reworks: 2
     prompt: |
-      You are the quality gate for the negative_planner_b test scenarios.
-
-      Approve only if:
-      - Service failures, timeouts, dependency errors, browser issues and interrupted workflows are covered
-      - Each test is listed separately with a clear description and context
-      - Tests stay within the feature scope described in the scenarios; nothing is invented or unrelated
-      - There are no duplicate or near-duplicate tests
-
-      Otherwise reject, and in feedback list the specific missing coverage,
-      unclear, duplicate or out-of-scope tests the planner must fix.
+      Review the failure mode plan against the supplied requirements.
+      Approve only if applicable failures, timeouts, dependencies, browser issues,
+      interruptions and recovery are meaningfully covered. Check real REQ
+      references, supported outcomes, actionable steps, sensible priorities and
+      no duplicates. Accept justified exclusions; do not demand browser or
+      service tests for absent features. Otherwise reject with actionable fixes.
     handoff: [negative_judge]
 
   - id: negative_judge
-    type: standard
+    extends: test_plan_agent
     description: Negative Judge
-    runtime: codex
-    additional-input: [requirements_loader]
     prompt: |
-      Assess negative testing quality.
-      Your input contains the negative_planner_a and negative_planner_b
-      outputs.
-
-      Verify:
-      - Error handling covered
-      - Failure paths covered
-      - Recovery scenarios covered
-
-      Remove duplicates.
-      Each test should be listed separately with a clear description and context.
-      
-      Ensure that all tests relate to aspects of the original requirements.
+      Consolidate both negative plans against the supplied requirements.
+      Assess error handling, failure paths and recovery where applicable.
+      Merge duplicates, remove unsupported tests and preserve distinct coverage
+      and REQ references. Return a single schema-conforming plan with actionable
+      tests, justified exclusions, coverage gaps and open questions.
 
   - id: security_planner_a
-    type: standard
+    extends: test_plan_agent
     description: OWASP Planner
-    runtime: codex
     prompt: |
-      Create tests aligned to:
-
-      - OWASP Top 10
-      - Authentication
-      - Authorization
-      - Session Management
-      - Input Validation
-
-      Each test should be listed separately with a clear description and context.
-
+      Create security tests for relevant OWASP categories, authentication,
+      authorization, sessions and input validation supported by the requirements.
+      Use IDs SEC-A-001, etc., and cite REQ IDs for every test.
+      Include actionable steps, preconditions, expected outcomes and priorities.
+      Do not invent security features or duplicate tests. Record unsupported
+      areas in exclusions with reasons, and missing details in open_questions.
     handoff: [security_planner_a_gate]
 
   - id: security_planner_a_gate
-    type: llm_gate
+    extends: planner_gate
     description: OWASP Gate
-    runtime: codex
     reject-to: security_planner_a
-    max_reworks: 2
     prompt: |
-      You are the quality gate for the security_planner_a test scenarios.
-
-      Approve only if:
-      - Relevant OWASP Top 10 categories, authentication, authorization, session management and input validation are covered
-      - Each test is listed separately with a clear description and context
-      - Tests stay within the feature scope described in the scenarios; nothing is invented or unrelated
-      - There are no duplicate or near-duplicate tests
-
-      Otherwise reject, and in feedback list the specific missing coverage,
-      unclear, duplicate or out-of-scope tests the planner must fix.
-    handoff: [Verify]
-  - id: Verify
-    type: code
-    language: python
-    code-source: libs/verify.py
-    codes:
-       success : 0
-       fail: 1
-       retry: 2    # acts like a human approval rejection
+      Review the OWASP plan against the supplied requirements.
+      Approve only if relevant OWASP categories, authentication, authorization,
+      sessions and input validation are meaningfully covered where applicable.
+      Check real REQ references, supported outcomes, actionable steps, sensible
+      priorities and no duplicates. Accept justified exclusions and explicit
+      security questions; do not invent features. Otherwise reject with fixes.
     handoff: [security_judge]
+
   - id: security_planner_b
-    type: standard
+    extends: test_plan_agent
     description: Abuse Case Planner
-    runtime: codex
     prompt: |
-      Create tests covering:
-
-      - Privilege escalation
-      - Data leakage
-      - Enumeration
-      - Abuse scenarios
-      - Injection opportunities
-
-      Each test should be listed separately with a clear description and context.
-
-      Ensure that all tests relate to aspects of the original requirements.
-
+      Create security tests for privilege escalation, data leakage, enumeration,
+      abuse cases and injection risks grounded in the requirements.
+      Use IDs SEC-B-001, etc., and cite REQ IDs for every test.
+      Include actionable steps, preconditions, expected outcomes and priorities.
+      Do not invent attack surfaces or duplicate tests. Record unsupported areas
+      in exclusions with reasons, and missing details in open_questions.
     handoff: [security_planner_b_gate]
 
   - id: security_planner_b_gate
-    type: llm_gate
+    extends: planner_gate
     description: Abuse Case Gate
-    runtime: codex
     reject-to: security_planner_b
-    max_reworks: 2
     prompt: |
-      You are the quality gate for the security_planner_b test scenarios.
-
-      Approve only if:
-      - Privilege escalation, data leakage, enumeration, abuse scenarios and injection opportunities are covered
-      - Each test is listed separately with a clear description and context
-      - Tests stay within the feature scope described in the scenarios; nothing is invented or unrelated
-      - There are no duplicate or near-duplicate tests
-
-      Otherwise reject, and in feedback list the specific missing coverage,
-      unclear, duplicate or out-of-scope tests the planner must fix.
+      Review the abuse case plan against the supplied requirements.
+      Approve only if applicable escalation, leakage, enumeration, abuse and
+      injection risks are meaningfully covered. Check real REQ references,
+      supported outcomes, actionable steps, sensible priorities and no duplicates.
+      Accept justified exclusions; do not demand absent attack surfaces.
+      Otherwise reject with specific, actionable corrections.
     handoff: [security_judge]
 
   - id: security_judge
-    type: standard
+    extends: test_plan_agent
     description: Security Judge
-    runtime: codex
-    additional-input: [requirements_loader]
     prompt: |
-      Review all security scenarios.
-      Your input contains the security_planner_a and security_planner_b
-      outputs.
-
-      Score against:
-
-      - Authentication
-      - Authorization
-      - Auditing
-      - Session Security
-      - Data Protection
-
-      Remove duplicates and weak tests.
-      Each test should be listed separately with a clear description and context.
+      Consolidate both security plans against the supplied requirements.
+      Assess authentication, authorization, auditing, sessions and data protection
+      where applicable. Merge duplicates, remove weak or unsupported tests, and
+      preserve distinct risks and REQ references. Return a single schema-conforming
+      plan with actionable tests, justified exclusions, gaps and open questions.
 
   - id: api_planner_a
-    type: standard
+    extends: test_plan_agent
     description: API Contract Planner
-    runtime: codex
     prompt: |
-      Generate tests validating:
-
-      - OpenAPI contracts
-      - Request schema
-      - Response schema
-      - Status codes
-      - Validation rules
-
-      Each test should be listed separately with a clear description and context.
-
-      If there are no API aspects to test, return "No API tests applicable."
+      Create API tests for documented contracts, request and response schemas,
+      status codes and validation rules supported by the requirements.
+      Use IDs API-A-001, etc., and cite REQ IDs for every test.
+      Include actionable steps, preconditions, expected outcomes and priorities.
+      Do not invent endpoints, schemas or status codes. Avoid duplicates.
+      If no API aspects apply, return empty tests and a justified exclusion.
+      Record other unsupported areas in exclusions and missing details in
+      open_questions.
     handoff: [api_planner_a_gate]
 
   - id: api_planner_a_gate
-    type: llm_gate
+    extends: planner_gate
     description: API Contract Gate
-    runtime: codex
     reject-to: api_planner_a
-    max_reworks: 2
     prompt: |
-      You are the quality gate for the api_planner_a test scenarios.
-
-      Approve only if:
-      - Contracts, request and response schemas, status codes and validation rules are covered
-      - "No API tests applicable." is acceptable only when the requirements genuinely have no API aspects
-      - Each test is listed separately with a clear description and context
-      - Tests stay within the feature scope described in the scenarios; nothing is invented or unrelated
-      - There are no duplicate or near-duplicate tests
-
-      Otherwise reject, and in feedback list the specific missing coverage,
-      unclear, duplicate or out-of-scope tests the planner must fix.
+      Review the API contract plan against the supplied requirements.
+      Approve meaningful applicable contract, schema, status and validation
+      coverage, or an empty test list with a justified no-API exclusion.
+      Check real REQ references, supported outcomes, actionable steps, sensible
+      priorities and no duplicates. Do not require invented contracts.
+      Otherwise reject with specific, actionable corrections.
     handoff: [api_judge]
 
   - id: api_planner_b
-    type: standard
+    extends: test_plan_agent
     description: API Integration Planner
-    runtime: codex
     prompt: |
-      Generate tests covering:
-
-      - Service integration
-      - Event flows
-      - Transactions
-      - Consumer/provider behaviour
-      - Error propagation
-
-      Each test should be listed separately with a clear description and context.
-
-      If there are no API aspects to test, return "No API integration tests applicable."
-
-      
+      Create API tests for service integration, events, transactions,
+      consumer/provider behavior and error propagation supported by requirements.
+      Use IDs API-B-001, etc., and cite REQ IDs for every test.
+      Include actionable steps, preconditions, expected outcomes and priorities.
+      Do not invent integrations or duplicate tests. If no integration aspects
+      apply, return empty tests and a justified exclusion. Record other
+      unsupported areas in exclusions and missing details in open_questions.
     handoff: [api_planner_b_gate]
 
   - id: api_planner_b_gate
-    type: llm_gate
+    extends: planner_gate
     description: API Integration Gate
-    runtime: codex
     reject-to: api_planner_b
-    max_reworks: 2
     prompt: |
-      You are the quality gate for the api_planner_b test scenarios.
-
-      Approve only if:
-      - Service integration, event flows, transactions, consumer/provider behaviour and error propagation are covered
-      - "No API integration tests applicable." is acceptable only when the requirements genuinely have no API aspects
-      - Each test is listed separately with a clear description and context
-      - Tests stay within the feature scope described in the scenarios; nothing is invented or unrelated
-      - There are no duplicate or near-duplicate tests
-
-      Otherwise reject, and in feedback list the specific missing coverage,
-      unclear, duplicate or out-of-scope tests the planner must fix.
+      Review the API integration plan against the supplied requirements.
+      Approve meaningful applicable integration, event, transaction,
+      consumer/provider and error propagation coverage, or an empty test list
+      with a justified exclusion. Check real REQ references, supported outcomes,
+      actionable steps, sensible priorities and no duplicates. Do not demand
+      invented integrations. Otherwise reject with actionable corrections.
     handoff: [api_judge]
 
   - id: api_judge
-    type: standard
+    extends: test_plan_agent
     description: API Judge
-    runtime: codex
-    additional-input: [requirements_loader]
     prompt: |
-      Your input contains the api_planner_a and api_planner_b outputs.
+      Consolidate both API plans against the supplied requirements.
+      Assess applicable contract, integration and reliability coverage.
+      Merge duplicates, remove unsupported tests and preserve distinct coverage
+      and REQ references. Preserve justified no-API exclusions instead of
+      manufacturing tests. Return a single schema-conforming plan with
+      actionable tests, justified exclusions, gaps and open questions.
 
-      Each test should be listed separately with a clear description and context.
-
-      Assess:
-
-      - Contract coverage
-      - Integration coverage
-      - Reliability coverage
-
-      Deduplicate and identify gaps.
-      Ensure that all tests relate to aspects of the original requirements.
   - id: exploratory_planner_a
-    type: standard
+    extends: test_plan_agent
     description: Risk Exploration Planner
-    runtime: codex
     prompt: |
-      Generate exploratory tests using:
-
-      Each test should be listed separately with a clear description and context.
-
-      - Risk based testing
-      - SFDPOT
-      - CRUD
-      - User journeys
-      - Test tours
+      Create exploratory tests using risk-based testing, SFDPOT, CRUD,
+      user journeys and test tours where relevant to the requirements.
+      Use IDs EXP-A-001, etc., and cite REQ IDs for every test.
+      Include actionable steps, preconditions, observable expected outcomes
+      and priorities. Do not invent behavior or duplicate tests. Record
+      unsupported areas in exclusions and missing details in open_questions.
     handoff: [exploratory_planner_a_gate]
 
   - id: exploratory_planner_a_gate
-    type: llm_gate
+    extends: planner_gate
     description: Risk Exploration Gate
-    runtime: codex
     reject-to: exploratory_planner_a
-    max_reworks: 2
     prompt: |
-      You are the quality gate for the exploratory_planner_a test scenarios.
-
-      Approve only if:
-      - Tests apply risk-based testing, SFDPOT, CRUD, user journeys and test tours where relevant
-      - Each test is listed separately with a clear description and context
-      - Tests stay within the feature scope described in the scenarios; nothing is invented or unrelated
-      - There are no duplicate or near-duplicate tests
-
-      Otherwise reject, and in feedback list the specific missing coverage,
-      unclear, duplicate or out-of-scope tests the planner must fix.
+      Review the risk exploration plan against the supplied requirements.
+      Approve meaningful risk-based exploration using SFDPOT, CRUD, journeys
+      and tours where relevant, not mandatory examples of every technique.
+      Check real REQ references, observable supported outcomes, actionable steps,
+      sensible priorities and no duplicates. Accept justified exclusions.
+      Otherwise reject with specific, actionable corrections.
     handoff: [exploratory_judge]
 
   - id: exploratory_planner_b
-    type: standard
+    extends: test_plan_agent
     description: Unknown Unknowns Planner
-    runtime: codex
     prompt: |
-      Generate exploratory tests targeting:
-
-      Each test should be listed separately with a clear description and context.
-
-      - Unexpected behaviour
-      - Historical defect patterns
-      - Complex workflows
-      - Human misuse
-      - Edge workflows
+      Create exploratory tests for unexpected behavior, complex workflows,
+      human misuse, edge workflows and documented historical defect patterns.
+      Use IDs EXP-B-001, etc., and cite REQ IDs for every test.
+      Include actionable steps, preconditions, observable expected outcomes
+      and priorities. Distinguish risk hypotheses from known defects; do not
+      invent defect history or duplicate tests. Record unsupported areas in
+      exclusions and missing details in open_questions.
     handoff: [exploratory_planner_b_gate]
 
   - id: exploratory_planner_b_gate
-    type: llm_gate
+    extends: planner_gate
     description: Unknown Unknowns Gate
-    runtime: codex
     reject-to: exploratory_planner_b
-    max_reworks: 2
     prompt: |
-      You are the quality gate for the exploratory_planner_b test scenarios.
-
-      Approve only if:
-      - Tests target unexpected behaviour, historical defect patterns, complex workflows, human misuse and edge workflows
-      - Each test is listed separately with a clear description and context
-      - Tests stay within the feature scope described in the scenarios; nothing is invented or unrelated
-      - There are no duplicate or near-duplicate tests
-
-      Otherwise reject, and in feedback list the specific missing coverage,
-      unclear, duplicate or out-of-scope tests the planner must fix.
+      Review the edge exploration plan against the supplied requirements.
+      Approve meaningful applicable unexpected behavior, complex workflows,
+      misuse and edge coverage. Historical patterns require supplied evidence,
+      not invented defects. Check real REQ references, observable supported
+      outcomes, actionable steps, sensible priorities and no duplicates.
+      Accept justified exclusions. Otherwise reject with actionable corrections.
     handoff: [exploratory_judge]
 
   - id: exploratory_judge
-    type: standard
+    extends: test_plan_agent
     description: Exploratory Judge
-    runtime: codex
-    additional-input: [requirements_loader]
     prompt: |
-      Assess novelty and risk.
-      Your input contains the exploratory_planner_a and exploratory_planner_b
-      outputs.
-
-      Each test should be listed separately with a clear description and context.
-
-      Remove duplicates.
-
-      Prioritize:
-      - High risk
-      - High value
-      - Previously unseen scenarios
-      Ensure that all tests relate to aspects of the original requirements.
+      Consolidate both exploratory plans against the supplied requirements.
+      Prioritize novel, high-risk, high-value exploration. Merge duplicates,
+      remove unsupported tests and preserve distinct coverage and REQ references.
+      Return a single schema-conforming plan with actionable tests, justified
+      exclusions, coverage gaps and open questions. Do not invent defect history.
 
   - id: master_judge
-    type: standard
-    description: Master Test Judge
-    runtime: codex
+    extends: qa_agent
+    description: Consolidates the category plans into a draft for Three Amigos review.
     additional-input: [requirements_loader]
     format: true
     prompt: |
-      Combine all approved tests from:
+      Consolidate the functional, negative, security, API and exploratory plans
+      against the original requirements. Merge equivalent tests globally without
+      losing distinct steps, outcomes or requirement coverage. Preserve stable
+      test IDs where possible and cite all covered REQ IDs on merged tests.
+      Remove unsupported tests and preserve justified exclusions.
 
-      - Functional
-      - Negative
-      - Security
-      - API
-      - Exploratory
-
-      Responsibilities:
-
-      1. Deduplicate globally
-      2. Merge equivalent tests
-      3. Ensure that all tests relate to aspects of the original requirements.
-      4. Identify gaps
-      5. Score coverage of the original requirement
-      6. Prioritize tests
-
-      Produce:
-
+      Present only these Markdown sections:
       ## Coverage Summary
-
-      Functional:
-      Negative:
-      Security:
-      API:
-      Exploratory:
-
+      Describe each category and requirement coverage qualitatively; distinguish
+      covered, partial, missing and not applicable. Do not invent coverage scores.
       ## Coverage Gaps
-
-      ## Recommended Tests
-
-      ## Prioritized Backlog
-
-      ## Risks
-
+      Include justified exclusions and missing requirement details.
+      ## Risk Areas
+      ## Prioritized Tests
+      List every retained test separately with ID, category, REQ references,
+      scenario, preconditions, steps, expected outcome and priority.
       ## Open Questions
-    handoff: [review_presenter]
 
-  # Approval nodes pass their input through without invoking a runtime.
+      Preserve consolidated tests, priorities and findings. Do not report
+      reduction counts, consolidation counts or test-family counts.
+      No automation or Playwright generation is permitted.
+    handoff: [three_amigos]
+
+  - id: three_amigos
+    type: session
+    description: Business, Developer and QA review the draft in up to two rounds.
+    additional-input: [requirements_loader]
+    retry: {count: 2, backoff: 2s}
+    participants: [business_amigo, developer_amigo, qa_amigo]
+    turn_order: round_robin
+    max_rounds: 2
+    summary_agent: qa_amigo
+    consensus:
+      method: vote
+      keyword: "VOTE: AGREE"
+      require: all
+    handoff:
+      - to: review_presenter
+        condition: on_consensus
+        input: |
+          THREE AMIGOS OUTCOME: CONSENSUS
+
+          Draft and requirements reviewed:
+          {{ input }}
+
+          Review findings and agreed corrections:
+          {{ output }}
+      - to: review_presenter
+        condition: on_no_consensus
+        input: |
+          THREE AMIGOS OUTCOME: NO CONSENSUS - HUMAN DECISION REQUIRED
+
+          Draft and requirements reviewed:
+          {{ input }}
+
+          Review findings, proposed corrections and unresolved disagreements:
+          {{ output }}
+
+  - id: business_amigo
+    extends: amigo
+    description: Business perspective on intent, acceptance criteria and scope.
+    prompt: |
+      You are the Business/Product member of the Three Amigos QA review.
+      Challenge whether the draft tests reflect business intent, acceptance
+      criteria, user value and priorities. Check REQ references and distinguish
+      explicit facts from unconfirmed assumptions. Do not invent requirements.
+      Review independently from your role before responding to other judges;
+      do not agree merely because another participant agrees.
+      Keep findings concise and reference test IDs and REQ IDs. Propose precise
+      corrections, not a rewrite of the full plan. Reassess unresolved concerns
+      each round. Vote only when the draft plus explicitly agreed corrections
+      resolves your blocking concerns. Otherwise state blockers without voting.
+      No automation or Playwright generation is permitted.
+
+  - id: developer_amigo
+    extends: amigo
+    description: Developer perspective on feasibility and observable behavior.
+    prompt: |
+      You are the Developer member of the Three Amigos QA review.
+      Challenge technical plausibility, observable outcomes, integration
+      assumptions, failure handling and recovery expectations. Require evidence
+      for claimed endpoints, limits and guarantees; do not invent implementation.
+      Review independently from your role before responding to other judges;
+      do not agree merely because another participant agrees.
+      Keep findings concise and reference test IDs and REQ IDs. Propose precise
+      corrections, not a rewrite of the full plan. Reassess unresolved concerns
+      each round. Vote only when the draft plus explicitly agreed corrections
+      resolves your blocking concerns. Otherwise state blockers without voting.
+      No automation or Playwright generation is permitted.
+
+  - id: qa_amigo
+    extends: amigo
+    description: QA perspective on coverage and actionability; records the review.
+    prompt: |
+      You are the QA member of the Three Amigos QA review.
+      Challenge actionable steps, preconditions, observable expected outcomes,
+      risk priorities, duplication and missing requirement coverage.
+      Review independently from your role before responding to other judges;
+      do not agree merely because another participant agrees.
+      Keep findings concise and reference test IDs and REQ IDs. Propose precise
+      corrections, not a rewrite of the full plan. Reassess unresolved concerns
+      each round. Vote only when the draft plus explicitly agreed corrections
+      resolves your blocking concerns. Otherwise state blockers without voting.
+
+      When asked for the final summary, record the review only: agreed
+      corrections by test/REQ ID, proposed but unagreed corrections, unresolved
+      disagreements, and open questions. Preserve dissent and distinguish
+      unanimous agreement from individual suggestions. Do not introduce new
+      corrections after voting or rewrite or drop tests in the summary.
+      No automation or Playwright generation is permitted.
+
   - id: review_presenter
-    type: standard
-    description: Formats the consolidated test plan for human review.
-    runtime: codex
+    extends: qa_agent
+    description: Applies agreed corrections and presents the full plan and review outcome.
+    format: true
     prompt: |
-      Present only:
+      Produce the final human-review plan from the supplied draft, original
+      requirements and Three Amigos findings. Apply only explicitly agreed
+      corrections. Preserve all retained test details, IDs, REQ references,
+      priorities and justified exclusions. Do not silently drop tests or invent
+      behavior. Keep proposed but unagreed changes visible for human decision.
 
-      - Coverage Summary
-      - Coverage Gaps
-      - Risk Areas
-      - Prioritized Tests
-      - Open Questions
+      Present these Markdown sections:
+      ## Review Outcome
+      Repeat the supplied THREE AMIGOS OUTCOME exactly. If NO CONSENSUS, clearly
+      state that human resolution is required; never claim unanimous approval.
+      ## Unresolved Disagreements
+      Preserve blockers, dissent, affected test/REQ IDs and decisions needed.
+      ## Coverage Summary
+      Distinguish covered, partial, missing and not applicable without invented scores.
+      ## Coverage Gaps
+      ## Risk Areas
+      ## Prioritized Tests
+      List every retained test separately with ID, category, REQ references,
+      scenario, preconditions, steps, expected outcome and priority.
+      ## Open Questions
 
-      The output does not care about the reduction in tests, consolidation counts, or the counts of test families. 
-
-      Preserve the consolidated tests, priorities, and findings in the input.
-
-      No automation generation is permitted.
-      No Playwright generation is permitted.
+      Do not report reduction, consolidation or test-family counts.
+      No automation or Playwright generation is permitted.
     handoff: [human_review]
-  - id: reformatter
-    type: standard
-    description: Reformats the consolidated test plan for consistency.
-    runtime: codex
+
+  - id: revise_review_plan
+    extends: qa_agent
+    description: Revises the latest human-reviewed plan before another Three Amigos review.
+    additional-input: [requirements_loader]
+    format: true
     prompt: |
-      Reformat the input test plan for consistent style and presentation.
-    handoff: [human_review]
-  # SignalBox supports approve/reject, not a separate REQUEST_CHANGES outcome.
-  # To request changes, reject with a comment and start a revised run.
+      Revise the supplied latest human-reviewed test plan using the rejection
+      notes and original requirements. Preserve previous accepted corrections,
+      test details, IDs and REQ references. Address substantive feedback, not
+      just formatting. Clearly identify unsupported or unresolved requests.
+      Previous review outcomes are historical: this revision is a draft awaiting
+      a fresh Three Amigos review, not an already agreed plan.
+      No automation or Playwright generation is permitted.
+    handoff: [three_amigos]
+
   - id: human_review
     type: approval
-    reject-to: reformatter
+    reject-to: revise_review_plan
+    format: true
     description: >-
-      Review the coverage summary, gaps, risks, prioritized tests, and open
-      questions. Approve or reject; to request changes, reject with a comment
-      and start a revised run. No automation or Playwright generation is
-      permitted.
+      Review coverage, gaps, risks, prioritized tests and open questions.
+      Resolve any Three Amigos disagreements before approving. Approve to
+      finish, or reject with actionable feedback to revise the latest plan
+      and repeat Three Amigos review in this execution without rerunning
+      specialist planning. No automation or Playwright generation is permitted.

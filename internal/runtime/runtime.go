@@ -147,6 +147,9 @@ func (r *Registry) Register(rt Runtime) {
 }
 
 func build(name string, rc config.RuntimeConfig) (Runtime, error) {
+	if err := config.ValidateRuntimeOptions(rc); err != nil {
+		return nil, err
+	}
 	switch rc.Type {
 	case "openai":
 		return newOpenAI(name, rc)

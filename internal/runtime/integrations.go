@@ -31,6 +31,9 @@ func (c *cliRuntime) baseArgs(extra []string) []string {
 // temporary MCP configuration file.
 func (c *cliRuntime) integrationArgs(req Request) (args, env []string, cleanup func(), err error) {
 	cleanup = func() {}
+	if req.Model == "" {
+		req.Model = c.model
+	}
 	if req.Model != "" {
 		if strings.HasPrefix(req.Model, "-") || strings.ContainsAny(req.Model, " \t\r\n") {
 			return nil, nil, cleanup, fmt.Errorf("invalid model %q", req.Model)
@@ -39,6 +42,34 @@ func (c *cliRuntime) integrationArgs(req Request) (args, env []string, cleanup f
 			return nil, nil, cleanup, fmt.Errorf("runtime %q does not support per-agent models; set model_arg in %s", c.name, config.FileName)
 		}
 		args = append(args, c.modelArg, req.Model)
+	}
+	if effort := c.options.ReasoningEffort; effort != "" {
+		switch c.kind {
+		case "codex":
+			args = append(args, "-c", "model_reasoning_effort="+tomlValue(effort))
+		case "claude":
+			args = append(args, "--effort", effort)
+		case "cli":
+			args = append(args, c.options.ReasoningEffortArg, effort)
+		}
+	}
+	if speed := c.options.Speed; speed != "" {
+		switch c.kind {
+		case "codex":
+			tier := "default"
+			if speed == "fast" {
+				tier = "fast"
+			}
+			args = append(args, "-c", "service_tier="+tomlValue(tier))
+		case "claude":
+			settings, marshalErr := json.Marshal(map[string]bool{"fastMode": speed == "fast"})
+			if marshalErr != nil {
+				return nil, nil, cleanup, fmt.Errorf("encoding Claude speed settings: %w", marshalErr)
+			}
+			args = append(args, "--settings", string(settings))
+		case "cli":
+			args = append(args, c.options.SpeedArg, speed)
+		}
 	}
 	if len(req.MCP) == 0 {
 		return args, nil, cleanup, nil

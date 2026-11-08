@@ -72,6 +72,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /", http.FileServerFS(ui))
 
 	mux.HandleFunc("GET /api/meta", s.handleMeta)
+	mux.HandleFunc("GET /api/dashboard", s.handleDashboard)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handleSaveSettings)
 	mux.HandleFunc("GET /api/pipelines", s.handlePipelines)
@@ -145,6 +146,16 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeErr(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
+
+func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	dashboard, err := s.eng.Dashboard()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("loading dashboard: %w", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, dashboard)
 }
 
 func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {

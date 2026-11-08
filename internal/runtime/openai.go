@@ -21,6 +21,8 @@ type openAI struct {
 	baseURL string
 	keyEnv  string
 	client  *http.Client
+	effort  string
+	tier    string
 }
 
 func newOpenAI(name string, rc config.RuntimeConfig) (Runtime, error) {
@@ -39,21 +41,31 @@ func newOpenAI(name string, rc config.RuntimeConfig) (Runtime, error) {
 	if timeout == 0 {
 		timeout = 10 * time.Minute
 	}
+	tier := ""
+	if rc.Speed == "standard" {
+		tier = "default"
+	} else if rc.Speed == "fast" {
+		tier = "priority"
+	}
 	return &openAI{
 		name:    name,
 		model:   rc.Model,
 		baseURL: strings.TrimRight(baseURL, "/"),
 		keyEnv:  keyEnv,
 		client:  &http.Client{Timeout: timeout},
+		effort:  rc.ReasoningEffort,
+		tier:    tier,
 	}, nil
 }
 
 func (o *openAI) Name() string { return o.name }
 
 type chatRequest struct {
-	Model          string          `json:"model"`
-	Messages       []chatMessage   `json:"messages"`
-	ResponseFormat *responseFormat `json:"response_format,omitempty"`
+	Model           string          `json:"model"`
+	Messages        []chatMessage   `json:"messages"`
+	ResponseFormat  *responseFormat `json:"response_format,omitempty"`
+	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
+	ServiceTier     string          `json:"service_tier,omitempty"`
 }
 
 type responseFormat struct {
@@ -96,7 +108,7 @@ func (o *openAI) Invoke(ctx context.Context, req Request) (string, error) {
 	if req.Model != "" {
 		model = req.Model
 	}
-	body, err := json.Marshal(chatRequest{Model: model, Messages: messages, ResponseFormat: responseFormatFor(req)})
+	body, err := json.Marshal(chatRequest{Model: model, Messages: messages, ResponseFormat: responseFormatFor(req), ReasoningEffort: o.effort, ServiceTier: o.tier})
 	if err != nil {
 		return "", err
 	}

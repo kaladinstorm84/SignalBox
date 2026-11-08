@@ -269,6 +269,15 @@ Demos (sample files in `testproject/samples/`):
   (try `samples/invoice-bad.json` to see it rejected before the run starts)
 - `upload-chained` — a pipeline node passes the files to `upload-review` with
   `files: inherit`.
+- `manuscript-review` — editorial advice on one `.txt`, `.md` or `.docx`
+  manuscript. `libs/manuscript_profile.py` builds a chapter map and prose
+  statistics. Structure, character, prose, continuity and market editors then
+  read the full text by path in parallel and return schema-checked notes
+  (`schemas/editorial-notes.json`). A senior editor writes a prioritised
+  editorial letter, a gate checks it against the manuscript, and a human
+  editor signs it off or sends it back. This demo needs a CLI runtime because
+  it uses `files: path`:
+  `signalbox run manuscript-review --file samples/manuscript-sample.md --param genre="literary mystery" --input "Worried the middle drags."`
 
 ### Runtime retries
 
@@ -291,7 +300,33 @@ outcomes; automatic retries do not treat those decisions as transient failures.
 
 The test project's `discovery` pipeline demonstrates conditional handoffs,
 payload templates, an `llm_gate` with bounded rework, and runtime retries. The
-`Full Pipeline QA` pipeline puts an `llm_gate` after each planner.
+`Full Pipeline QA` pipeline puts an `llm_gate` after each of ten specialist
+planners, retaining two bounded reworks per planner. Local templates share
+runtime/retry settings, and planners plus category judges use the
+`qa-test-plan` schema with bounded repair. Tests include requirement references,
+actionable steps and P0-P3 priorities; empty test lists require a justified
+exclusion. Schemas check structure, while gates check relevance and coverage
+against the requirements summary. Gates pass that requirements context through
+to category judges, so judges do not append another copy.
+
+The master judge consolidates a draft for a Three Amigos session: Business,
+Developer, then QA take round-robin turns for at most two rounds, requiring
+unanimous agreement. They review concise findings and corrections by test/REQ
+ID rather than repeatedly rewriting the plan. QA summarizes agreed changes,
+unagreed proposals and dissent; a final presenter receives both the draft and
+review findings, preserves full test details, and applies agreed corrections.
+Both consensus and no-consensus routes reach human approval, with the latter
+explicitly marked as requiring human resolution. Model agreement is not a
+substitute for human approval.
+
+Human rejection sends the latest reviewed plan and feedback to a revision
+agent, then repeats the Three Amigos session and presentation without rerunning
+specialist planning or the original consolidation. Revisit upstream planning
+separately when feedback requires new specialist analysis. A successful first
+pass uses 32 LLM calls for one round, or 35 for two, excluding retries, schema
+repairs and quality reworks. Jira retrieval still
+requires suitable tools in the configured runtime; a prompt alone does not
+provide a Jira integration.
 
 ### Context strategies
 
@@ -517,6 +552,71 @@ Demos:
   surfaces the sign-off on the parent.
 
 ### Model overrides
+
+Set AI call defaults per named runtime in `signalbox.yaml`:
+
+```yaml
+runtimes:
+  codex:
+    type: codex
+    model: gpt-5.4
+    reasoning_effort: high
+    speed: standard
+  claude:
+    type: claude
+    model: opus
+    reasoning_effort: high
+    speed: standard
+  openai:
+    type: openai
+    model: gpt-5.4
+    reasoning_effort: high
+    speed: fast
+    api_key_env: OPENAI_API_KEY
+```
+
+`model` is the default for all calls through that runtime, including session
+participants, orchestrator synthesis, and structured-output repair calls.
+An agent's `model` still takes precedence. Omitted settings preserve existing
+provider/CLI defaults. Restart the server after changing runtime settings.
+
+`speed` accepts `standard` or `fast`. Fast requests provider priority service,
+**not** less reasoning or a cheaper model; it may incur additional charges and
+requires provider/model/account support. Codex receives `service_tier`, Claude
+receives a per-call `fastMode` setting, and OpenAI receives `service_tier:
+priority` (`default` for standard). Provider rejection or CLI failure is surfaced
+as a runtime error. Claude may apply its own fast-mode eligibility/cooldown rules.
+
+`reasoning_effort` is independent of speed. Supported values:
+
+| Runtime | Reasoning effort | Speed |
+|---------|------------------|-------|
+| `codex` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | `standard`, `fast` |
+| `claude` | `low`, `medium`, `high`, `xhigh`, `max`, `ultracode` | `standard`, `fast` |
+| `openai` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` | `standard`, `fast` |
+| `copilot` | Not supported by this preset | Not supported by this preset |
+| `cli` | Requires `reasoning_effort_arg` | Requires `speed_arg` |
+
+Actual effort levels depend on the selected model and installed CLI version.
+Unsupported configuration fails validation rather than being silently ignored.
+The Copilot preset supports `model`; it does not assume undocumented effort or
+priority flags. For a custom CLI that supports those options, configure explicit
+flags:
+
+```yaml
+runtimes:
+  custom:
+    type: cli
+    command: my-agent
+    model: my-model
+    model_arg: --model
+    reasoning_effort: high
+    reasoning_effort_arg: --effort
+    speed: fast
+    speed_arg: --speed
+```
+
+Each configured flag receives its value as a separate process argument.
 
 `standard`, `llm_gate`, and `orchestrator` agents can set `model` (it may use
 a param). The `codex`, `claude`, and `copilot` runtimes pass it as
@@ -805,6 +905,14 @@ prints the build version.
 
 ## The web UI (`signalbox serve`)
 
+- **Dashboard** — the default landing page, refreshing every two seconds.
+  Shows running agent nodes (including sessions, orchestrators, and LLM gates,
+  but not code, human gates, or pipeline junctions), top-level pipeline runs in
+  progress, approvals/manual edits/retries needing attention, and the number of
+  currently loaded pipeline definitions. Linked child runs contribute to agent
+  and attention counts without counting the parent pipeline twice. Completed
+  and failed totals cover retained execution history (including children), not
+  just the latest page. Active runs and recent activity link to execution details.
 - **Executions** — live list of every run with status and pending-approval
   badges; click through to a per-agent timeline showing inputs, outputs,
   orchestrator stages, and errors. The execution page includes a live pipeline
@@ -815,8 +923,12 @@ prints the build version.
 - **New run** — pick a pipeline, preview its agent flow, and send an input
   into it. Opening New run (or clicking it again) reloads pipeline YAML from
   disk, so added and edited pipelines are available without restarting the server.
-- **Pipelines** — the loaded definitions: agents, types, runtimes, handoffs,
-  and stages. Use **New pipeline** to create a YAML file or **Edit** on a
+- **Pipelines** — a searchable board of station signs for the loaded definitions.
+  Choose a sign to see just that pipeline's agents, types, runtimes, handoffs,
+  and stages. A searchable, scrollable submenu under **Pipelines** lets you
+  switch between definitions; **All pipelines** returns to the board and schemas.
+  Pipeline detail links can be bookmarked, and **Run** preselects that pipeline.
+  Use **New pipeline** to create a YAML file or **Edit** on a
   pipeline to modify its source. The editor writes to the configured
   `pipelines_dir`, preserves comments/whitespace, and validates the graph,
   runtime/code references, and duplicate pipeline names before saving.

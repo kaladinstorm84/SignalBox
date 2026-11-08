@@ -655,6 +655,43 @@ agents:
 	}
 }
 
+func TestDashboardAPI(t *testing.T) {
+	eng, err := engine.New(nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := New(eng, "test", nil, nil, nil).Handler()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/dashboard", nil))
+	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("dashboard response = %d, headers %v", response.Code, response.Header())
+	}
+	var dashboard engine.Dashboard
+	if err := json.Unmarshal(response.Body.Bytes(), &dashboard); err != nil {
+		t.Fatal(err)
+	}
+	if dashboard.ActiveAgents != 0 || dashboard.InProgress != 0 || dashboard.Total != 0 ||
+		dashboard.Active == nil || dashboard.Recent == nil || dashboard.Statuses == nil {
+		t.Fatalf("empty dashboard = %+v", dashboard)
+	}
+	store, err := engine.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng, err = engine.New(nil, nil, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	New(eng, "test", nil, nil, nil).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/dashboard", nil))
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "loading dashboard") {
+		t.Fatalf("failed dashboard response = %d: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestListExecutionsPagination(t *testing.T) {
 	store, err := engine.NewStore(t.TempDir(), 0)
 	if err != nil {

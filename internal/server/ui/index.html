@@ -55,6 +55,31 @@
   }
   .nav a:hover { background: rgba(255,255,255,.04); }
   .nav a.active { background: rgba(201,163,74,.1); color: var(--accent2); }
+  .pipeline-menu { margin: 0 0 8px 22px; padding-left: 10px; border-left: 1px solid var(--border); }
+  .pipeline-menu[hidden] { display: none; }
+  .pipeline-menu input { margin: 4px 0 8px; padding: 6px 8px; }
+  .pipeline-menu-list { max-height: 36vh; overflow-y: auto; }
+  .nav .pipeline-menu a { display: block; padding: 6px 8px; font-size: 12px; overflow-wrap: anywhere; }
+  .pipeline-menu [hidden], .nav .pipeline-menu a[hidden] { display: none; }
+  .station-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 24px; margin: 24px 0; }
+  .station-link { min-width: 0; color: var(--text); text-align: center; padding: 10px 6px; border-radius: 6px; }
+  .station-link:hover { text-decoration: none; background: var(--bg2); }
+  .station-sign {
+    position: relative; isolation: isolate; display: block; margin: 12px 4px 20px; padding: 14px 18px;
+    background: #204568; color: var(--cream); border: 3px solid var(--cream); border-radius: 999px;
+    box-shadow: 0 0 0 2px #090f14, 0 5px 10px rgba(0,0,0,.4);
+    font: 600 20px/1.2 var(--sign); letter-spacing: 2px; text-transform: uppercase; overflow-wrap: anywhere;
+  }
+  .station-sign::before {
+    content: ""; position: absolute; z-index: -1; inset: -12px 20%; border: 3px solid var(--cream);
+    border-radius: 45px; background: #204568; box-shadow: 0 0 0 2px #090f14;
+  }
+  .station-sign::after { content: ""; position: absolute; z-index: -1; inset: 0; background: #204568; border-radius: inherit; }
+  .station-link:hover .station-sign { color: #fff; box-shadow: 0 0 0 2px var(--accent), 0 5px 14px rgba(0,0,0,.5); }
+  .station-link:focus-visible, .pipeline-menu a:focus-visible { outline: 2px solid var(--accent2); outline-offset: 4px; }
+  .station-description { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3;
+                         overflow: hidden; color: var(--muted); margin-top: 6px; overflow-wrap: anywhere; }
+  .station-grid [hidden] { display: none; }
   .lever { position: relative; width: 18px; height: 34px; flex-shrink: 0; }
   .lever::before {
     content: ""; position: absolute; left: 6px; bottom: 6px; width: 6px; height: 28px; border-radius: 3px 3px 1px 1px;
@@ -264,22 +289,40 @@
            font-family: var(--sign); letter-spacing: .5px; padding: 10px 18px; border-radius: 4px; opacity: 0; transition: opacity .25s; pointer-events: none; }
   .toast.show { opacity: 1; }
   .empty { text-align: center; color: var(--muted); padding: 40px 0; }
+  .dashboard-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 24px; }
+  .dashboard-stats .card { margin: 0; border-top: 3px solid var(--accent); }
+  .dashboard-stats h3 { margin: 0; font: 600 14px var(--sign); letter-spacing: 1px; text-transform: uppercase; }
+  .dashboard-value { display: block; font: 600 42px/1.3 var(--sign); color: var(--accent2); margin: 8px 0; }
+  .dashboard-board { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
+  .dashboard-board h3 { font: 600 18px var(--sign); margin: 0 0 14px; }
+  .dashboard-run { padding: 12px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+  .dashboard-run:last-child { border-bottom: 0; }
+  .dashboard-run .topline { align-items: center; flex-wrap: wrap; }
+  .dashboard-run a { font-weight: 600; }
   .card, .runcard { min-width: 0; }
   .card:has(table) { overflow-x: auto; }
   @media (max-width: 900px) {
+    .dashboard-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .dashboard-board { grid-template-columns: minmax(0, 1fr); }
     .sidebar { width: 200px; }
     .main { padding: 24px; }
     .topline { flex-wrap: wrap; }
   }
   @media (max-width: 640px) {
+    .dashboard-stats { grid-template-columns: minmax(0, 1fr); }
     .layout { flex-direction: column; }
     .sidebar {
       width: 100%; flex: 0 0 auto; border-right: 0; border-bottom: 1px solid #000;
       padding: 12px 14px 0;
     }
     .nameboard { align-self: flex-start; margin-bottom: 12px; padding: 7px 10px; }
-    .nav { flex-direction: row; overflow-x: auto; padding-bottom: 7px; border-bottom-width: 3px; }
+    .nav { flex-direction: row; flex-wrap: wrap; padding-bottom: 7px; border-bottom-width: 3px; }
     .nav a { flex: 0 0 auto; gap: 7px; padding: 6px 9px; white-space: nowrap; }
+    .pipeline-menu { order: 1; flex: 1 0 100%; min-width: 0; margin: 4px 0 0; padding: 8px 0 0;
+                     border-left: 0; border-top: 1px solid var(--border); display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px; }
+    .pipeline-menu input { margin: 0; }
+    .pipeline-menu-list { grid-column: 1 / -1; display: flex; overflow-x: auto; max-height: none; }
+    .nav .pipeline-menu a { white-space: nowrap; }
     .lever { width: 16px; height: 30px; }
     .lever::before { left: 5px; bottom: 5px; width: 5px; height: 23px; }
     .lever::after { width: 14px; }
@@ -319,12 +362,15 @@
       <div><h1>SignalBox</h1><div class="sub" id="project-name"></div></div>
     </div>
     <nav class="nav">
+      <a href="#/dashboard" data-nav="dashboard">
+        <span class="lever yellow" data-n="0" aria-hidden="true"></span><span>Dashboard</span></a>
       <a href="#/executions" data-nav="executions">
         <span class="lever red" data-n="1" aria-hidden="true"></span><span>Executions</span></a>
       <a href="#/new" data-nav="new">
         <span class="lever yellow" data-n="2" aria-hidden="true"></span><span>New run</span></a>
       <a href="#/pipelines" data-nav="pipelines">
         <span class="lever black" data-n="3" aria-hidden="true"></span><span>Pipelines</span></a>
+      <div class="pipeline-menu" id="pipeline-menu" hidden></div>
       <a href="#/settings" data-nav="settings">
         <span class="lever yellow" data-n="4" aria-hidden="true"></span><span>Settings</span></a>
       <a href="#/registry" data-nav="registry">
@@ -440,24 +486,29 @@ function toast(msg) {
 function setNav(name) {
   document.querySelectorAll('[data-nav]').forEach(a =>
     a.classList.toggle('active', a.dataset.nav === name));
+  document.getElementById('pipeline-menu').hidden = name !== 'pipelines' || !document.getElementById('pipeline-menu').childElementCount;
 }
 function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 
 // --- routing ---
 function route() {
   stopPolling();
-  const hash = location.hash || '#/executions';
+  const hash = location.hash || '#/dashboard';
+  if (hash === '#/dashboard') return showDashboard();
+  if (hash === '#/executions') return showExecutions();
   const m = hash.match(/^#\/exec\/(.+)$/);
   if (m) return showExecution(decodeURIComponent(m[1]));
   if (hash.startsWith('#/new')) return showNewRun();
   if (hash === '#/pipelines/new') return showPipelineEditor('', true);
   const pipelineEdit = hash.match(/^#\/pipelines\/edit(?:\/(.+))?$/);
   if (pipelineEdit) return showPipelineEditor(pipelineEdit[1] ? decodeURIComponent(pipelineEdit[1]) : '', false);
+  const pipelineView = hash.match(/^#\/pipelines\/view\/(.+)$/);
+  if (pipelineView) return showPipelines(decodeURIComponent(pipelineView[1]));
   if (hash.startsWith('#/pipelines')) return showPipelines();
   if (hash.startsWith('#/settings')) return showSettings();
   const registryRoute = hash.match(/^#\/registry(?:\/(.+))?$/);
   if (registryRoute) return showRegistry(registryRoute[1] ? decodeURIComponent(registryRoute[1]) : '');
-  return showExecutions();
+  return showDashboard();
 }
 window.addEventListener('hashchange', route);
 document.querySelector('[data-nav="new"]').addEventListener('click', event => {
@@ -466,6 +517,66 @@ document.querySelector('[data-nav="new"]').addEventListener('click', event => {
     route();
   }
 });
+
+// --- dashboard ---
+async function showDashboard() {
+  setNav('dashboard');
+  const expectedHash = location.hash;
+  $main.innerHTML = '<h2>Dashboard</h2><div class="muted" role="status">Loading live activity...</div>';
+  let busy = false;
+  let snapshot = '';
+  const render = async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      const data = await api('/dashboard', {cache: 'no-store'});
+      if (location.hash !== expectedHash) return;
+      const nextSnapshot = JSON.stringify(data);
+      if (snapshot === nextSnapshot && !$main.querySelector('[role="alert"]')) return;
+      snapshot = nextSnapshot;
+      const attention = data.waiting_approvals + data.waiting_manual_edits + data.waiting_retries;
+      const stats = [
+        ['Agents in use', data.active_agents, 'Running agent nodes, including sessions and orchestrators.'],
+        ['Pipelines in progress', data.in_progress, 'Active top-level runs, including those waiting for input or review.'],
+        ['Needs attention', attention, `${data.waiting_approvals} approvals / ${data.waiting_manual_edits} manual edits / ${data.waiting_retries} retries`],
+        ['Available pipelines', data.pipelines, 'Currently loaded pipeline definitions.'],
+        ['Completed runs', data.statuses.completed || 0, 'Successfully completed executions in retained history.'],
+        ['Failed runs', data.statuses.failed || 0, 'Failed executions in retained history.'],
+      ];
+      const runs = (items, prefix) => items.map(x => `<div class="dashboard-run">
+        <div class="topline"><a id="${prefix}-${esc(x.id)}" href="#/exec/${esc(encodeURIComponent(x.id))}">${esc(x.pipeline)}</a>${pill(x.status)}</div>
+        <div class="mono muted">${esc(x.id)}</div>
+        ${x.input ? `<div>${esc(x.input)}</div>` : ''}
+        <div class="muted">Started ${fmtTime(x.created_at)}</div>
+      </div>`).join('');
+      const state = captureViewState();
+      $main.innerHTML = `
+        <div class="topline"><div><h2>Dashboard</h2><div class="page-sub">Live activity in the signal box. Refreshes every 2 seconds.</div></div>
+          <button id="dashboard-new" onclick="location.hash='#/new'">New run</button></div>
+        <div class="dashboard-stats">${stats.map(([label, count, detail]) => `<section class="card">
+          <h3>${label}</h3><span class="dashboard-value">${count}</span><div class="muted">${detail}</div>
+        </section>`).join('')}</div>
+        <div class="dashboard-board">
+          <section class="card"><div class="topline"><h3>Pipelines in progress</h3><a id="dashboard-executions" href="#/executions">All executions</a></div>
+            ${runs(data.active, 'dashboard-active') || '<div class="empty">No pipelines in progress. <a id="dashboard-start" href="#/new">Start a new run</a>.</div>'}
+            ${data.in_progress > data.active.length ? `<div class="muted">Showing ${data.active.length} of ${data.in_progress} active runs.</div>` : ''}
+          </section>
+          <section class="card"><div class="topline"><h3>Recent activity</h3><a id="dashboard-pipelines" href="#/pipelines">Browse pipelines</a></div>
+            ${runs(data.recent, 'dashboard-recent') || '<div class="empty">No executions yet.</div>'}
+            <div class="muted">${data.total} executions in retained history, including linked child runs.</div>
+          </section>
+        </div>`;
+      restoreViewState(state);
+    } catch (error) {
+      if (location.hash !== expectedHash) return;
+      $main.innerHTML = `<h2>Dashboard</h2><div class="err-banner" role="alert">Unable to load live activity: ${esc(error.message)}. Retrying automatically.</div>`;
+    } finally {
+      busy = false;
+    }
+  };
+  await render();
+  if (location.hash === expectedHash) pollTimer = setInterval(render, 2000);
+}
 
 // --- executions list ---
 async function showExecutions() {
@@ -1001,7 +1112,7 @@ async function deleteExec(id, button) {
   try {
     await api(`/executions/${encodeURIComponent(id)}`, {method: 'DELETE'});
     toast('Deleted');
-    if (location.hash === '#/executions' || !location.hash) route();
+    if (location.hash === '#/executions') route();
     else location.hash = '#/executions';
   } catch (e) { toast('Error: ' + e.message); if (button) button.disabled = false; }
 }
@@ -1528,6 +1639,7 @@ async function showPipelineEditor(filename, creating) {
     return;
   }
   if (location.hash !== expectedHash) return;
+  renderPipelineMenu(files.filter(file => file.name).sort((a, b) => a.name.localeCompare(b.name)), null);
   $main.innerHTML = `
     <div class="topline"><h2>${draft.isNew ? 'New pipeline' : 'Edit pipeline'}</h2>
       <button class="secondary" onclick="location.hash='#/pipelines'">Pipelines</button></div>
@@ -1654,6 +1766,8 @@ async function showNewRun() {
   const info = document.getElementById('pl-info');
   const paramsBox = document.getElementById('pl-params');
   const sel = document.getElementById('pl');
+  const requestedPipeline = new URLSearchParams(location.hash.split('?')[1] || '').get('pipeline');
+  if (pipelines.some(p => p.name === requestedPipeline)) sel.value = requestedPipeline;
   const dropzone = document.getElementById('dropzone');
   const fileInput = document.getElementById('file-input');
   const fileList = document.getElementById('file-list');
@@ -1723,19 +1837,60 @@ async function showNewRun() {
 }
 
 // --- pipelines ---
-async function showPipelines() {
+function pipelineLink(name) {
+  return '#/pipelines/view/' + encodeURIComponent(name);
+}
+function renderPipelineMenu(pipelines, selected) {
+  const menu = document.getElementById('pipeline-menu');
+  menu.hidden = false;
+  menu.innerHTML = `<a href="#/pipelines"${selected === undefined ? ' aria-current="page" class="active"' : ''}>All pipelines</a>
+    <input id="pipeline-menu-search" type="search" aria-label="Filter pipeline menu" placeholder="Find a pipeline...">
+    <div class="pipeline-menu-list">${pipelines.map(p => `<a href="${esc(pipelineLink(p.name))}" data-pipeline-name="${esc(p.name)}"${p.name === selected ? ' aria-current="page" class="active"' : ''}>${esc(p.name)}</a>`).join('')}</div>
+    <div id="pipeline-menu-empty" class="muted" hidden>No matching pipelines.</div>`;
+  document.getElementById('pipeline-menu-search').addEventListener('input', event => {
+    const query = event.target.value.trim().toLowerCase();
+    const links = [...menu.querySelectorAll('[data-pipeline-name]')];
+    links.forEach(link => { link.hidden = !link.dataset.pipelineName.toLowerCase().includes(query); });
+    document.getElementById('pipeline-menu-empty').hidden = links.some(link => !link.hidden);
+  });
+  menu.querySelector('[aria-current="page"][data-pipeline-name]')?.scrollIntoView({block: 'nearest'});
+}
+async function showPipelines(selected) {
   setNav('pipelines');
+  const expectedHash = location.hash;
   let pipelines, files;
   const actions = `<div class="topline"><h2>Pipelines</h2><div class="approve-actions" style="margin-top:0">
     <button class="secondary" onclick="location.hash='#/pipelines/edit'">Edit pipeline files</button>
     <button onclick="location.hash='#/pipelines/new'">New pipeline</button></div></div>`;
   let schemas = {schemas: []};
   try { [pipelines, files, schemas] = await Promise.all([api('/pipelines', {cache: 'no-store'}), api('/pipeline-files', {cache: 'no-store'}), api('/schemas', {cache: 'no-store'}).catch(() => ({schemas: []}))]); }
-  catch (e) { $main.innerHTML = `${actions}<div class="err-banner" role="alert">${esc(e.message)}</div>`; return; }
+  catch (e) {
+    if (location.hash === expectedHash) {
+      document.getElementById('pipeline-menu').hidden = true;
+      $main.innerHTML = `${actions}<div class="err-banner" role="alert">${esc(e.message)}</div>`;
+    }
+    return;
+  }
+  if (location.hash !== expectedHash) return;
+  pipelines.sort((a, b) => a.name.localeCompare(b.name));
+  renderPipelineMenu(pipelines, selected);
+  const visiblePipelines = selected === undefined ? [] : pipelines.filter(p => p.name === selected);
   const filenameByName = new Map(files.filter(file => file.name).map(file => [file.name, file.filename]));
   $main.innerHTML = `
-    ${actions}<div class="page-sub">Definitions loaded from the pipelines directory.</div>
-    ${pipelines.map(p => `
+    ${actions}<div class="page-sub">${selected === undefined ? 'Choose a station to explore its pipeline.' : '<a href="#/pipelines">All pipelines</a> / ' + esc(selected)}</div>
+    ${selected === undefined ? `
+      <label for="pipeline-search">Find a pipeline</label>
+      <input id="pipeline-search" type="search" placeholder="Search by name or description...">
+      <div id="pipeline-count" class="muted" role="status">${pipelines.length} pipelines</div>
+      <div class="station-grid">${pipelines.map(p => `
+        <a class="station-link" href="${esc(pipelineLink(p.name))}" data-pipeline-search="${esc((p.name + ' ' + (p.description || '')).toLowerCase())}">
+          <span class="station-sign">${esc(p.name)}</span>
+          <span class="muted">${p.nodes.length} agent${p.nodes.length === 1 ? '' : 's'}</span>
+          ${p.description ? `<span class="station-description">${esc(p.description)}</span>` : ''}
+        </a>`).join('')}</div>
+      <div id="pipeline-empty" class="empty" ${pipelines.length ? 'hidden' : ''}>${pipelines.length ? 'No matching pipelines.' : 'No pipelines found.'}</div>
+    ` : !visiblePipelines.length ? '<div class="err-banner" role="alert">Pipeline not found. It may have been renamed or removed. Choose another pipeline from the menu.</div>' : ''}
+    ${visiblePipelines.map(p => `
       <div class="card">
         <div class="topline"><div><b style="font-size:16px">${esc(p.name)}</b>
         ${p.description ? `<div class="muted">${esc(p.description)}</div>` : ''}
@@ -1744,7 +1899,7 @@ async function showPipelines() {
         ${p.input_schema ? `<div class="muted">input schema: <span class="mono">${esc(p.input_schema)}</span></div>` : ''}
         ${p.files ? `<div class="muted">${esc(filesSpecLabel(p.files))}</div>` : ''}</div>
         <div class="approve-actions" style="margin-top:0">${filenameByName.has(p.name) ? `<button class="secondary" data-edit-file="${esc(filenameByName.get(p.name))}">Edit</button>` : ''}
-        <button class="secondary" onclick="location.hash='#/new'">Run</button></div></div>
+        <button class="secondary" data-run-pipeline="${esc(p.name)}">Run</button></div></div>
         <div style="margin-top:10px">${flowDiagram(p)}</div>
         <table style="margin-top:10px"><thead><tr><th>Agent</th><th>Type</th><th>Runtime</th><th>Hands off to</th></tr></thead>
         <tbody>${p.nodes.map(n => `
@@ -1756,16 +1911,28 @@ async function showPipelines() {
             <td>${n.stages ? n.stages.map(s => `<div class="muted">stage <b>${esc(s.id)}</b> → ${s.agents.map(esc).join(', ')}</div>`).join('') : ''}
                 ${(n.handoff || []).map(route => typeof route === 'string' ? esc(route) : `${esc(route.to)}${route.condition ? ` (${esc(route.condition)})` : ''}`).join(', ') || (n.stages ? '' : '<span class="muted">terminates</span>')}</td>
           </tr>`).join('')}</tbody></table>
-      </div>`).join('') || '<div class="empty">No pipelines found.</div>'}
-    ${(schemas.schemas || []).length || (schemas.errors || []).length ? `
+      </div>`).join('')}
+    ${selected === undefined && ((schemas.schemas || []).length || (schemas.errors || []).length) ? `
       <div class="card schemas-card"><b style="font-size:16px">Schemas</b>
         <div class="muted">JSON Schema files in <span class="mono">${esc(schemas.dir || 'schemas')}/</span> that structure and validate agent output.</div>
         ${(schemas.errors || []).map(e => `<div class="err-banner" style="margin:8px 0 0">${esc(e)}</div>`).join('')}
         ${(schemas.schemas || []).map(s => `<details data-key="schema:${esc(s.name)}"><summary><b class="mono">${esc(s.name)}</b> <span class="muted">${esc(s.file)}${s.used_by && s.used_by.length ? ' · used by ' + s.used_by.map(esc).join(', ') : ' · unused'}</span></summary><pre class="out">${esc(JSON.stringify(s.schema, null, 2))}</pre></details>`).join('')}
       </div>` : ''}`;
+  document.getElementById('pipeline-search')?.addEventListener('input', event => {
+    const query = event.target.value.trim().toLowerCase();
+    const signs = [...$main.querySelectorAll('[data-pipeline-search]')];
+    signs.forEach(sign => { sign.hidden = !sign.dataset.pipelineSearch.includes(query); });
+    const count = signs.filter(sign => !sign.hidden).length;
+    document.getElementById('pipeline-count').textContent = `${count} of ${pipelines.length} pipelines`;
+    document.getElementById('pipeline-empty').hidden = count > 0;
+  });
   $main.querySelectorAll('[data-edit-file]').forEach(button => button.addEventListener('click', () => {
     location.hash = '#/pipelines/edit/' + encodeURIComponent(button.dataset.editFile);
   }));
+  $main.querySelectorAll('[data-run-pipeline]').forEach(button => button.addEventListener('click', () => {
+    location.hash = '#/new?pipeline=' + encodeURIComponent(button.dataset.runPipeline);
+  }));
+  window.scrollTo(0, 0);
 }
 
 // --- registry ---

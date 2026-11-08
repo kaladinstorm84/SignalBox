@@ -98,6 +98,8 @@ Allow references to sections in other pipelines
 7. Structured responses
 Let an agent's output be constrained to a JSON Schema stored in the project, validated by the engine, and used by later nodes.
 
+8. file uploads
+
 ### Schema files
 
 Add a schemas directory (`schemas_dir` in signalbox.yaml, default `schemas/`) holding JSON Schema files in JSON or YAML, referenced by name from a node: `output: { schema: invoice }`.

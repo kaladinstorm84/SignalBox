@@ -28,6 +28,8 @@ type cliRuntime struct {
 	kind string
 	// modelArg is the flag that receives a per-agent model override.
 	modelArg string
+	model    string
+	options  config.RuntimeConfig
 	// mcpServers are the servers registered in signalbox.yaml.
 	mcpServers map[string]config.MCPServerConfig
 	// code marks a code node: its stdin is the raw input, so file paths are
@@ -130,6 +132,8 @@ func newCLI(name string, rc config.RuntimeConfig) (Runtime, error) {
 		timeout:    timeout,
 		kind:       rc.Type,
 		modelArg:   modelArg,
+		model:      rc.Model,
+		options:    rc,
 	}, nil
 }
 

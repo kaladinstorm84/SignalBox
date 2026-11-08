@@ -15,6 +15,59 @@ var testServers = map[string]config.MCPServerConfig{
 	"gh": {Command: "gh-mcp", Args: []string{"--stdio"}, Tools: []string{"search", "read"}, EnvFrom: map[string]string{"GH_TOKEN": "SBX_TEST_GH_TOKEN"}},
 }
 
+func TestConfiguredCLIOptions(t *testing.T) {
+	for _, tc := range []struct {
+		kind           string
+		fast, standard []string
+	}{
+		{"codex", []string{"-c", `model_reasoning_effort="high"`, "-c", `service_tier="fast"`}, []string{"-c", `model_reasoning_effort="high"`, "-c", `service_tier="default"`}},
+		{"claude", []string{"--effort", "high", "--settings", `{"fastMode":true}`}, []string{"--effort", "high", "--settings", `{"fastMode":false}`}},
+		{"cli", []string{"--effort", "high", "--speed", "fast"}, []string{"--effort", "high", "--speed", "standard"}},
+		{"copilot", nil, nil},
+	} {
+		for _, speed := range []string{"fast", "standard", ""} {
+			rc := config.RuntimeConfig{Type: tc.kind, Model: "default-model", ModelArg: "--model"}
+			if tc.kind != "copilot" {
+				rc.ReasoningEffort, rc.Speed = "high", speed
+				if tc.kind == "cli" {
+					rc.Command, rc.ReasoningEffortArg, rc.SpeedArg = "bot", "--effort", "--speed"
+				}
+			}
+			rt, err := newCLI(tc.kind, rc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c := rt.(*cliRuntime)
+			for _, model := range []string{"", "override-model"} {
+				args, _, cleanup, err := c.integrationArgs(Request{Model: model})
+				cleanup()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if model == "" {
+					model = "default-model"
+				}
+				want := []string{"--model", model}
+				if tc.kind != "copilot" {
+					options := tc.fast
+					if speed == "standard" {
+						options = tc.standard
+					} else if speed == "" {
+						options = tc.fast[:2]
+					}
+					want = append(want, options...)
+				}
+				if !reflect.DeepEqual(args, want) {
+					t.Fatalf("%s speed=%q args = %q, want %q", tc.kind, speed, args, want)
+				}
+			}
+		}
+	}
+	if _, err := NewRegistry(map[string]config.RuntimeConfig{"bad": {Type: "copilot", Speed: "fast"}}); err == nil {
+		t.Fatal("runtime builder accepted an unsupported option")
+	}
+}
+
 func TestIntegrationArgsCodex(t *testing.T) {
 	t.Setenv("SBX_TEST_GH_TOKEN", "s3cret")
 	c := &cliRuntime{name: "codex", kind: "codex", modelArg: "--model", args: []string{"exec", "-"}, mcpServers: testServers}
