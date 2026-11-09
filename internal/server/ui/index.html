@@ -102,6 +102,7 @@
   }
   .nav a.active .lever::before, .nav a:hover .lever::before { transform: rotate(-22deg); }
   .lever.red { --lever: #c8322b; } .lever.yellow { --lever: #e3b225; } .lever.black { --lever: #1b1b1b; }
+  .lever.blue { --lever: #2874b8; } .lever.white { --lever: #f4eedc; }
 
   .diagram-mini { margin-top: auto; padding-top: 18px; }
   .diagram-mini .panel { background: var(--diagram); border: 1px solid #000; border-radius: 4px; padding: 8px; }
@@ -374,22 +375,20 @@
     </div>
     <nav class="nav">
       <a href="#/dashboard" data-nav="dashboard">
-        <span class="lever yellow" data-n="0" aria-hidden="true"></span><span>Dashboard</span></a>
-      <a href="#/executions" data-nav="executions">
-        <span class="lever red" data-n="1" aria-hidden="true"></span><span>Executions</span></a>
+        <span class="lever yellow" data-n="1" aria-hidden="true"></span><span>Dashboard</span></a>
       <a href="#/new" data-nav="new">
-        <span class="lever yellow" data-n="2" aria-hidden="true"></span><span>New run</span></a>
+        <span class="lever red" data-n="2" aria-hidden="true"></span><span>New Run</span></a>
       <a href="#/pipelines" data-nav="pipelines">
         <span class="lever black" data-n="3" aria-hidden="true"></span><span>Pipelines</span></a>
       <div class="pipeline-menu" id="pipeline-menu" hidden></div>
       <a href="#/knowledge-bases" data-nav="knowledge-bases">
-        <span class="lever black" data-n="4" aria-hidden="true"></span><span>Knowledge bases</span></a>
+        <span class="lever black" data-n="4" aria-hidden="true"></span><span>Knowledge</span></a>
       <a href="#/schemas" data-nav="schemas">
-        <span class="lever black" data-n="5" aria-hidden="true"></span><span>Schemas</span></a>
-      <a href="#/settings" data-nav="settings">
-        <span class="lever yellow" data-n="6" aria-hidden="true"></span><span>Settings</span></a>
+        <span class="lever blue" data-n="5" aria-hidden="true"></span><span>Schema</span></a>
       <a href="#/registry" data-nav="registry">
-        <span class="lever black" data-n="7" aria-hidden="true"></span><span>Registry</span></a>
+        <span class="lever blue" data-n="6" aria-hidden="true"></span><span>Registry</span></a>
+      <a href="#/settings" data-nav="settings">
+        <span class="lever white" data-n="7" aria-hidden="true"></span><span>Settings</span></a>
     </nav>
     <div class="diagram-mini" aria-hidden="true">
       <div class="panel">
