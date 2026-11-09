@@ -29,7 +29,20 @@ func (s *Server) handleListKnowledgeBases(w http.ResponseWriter, r *http.Request
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("listing knowledge bases: %w", err))
 		return
 	}
-	writeJSON(w, http.StatusOK, bases)
+	_, sources, err := s.registrySources()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	type knowledgeBaseView struct {
+		knowledgebase.Base
+		RegistrySources []registrySource `json:"registry_sources,omitempty"`
+	}
+	out := make([]knowledgeBaseView, 0, len(bases))
+	for _, base := range bases {
+		out = append(out, knowledgeBaseView{Base: base, RegistrySources: sources[base.Name]})
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleCreateKnowledgeBase(w http.ResponseWriter, r *http.Request) {

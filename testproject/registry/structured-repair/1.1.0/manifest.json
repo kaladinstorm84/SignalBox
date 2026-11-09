@@ -1,0 +1,33 @@
+{
+  "kind": "pipeline",
+  "name": "structured-repair",
+  "version": "1.1.0",
+  "description": "Structured responses: a script's invalid JSON is repaired using the schema validation errors, then the validated total routes the invoice.",
+  "schema_version": 1,
+  "published_at": "2026-11-09T16:46:33Z",
+  "published_by": "web-ui",
+  "entry": "pipelines/structured-repair.yaml",
+  "pipelines_dir": "pipelines",
+  "schemas_dir": "schemas",
+  "runtimes": [
+    "mock"
+  ],
+  "files": [
+    {
+      "path": "libs/invoice_extract.py",
+      "sha256": "80edee21a7ef07e30928877e7d58cc84b359c0268014d7a12ac11a40166bc81a",
+      "size": 907
+    },
+    {
+      "path": "pipelines/structured-repair.yaml",
+      "sha256": "7a751ef6a0705bebc306ca5909d71a2494c41ca7d9b37517691cee66048198fa",
+      "size": 1744
+    },
+    {
+      "path": "schemas/invoice.json",
+      "sha256": "643b98143366579c835ccdb33cb17a8d5738b143e33ad2df3d225a5b0572ae48",
+      "size": 745
+    }
+  ],
+  "digest": "sha256:7a2cba685dd86d4e0e84c401928f71c51e8bcc7b7c844fec750902e79868fa14"
+}

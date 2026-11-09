@@ -145,6 +145,9 @@ file name without the extension. A standard, code or `llm_gate` node's
 `output.schema` makes its answer a validated JSON document; a pipeline's
 `input.schema` validates the execution input before anything runs.
 
+The web UI's **Schemas** page lists these files, their definitions, validation
+errors, and links to the pipelines and agents that use them.
+
 ```yaml
 name: structured-triage
 input:
@@ -1364,6 +1367,11 @@ create or upload documents on the **Knowledge bases** page first.
   Knowledge packages install documents into `knowledge-bases/<name>/` with
   the same digest verification, upgrade tracking, and local-edit protection.
   Attach an installed base to an agent with `knowledge_bases: [name]`.
+  Local pipeline cards and details, and knowledge-base cards, show a
+  **From registry** marker with the last installed package version.
+  Knowledge bundled with a pipeline identifies that pipeline package and its
+  version. These markers come from `signalbox.lock.json`; they record the
+  installed version, not a guarantee that local files remain unedited.
 - **Git.** Keep a `.gitattributes` containing `* -text` in a registry that
   lives in git, so line-ending conversion does not change the hashed bytes.
 
@@ -1558,9 +1566,9 @@ output stable between polls unless a new pipeline run is intended.
 | Method & path | Purpose |
 |---------------|---------|
 | `GET /api/meta` | Project name and `uploads` limits (`max_bytes`, `max_files`, `allowed_extensions`) |
-| `GET /api/pipelines` | Loaded pipeline definitions, including `params`, imported `sources`, `input_schema`, `files` (the upload declaration), and each agent's `model`, `mcp`, `knowledge_bases`, `output` contract (`schema`, `on_invalid`, `max_repairs`) and `files`/`files_budget` |
+| `GET /api/pipelines` | Loaded pipeline definitions, including `params`, imported `sources`, optional `registry_sources` (package, kind, installed version), `input_schema`, `files` (the upload declaration), and each agent's `model`, `mcp`, `knowledge_bases`, `output` contract (`schema`, `on_invalid`, `max_repairs`) and `files`/`files_budget` |
 | `GET /api/schemas` | Project schema files: `dir`, `schemas` (`name`, `file`, `schema`, `used_by`), and load `errors` |
-| `GET /api/knowledge-bases` | Project knowledge base names and their document names/sizes |
+| `GET /api/knowledge-bases` | Project knowledge base names, document names/sizes, and optional `registry_sources` (package, kind, installed version), including sources bundled with pipelines |
 | `POST /api/knowledge-bases` | Create a base: `{"name": "product-handbook"}` |
 | `PUT /api/knowledge-bases/{name}/documents/{filename}` | Create or replace a UTF-8 text document: `{"content": "..."}` |
 | `POST /api/knowledge-bases/{name}/documents` | Upload one or more plain-text files as multipart `file` parts |

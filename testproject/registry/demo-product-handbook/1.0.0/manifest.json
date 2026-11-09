@@ -1,0 +1,18 @@
+{
+  "kind": "knowledge",
+  "name": "demo-product-handbook",
+  "version": "1.0.0",
+  "schema_version": 1,
+  "published_at": "2026-11-09T16:44:46Z",
+  "published_by": "web-ui",
+  "entry": "knowledge-bases/demo-product-handbook/product.md",
+  "pipelines_dir": "",
+  "files": [
+    {
+      "path": "knowledge-bases/demo-product-handbook/product.md",
+      "sha256": "fd4c98e9b40f789d93531377a8940bc0472df68db610e26406fcc903219bb854",
+      "size": 711
+    }
+  ],
+  "digest": "sha256:6c874a9f751bd24770aa61dfc85fe81d5e32b6b3807a8aab229f707d2a56f880"
+}

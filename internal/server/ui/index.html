@@ -384,10 +384,12 @@
       <div class="pipeline-menu" id="pipeline-menu" hidden></div>
       <a href="#/knowledge-bases" data-nav="knowledge-bases">
         <span class="lever black" data-n="4" aria-hidden="true"></span><span>Knowledge bases</span></a>
+      <a href="#/schemas" data-nav="schemas">
+        <span class="lever black" data-n="5" aria-hidden="true"></span><span>Schemas</span></a>
       <a href="#/settings" data-nav="settings">
-        <span class="lever yellow" data-n="5" aria-hidden="true"></span><span>Settings</span></a>
+        <span class="lever yellow" data-n="6" aria-hidden="true"></span><span>Settings</span></a>
       <a href="#/registry" data-nav="registry">
-        <span class="lever black" data-n="6" aria-hidden="true"></span><span>Registry</span></a>
+        <span class="lever black" data-n="7" aria-hidden="true"></span><span>Registry</span></a>
     </nav>
     <div class="diagram-mini" aria-hidden="true">
       <div class="panel">
@@ -486,6 +488,9 @@ async function api(path, opts) {
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+function registrySourceBadges(sources) {
+  return (sources || []).map(source => `<span class="badge-installed" title="${esc('Installed package: ' + source.package + '@' + source.version + '. Last installed version; local edits may differ.')}">From registry · v${esc(source.version)}${source.kind === 'pipeline' ? ` (${esc(source.package)})` : ''}</span>`).join('');
+}
 function pill(status) {
   const lamps = status === 'waiting_inputs' ? '<i class="lamp"></i><i class="lamp"></i>' : '<i class="lamp"></i>';
   return `<span class="pill ${esc(status)}">${lamps}${esc(status.replace(/_/g,' '))}</span>`;
@@ -519,6 +524,7 @@ function route() {
   if (pipelineView) return showPipelines(decodeURIComponent(pipelineView[1]));
   if (hash.startsWith('#/pipelines')) return showPipelines();
   if (hash.startsWith('#/knowledge-bases')) return showKnowledgeBases();
+  if (hash === '#/schemas') return showSchemas();
   if (hash.startsWith('#/settings')) return showSettings();
   const registryRoute = hash.match(/^#\/registry(?:\/(pipelines|knowledge))?(?:\/(.+))?$/);
   if (registryRoute) return showRegistry(registryRoute[2] ? decodeURIComponent(registryRoute[2]) : '', registryRoute[1] === 'knowledge' ? 'knowledge' : 'pipeline');
@@ -1647,7 +1653,7 @@ async function showKnowledgeBases() {
     </div>
     ${bases.length ? bases.map(base => `
       <div class="card">
-        <div class="topline"><div><b style="font-size:16px">${esc(base.name)}</b><div class="muted">${base.documents.length} document${base.documents.length === 1 ? '' : 's'}</div></div>
+        <div class="topline"><div><b style="font-size:16px">${esc(base.name)}</b>${registrySourceBadges(base.registry_sources)}<div class="muted">${base.documents.length} document${base.documents.length === 1 ? '' : 's'}</div></div>
           <button class="secondary" data-kb-delete="${esc(base.name)}">Delete knowledge base</button></div>
         ${base.documents.length ? `<table style="margin-top:10px"><thead><tr><th>Document</th><th>Size</th><th></th></tr></thead><tbody>${base.documents.map(doc => `
           <tr><td class="mono">${esc(doc.name)}</td><td>${fmtBytes(doc.size)}</td><td><button class="secondary sm" data-kb-doc-delete="${esc(base.name)}" data-kb-filename="${esc(doc.name)}">Remove</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">No documents yet.</div>'}
@@ -1923,7 +1929,7 @@ async function showNewRun() {
       ? `<div class="params-form"><div class="params-title">Parameters</div>${p.params.map(paramField).join('')}</div>` : '';
     if (!p) { info.textContent = ''; return; }
     info.innerHTML = `${p.description ? esc(p.description) + '<br>' : ''}
-      ${p.input_schema ? `<div class="muted">Input must be a JSON document matching schema <span class="mono">${esc(p.input_schema)}</span> (see Pipelines → Schemas).</div>` : ''}
+      ${p.input_schema ? `<div class="muted">Input must be a JSON document matching schema <span class="mono">${esc(p.input_schema)}</span> (see <a href="#/schemas">Schemas</a>).</div>` : ''}
       ${p.files ? `<div class="muted">${esc(filesSpecLabel(p.files))}</div>` : ''}
       <div style="margin-top:6px">${flowDiagram(p)}</div>`;
   };
@@ -2000,8 +2006,7 @@ async function showPipelines(selected) {
   const actions = `<div class="topline"><h2>Pipelines</h2><div class="approve-actions" style="margin-top:0">
     <button class="secondary" onclick="location.hash='#/pipelines/edit'">Edit pipeline files</button>
     <button onclick="location.hash='#/pipelines/new'">New pipeline</button></div></div>`;
-  let schemas = {schemas: []};
-  try { [pipelines, files, schemas] = await Promise.all([api('/pipelines', {cache: 'no-store'}), api('/pipeline-files', {cache: 'no-store'}), api('/schemas', {cache: 'no-store'}).catch(() => ({schemas: []}))]); }
+  try { [pipelines, files] = await Promise.all([api('/pipelines', {cache: 'no-store'}), api('/pipeline-files', {cache: 'no-store'})]); }
   catch (e) {
     if (location.hash === expectedHash) {
       document.getElementById('pipeline-menu').hidden = true;
@@ -2023,6 +2028,7 @@ async function showPipelines(selected) {
       <div class="station-grid">${pipelines.map(p => `
         <a class="station-link" href="${esc(pipelineLink(p.name))}" data-pipeline-search="${esc((p.name + ' ' + (p.description || '')).toLowerCase())}">
           <span class="station-sign">${esc(p.name)}</span>
+          ${p.registry_sources?.length ? `<div style="margin-bottom:6px">${registrySourceBadges(p.registry_sources)}</div>` : ''}
           <span class="muted">${p.nodes.length} agent${p.nodes.length === 1 ? '' : 's'}</span>
           ${p.description ? `<span class="station-description">${esc(p.description)}</span>` : ''}
         </a>`).join('')}</div>
@@ -2031,6 +2037,7 @@ async function showPipelines(selected) {
     ${visiblePipelines.map(p => `
       <div class="card">
         <div class="topline"><div><b style="font-size:16px">${esc(p.name)}</b>
+        ${registrySourceBadges(p.registry_sources)}
         ${p.description ? `<div class="muted">${esc(p.description)}</div>` : ''}
         ${p.params && p.params.length ? `<div class="muted">params: ${p.params.map(q => `<span class="mono">${esc(q.name)}</span>${q.required ? '*' : ''}`).join(', ')}</div>` : ''}
         ${p.sources && p.sources.length ? `<div class="muted">imports: ${p.sources.map(src => `<span class="mono">${esc(src)}</span>`).join(', ')}</div>` : ''}
@@ -2049,13 +2056,7 @@ async function showPipelines(selected) {
             <td>${n.stages ? n.stages.map(s => `<div class="muted">stage <b>${esc(s.id)}</b> → ${s.agents.map(esc).join(', ')}</div>`).join('') : ''}
                 ${(n.handoff || []).map(route => typeof route === 'string' ? esc(route) : `${esc(route.to)}${route.condition ? ` (${esc(route.condition)})` : ''}`).join(', ') || (n.stages ? '' : '<span class="muted">terminates</span>')}</td>
           </tr>`).join('')}</tbody></table>
-      </div>`).join('')}
-    ${selected === undefined && ((schemas.schemas || []).length || (schemas.errors || []).length) ? `
-      <div class="card schemas-card"><b style="font-size:16px">Schemas</b>
-        <div class="muted">JSON Schema files in <span class="mono">${esc(schemas.dir || 'schemas')}/</span> that structure and validate agent output.</div>
-        ${(schemas.errors || []).map(e => `<div class="err-banner" style="margin:8px 0 0">${esc(e)}</div>`).join('')}
-        ${(schemas.schemas || []).map(s => `<details data-key="schema:${esc(s.name)}"><summary><b class="mono">${esc(s.name)}</b> <span class="muted">${esc(s.file)}${s.used_by && s.used_by.length ? ' · used by ' + s.used_by.map(esc).join(', ') : ' · unused'}</span></summary><pre class="out">${esc(JSON.stringify(s.schema, null, 2))}</pre></details>`).join('')}
-      </div>` : ''}`;
+      </div>`).join('')}`;
   document.getElementById('pipeline-search')?.addEventListener('input', event => {
     const query = event.target.value.trim().toLowerCase();
     const signs = [...$main.querySelectorAll('[data-pipeline-search]')];
@@ -2070,6 +2071,34 @@ async function showPipelines(selected) {
   $main.querySelectorAll('[data-run-pipeline]').forEach(button => button.addEventListener('click', () => {
     location.hash = '#/new?pipeline=' + encodeURIComponent(button.dataset.runPipeline);
   }));
+  window.scrollTo(0, 0);
+}
+
+// --- schemas ---
+async function showSchemas() {
+  setNav('schemas');
+  const expectedHash = location.hash;
+  $main.innerHTML = '<h2>Schemas</h2><div class="muted" role="status">Loading...</div>';
+  let data;
+  try { data = await api('/schemas', {cache: 'no-store'}); }
+  catch (error) {
+    if (location.hash === expectedHash) $main.innerHTML = `<h2>Schemas</h2><div class="err-banner" role="alert">${esc(error.message)}</div>`;
+    return;
+  }
+  if (location.hash !== expectedHash) return;
+  const schemas = data.schemas || [];
+  $main.innerHTML = `<h2>Schemas</h2>
+    <div class="page-sub">JSON Schema files in <span class="mono">${esc(data.dir || 'schemas')}/</span> that structure and validate pipeline input and agent output.</div>
+    ${(data.errors || []).map(error => `<div class="err-banner" role="alert">${esc(error)}</div>`).join('')}
+    ${schemas.length ? `<div class="card schemas-card">${schemas.map(schema => `
+      <details data-key="schema:${esc(schema.name)}"><summary><b class="mono">${esc(schema.name)}</b>
+        <span class="muted">${esc(schema.file)}${schema.used_by?.length ? ' · used by ' + schema.used_by.map(usage => {
+          const pipeline = usage.slice(0, usage.lastIndexOf('/'));
+          return `<a href="${esc(pipelineLink(pipeline))}">${esc(usage)}</a>`;
+        }).join(', ') : ' · unused'}</span></summary>
+        <pre class="out">${esc(JSON.stringify(schema.schema, null, 2))}</pre>
+      </details>`).join('')}</div>` : '<div class="empty">No schemas found.</div>'}`;
+  restoreViewState({focus: null});
   window.scrollTo(0, 0);
 }
 

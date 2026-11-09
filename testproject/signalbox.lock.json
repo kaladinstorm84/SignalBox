@@ -1,5 +1,19 @@
 {
   "packages": {
+    "demo-product-handbook": {
+      "kind": "knowledge",
+      "version": "1.0.0",
+      "digest": "sha256:6c874a9f751bd24770aa61dfc85fe81d5e32b6b3807a8aab229f707d2a56f880",
+      "registry": "C:\\Users\\Matt.Anderson\\source\\repos\\signalbox\\SignalBox\\testproject\\registry",
+      "installed_at": "2026-11-09T17:08:43Z",
+      "files": [
+        {
+          "path": "knowledge-bases/demo-product-handbook/product.md",
+          "sha256": "fd4c98e9b40f789d93531377a8940bc0472df68db610e26406fcc903219bb854",
+          "size": 711
+        }
+      ]
+    },
     "release-notes": {
       "version": "1.1.0",
       "digest": "sha256:059d8dd7fb29175fb3a3c9d4d941f17e6e698a13e30b8b8db955fb07c73e3391",

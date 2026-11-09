@@ -181,14 +181,15 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 
 // pipelineView is the API projection of a pipeline definition.
 type pipelineView struct {
-	Name        string              `json:"name"`
-	Description string              `json:"description,omitempty"`
-	Entry       string              `json:"entry"`
-	Params      []paramView         `json:"params,omitempty"`
-	Sources     []string            `json:"sources,omitempty"`
-	InputSchema string              `json:"input_schema,omitempty"`
-	Files       *pipeline.FilesSpec `json:"files,omitempty"`
-	Nodes       []nodeView          `json:"nodes"`
+	RegistrySources []registrySource    `json:"registry_sources,omitempty"`
+	Name            string              `json:"name"`
+	Description     string              `json:"description,omitempty"`
+	Entry           string              `json:"entry"`
+	Params          []paramView         `json:"params,omitempty"`
+	Sources         []string            `json:"sources,omitempty"`
+	InputSchema     string              `json:"input_schema,omitempty"`
+	Files           *pipeline.FilesSpec `json:"files,omitempty"`
+	Nodes           []nodeView          `json:"nodes"`
 }
 
 type paramView struct {
@@ -254,10 +255,16 @@ func (s *Server) handlePipelines(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ps := s.eng.Pipelines()
+	sources, _, err := s.registrySources()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	out := []pipelineView{}
 	for _, name := range pipeline.Names(ps) {
 		p := ps[name]
 		pv := pipelineView{Name: p.Name, Description: p.Description, Entry: p.Entry, Sources: p.Sources, InputSchema: p.InputSchema(), Files: p.Files}
+		pv.RegistrySources = sources[p.Name]
 		for _, param := range p.ParamNames() {
 			pv.Params = append(pv.Params, paramView{Name: param, Param: *p.Params[param]})
 		}
