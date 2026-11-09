@@ -475,6 +475,9 @@ func (eng *Engine) ListChunks(execID string) ([]Chunk, error) {
 
 // AddChunk adds a chunk to a running execution.
 func (eng *Engine) AddChunk(execID, title, by string) (Chunk, error) {
+	if resp, remote, err := eng.remote(WorkerRequest{Op: "add-chunk", ExecID: execID, Text: title, Actor: by}); remote {
+		return resp.Chunk, err
+	}
 	var chunk Chunk
 	err := eng.mutateChunks(execID, func(exec *Execution) error {
 		var err error
@@ -486,6 +489,9 @@ func (eng *Engine) AddChunk(execID, title, by string) (Chunk, error) {
 
 // CompleteChunk marks a chunk of a running execution done.
 func (eng *Engine) CompleteChunk(execID, chunkID, by string) error {
+	if _, remote, err := eng.remote(WorkerRequest{Op: "complete-chunk", ExecID: execID, RunID: chunkID, Actor: by}); remote {
+		return err
+	}
 	return eng.mutateChunks(execID, func(exec *Execution) error {
 		return completeChunkLocked(exec, strings.ToUpper(strings.TrimSpace(chunkID)), chunkActor(by))
 	})
@@ -493,6 +499,9 @@ func (eng *Engine) CompleteChunk(execID, chunkID, by string) error {
 
 // RemoveChunk deletes a chunk from a running execution. Its ID is not reused.
 func (eng *Engine) RemoveChunk(execID, chunkID string) error {
+	if _, remote, err := eng.remote(WorkerRequest{Op: "remove-chunk", ExecID: execID, RunID: chunkID}); remote {
+		return err
+	}
 	return eng.mutateChunks(execID, func(exec *Execution) error {
 		return removeChunkLocked(exec, strings.ToUpper(strings.TrimSpace(chunkID)))
 	})

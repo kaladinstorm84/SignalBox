@@ -656,8 +656,8 @@ agents:
         tools: [search]
 ```
 
-- SignalBox does not run MCP servers itself. For each call it passes only the
-  granted servers and tools to the agent CLI:
+- For agent tool access, SignalBox does not host external MCP servers. For
+  each call it passes only the granted servers and tools to the agent CLI:
   - **codex**: `-c mcp_servers.<name>.*` overrides with `enabled_tools`.
   - **claude**: `--mcp-config <file> --strict-mcp-config --allowedTools
     mcp__<name>__<tool>,...`.
@@ -903,6 +903,157 @@ a repeatable `--param name=value`. `signalbox serve --addr
 127.0.0.1:8485` overrides the configured listen address; `signalbox version`
 prints the build version.
 
+## MCP server (`signalbox mcp`)
+
+SignalBox can expose its running HTTP API to an AI client over MCP stdio.
+This is separate from granting external MCP tools to pipeline agents: the
+client controls SignalBox, while SignalBox continues to execute workflows.
+The adapter does not start a second engine or own the lifetime of executions.
+
+Start `signalbox serve` normally, then configure your MCP client to launch:
+
+```text
+signalbox mcp --url http://127.0.0.1:8484
+```
+
+Without `--url`, the command reads the server address from `signalbox.yaml`
+in its working directory. An explicit URL lets the client run from anywhere.
+The target must be an HTTP(S) origin, without credentials, paths, query
+parameters or fragments. The API must already be running; connection failures
+are reported on stderr. Stdout is reserved for MCP messages.
+
+For example, a VS Code `.vscode/mcp.json` configuration (with `signalbox` on
+`PATH`) is:
+
+```json
+{
+  "servers": {
+    "signalbox": {
+      "type": "stdio",
+      "command": "signalbox",
+      "args": ["mcp", "--url", "http://127.0.0.1:8484"]
+    }
+  }
+}
+```
+
+### Command tools
+
+The tool list is stable: pipelines are resources, not dynamically generated
+tools. Tools use the existing API's validation, child-execution routing,
+recovery checks and error responses.
+
+| Tool | Purpose |
+|------|---------|
+| `start_execution` | Start a named pipeline with `input` text, optional string-valued `params`, and optional `files` (`name`, `content_base64`). For schema-validated input, pass JSON encoded as text. |
+| `cancel_execution` | Cancel a running execution. |
+| `retry_run` | Retry a failed call awaiting retry, using `execution_id` and `run_id`. |
+| `restart_execution` | Start a recovered execution with optional `run_id`, `node_id`, `stage`, and `force`. Definition-change conflicts are preserved; never automatically force them. |
+| `rerun_execution` | Create another execution using the original input, parameters and files. |
+| `add_chunk` | Add a work item with `execution_id` and `title`. |
+| `complete_chunk` | Mark a work item done with `execution_id` and `chunk_id`. |
+| `remove_chunk` | Remove a work item with `execution_id` and `chunk_id`. |
+
+Tools publish input/output schemas and side-effect annotations. Successful
+results include structured `execution_id`, `resource_uri`, `dashboard_url`
+and the original API `response`, plus a resource link and a text representation
+for compatibility. Creation acknowledges an execution, not completion.
+Repeated starts/reruns/restarts create separate executions: there is no
+idempotency key and the adapter does not retry ambiguous failures.
+
+Attachments are supplied as contents, never local filesystem paths. Their
+combined decoded size is limited to 8 MiB; the server's own upload count,
+size, extension and pipeline rules still apply.
+
+### Resources and templates
+
+| URI | Content |
+|-----|---------|
+| `signalbox://meta` | Project name and upload limits. |
+| `signalbox://pipelines` | Pipeline catalog with descriptions, parameters, input schema references and workflow nodes. |
+| `signalbox://pipelines/{name}` | One pipeline's API projection. Individual pipelines also appear in resource discovery. |
+| `signalbox://schemas` | Schema catalog, usage references and load errors. |
+| `signalbox://schemas/{name}` | One schema document and its usage references. |
+| `signalbox://executions{?page,page_size}` | Execution summaries; the API's pagination rules apply (default page 1, size 20). |
+| `signalbox://executions/{id}` | Full API execution detail, including pending gates, child links and surfaced runs. |
+| `signalbox://executions/{id}/results{?offset,limit}` | Final outputs, execution status, terminal flag and per-output resource links. |
+| `signalbox://executions/{id}/approvals{?offset,limit}` | Pending human approval gates, including surfaced child gates, with review input, owning execution/pipeline/run/node IDs and execution resource links. |
+| `signalbox://executions/{id}/runs/{run_id}/output{?offset,limit}` | A node run's output in Unicode-character pages (default limit 8192; maximum 65536). |
+| `signalbox://executions/{id}/runs/{run_id}/transcript{?offset,limit}` | Session turns, round, votes and consensus outcome. |
+| `signalbox://executions/{id}/chunks` | Current work items. |
+| `signalbox://executions/{id}/files/{name}` | Attached file contents as a binary resource. |
+
+Results, approvals and transcript pages default to 20 items, maximum 100. Paged derived
+resources use zero-based `offset` and return `total` and `next_offset` (`null`
+at the end). Resource contents are limited to 1 MiB and upstream responses
+to 16 MiB. Oversized reads fail explicitly rather than silently truncating:
+use smaller pages, paged run output, or the HTTP API/dashboard. In particular,
+a single oversized transcript turn or execution record may require HTTP access.
+
+The adapter polls the pipeline catalog and subscribed resources every two
+seconds. It sends resource-list change notifications for pipeline discovery
+changes and resource-update notifications for changed subscriptions,
+including resources that become unavailable. Notifications are hints to
+reread persisted state, not a durable event log or a promise to wake a model.
+Disconnected executions continue running. Clients must support resource
+discovery/reads for this resource-first interface.
+
+### Watching approvals
+
+Clients can subscribe to `signalbox://executions/{id}/approvals` without
+`--allow-review`. Subscribe first, then read the current resource so the
+client has an initial view even if nothing changes. For example, on MCP
+protocol versions using `resources/subscribe`, the request parameters are:
+
+```json
+{
+  "method": "resources/subscribe",
+  "params": {
+    "uri": "signalbox://executions/abc123/approvals"
+  }
+}
+```
+
+The adapter watches that URI automatically while connected. When an approval
+appears, changes, or is resolved (including surfaced child approvals), it
+sends a `notifications/resources/updated` notification identifying the URI.
+The notification does not contain the approval payload: use `resources/read`
+with that URI to retrieve the latest pending gates. Prefer subscribing to
+the unpaged URI to track the pending count and first page; read additional
+pages as needed.
+
+Use the MCP client's subscription API where available: the SDK negotiates
+the subscription mechanism for the client's protocol version. Unsubscribe
+when no longer interested, and resubscribe and reread after reconnecting.
+Updates are detected by the two-second polling loop, not sent as a durable
+stream of every intermediate transition. Reading or subscribing never
+resolves a gate or requires delegated review permission.
+
+### Permissions and scope
+
+Approval and manual-edit tools are **not exposed by default**. Reading or
+subscribing to the approvals resource does not require
+`--allow-review` and cannot resolve a gate. Resolved approvals disappear from
+this pending-only view; historical decisions remain in execution detail.
+Manual-edit and automated LLM gates are not included.
+
+Explicitly launching with `--allow-review` adds `resolve_approval` (`execution_id`,
+`run_id`, `approved`, optional `comment`) and `submit_manual_edit`
+(`execution_id`, `run_id`, `output`). Review and chunk mutations record the
+actor as `mcp-client`, not a human identity. Only enable delegated review
+when your workflow policy permits it; otherwise use the dashboard.
+
+This flag controls tool exposure, not HTTP authentication. The adapter has
+the target API's authority and exposes all its pipelines and executions:
+use it only with trusted clients and a trusted server, normally on loopback.
+Pipeline starts can execute local code, consume model budget and use external
+services. Do not automatically grant this server back to pipeline agents,
+which could otherwise recursively launch workflows.
+
+Settings, pipeline-file editing, registry administration and execution deletion
+are not exposed. Prompts, elicitation, sampling and experimental MCP tasks are
+not part of this interface.
+
 ## The web UI (`signalbox serve`)
 
 - **Dashboard** — the default landing page, refreshing every two seconds.
@@ -990,7 +1141,7 @@ prints the build version.
   packages when a registry is configured (see [Pipeline registry](#pipeline-registry)).
 
 Execution history is persisted in `.signalbox/executions.db`, so it survives
-restarts (in-flight runs are marked `interrupted`). Existing JSON records in
+restarts. Existing JSON records in
 `.signalbox/executions/` are imported automatically the first time the database
 opens. The default retention limit is 1,000 terminal executions; set
 `execution_retention` in `signalbox.yaml` to change it, or to `0` to keep
@@ -1007,6 +1158,67 @@ pipeline from its original input instead.
 The server has no authentication. Keep it bound to loopback or a trusted
 interface; anyone with access can launch configured commands, approve work,
 and edit project settings. Run only trusted pipeline definitions and scripts.
+
+### Execution process lifecycle
+
+Every top-level execution launched through `serve` runs in its own detached
+SignalBox worker process. This includes dashboard, HTTP, MCP and CLI starts,
+watcher starts, reruns, and recovery/restart actions. Child pipelines stay in
+their parent's worker; workers do not start another dashboard or HTTP server.
+Closing or killing `serve` does **not** cancel these executions. Runtime calls
+continue, and pending approvals, manual edits and retries remain available
+when you restart `serve` in the same project with the same state directory.
+Use **Cancel** (or `signalbox cancel`) to stop an execution explicitly.
+Watchers themselves stop with `serve`; already launched work continues.
+Workers use serve's launch-time project settings and reload pipeline YAML for
+new executions. Live executions keep their own definitions; restart serve to
+apply changed runtime settings to future workers.
+
+The internal `_worker` command is not a user interface: it requires a
+single-use, random launch capability supplied by `serve`. Controls travel
+through a private SQLite queue, not an unauthenticated worker network port.
+The existing HTTP API, CLI and MCP interfaces still target `serve`, which
+routes mutations to the owning worker. Launches and controls require an
+acknowledgement; errors and timeouts are not reported as successful execution.
+A timed-out control may already have taken effect: inspect state before
+retrying it. Queue commands are never replayed after worker failure.
+
+Workers renew a durable 30-second ownership lease and hold an OS-level lock.
+Opening state from another server or a foreground `signalbox run` leaves live
+owners alone. A crashed worker (released OS lock) or expired lease marks its
+unfinished executions/runs **interrupted**, never completed; there is no
+automatic execution replay. Classification occurs when state opens or during
+the running server/workers' periodic checks. Expired owners are fenced from
+further writes. Restart interrupted work explicitly using the existing
+recovery actions. Runtime slots held by a paused, fenced process are retained
+until its call returns or its process exits, to avoid exceeding concurrency.
+
+Worker stdout/stderr go to `.signalbox/workers/<owner-token>.log`, independently
+of the UI connection. Failed worker commands, failed runtime calls (including
+automatic retries and calls awaiting manual retry), and terminal node failures
+are logged with operation or execution/node/run identifiers and the error.
+The `serve` console also logs HTTP error responses and abnormal worker exits
+with their log paths. Logs may contain error details from external runtimes;
+treat them as private project data.
+
+Serve logs the worker PID and log path at launch; the
+worker log records its execution ID. Logs and small ownership lock files are
+retained for diagnosis and may be archived/removed after their workers exit;
+execution-history retention does not rotate them. Protect the project state
+directory as local execution data; it contains uploads and queued controls.
+
+On Windows workers detach from the console and break away from the server's
+process job. Workers and runtime subprocesses start without console windows;
+their output is captured rather than shown in new terminal windows.
+If a service/CI host forbids job breakaway, launch fails explicitly;
+configure that host to permit it. On Unix workers start a new session.
+Use an installed/built binary for long-lived service work: `go run` uses a
+build-cache executable whose later removal is outside SignalBox's control.
+Do not delete/move state or replace an executable still in use by workers.
+Workers survive **serve** restarts, not machine shutdown, user-session teardown,
+or an external supervisor explicitly killing the workers. Foreground
+`signalbox run` remains attached and interactive; it does not survive its own
+process terminating.
 
 ## Recovery and restart
 
@@ -1246,16 +1458,18 @@ uploads:                        # see "File uploads"
 ```
 
 `max_concurrent_calls` limits simultaneous runtime invocations across all
-executions within one SignalBox process, including code steps and orchestrator
-synthesis. Calls above the limit wait for a slot and stop waiting if their
-execution is canceled. Approval waits and manual-retry waits do not occupy a
+executions sharing a project's state database, including detached workers,
+foreground runs, child pipelines, code steps and orchestrator synthesis.
+Calls above the limit wait for a shared SQLite slot and stop waiting if their
+execution is canceled. Approval, manual-edit and manual-retry waits do not
+occupy a call slot. Omitted or `0` selects the default of `4`; negative values
+are invalid. Restart the server after changing the cap. Lowering it does not
+interrupt existing calls; new calls wait until usage drops below the cap.
+Different state directories have independent limits.
 
 The execution list API is paginated with `page` (1-based) and `page_size`
 (10–100, in increments of 10); the web UI defaults to 20 rows per page and
-remembers the selected size in that browser. Approval waits and manual-retry waits do not occupy a
-call slot. Omitted or `0` selects the default of `4`; negative values are
-invalid. Restart the server after changing the cap. Separate SignalBox
-processes have independent limits.
+remembers the selected size in that browser.
 
 ### Watchers
 

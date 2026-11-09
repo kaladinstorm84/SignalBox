@@ -178,6 +178,7 @@ func (c *cliRuntime) Invoke(ctx context.Context, req Request) (string, error) {
 	}
 
 	cmd := exec.CommandContext(ctx, c.command, args...)
+	configureProcess(cmd)
 	cmd.Dir = c.dir
 	if len(env) > 0 {
 		cmd.Env = append(os.Environ(), env...)

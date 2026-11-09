@@ -214,6 +214,9 @@ func restartableType(t pipeline.NodeType) bool {
 // a *DefinitionChangedError unless opts.Force is set, in which case the
 // changes are recorded as warnings on the new execution.
 func (eng *Engine) Restart(execID string, opts RestartOptions) (string, error) {
+	if eng.launchWorker != nil {
+		return eng.launchWorker(WorkerRequest{Op: "restart", ExecID: execID, Restart: opts})
+	}
 	eng.mu.Lock()
 	defer eng.mu.Unlock()
 

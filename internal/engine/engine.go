@@ -25,13 +25,16 @@ import (
 // Engine runs executions. One mutex guards all execution state; runtime
 // invocations (the slow part) happen outside the lock.
 type Engine struct {
-	mu          sync.Mutex
-	pipelines   map[string]*pipeline.Pipeline
-	registry    *runtime.Registry
-	store       *Store
-	execs       map[string]*liveExec
-	callSlots   chan struct{}
-	projectRoot string
+	mu            sync.Mutex
+	pipelines     map[string]*pipeline.Pipeline
+	registry      *runtime.Registry
+	store         *Store
+	execs         map[string]*liveExec
+	callSlots     chan struct{}
+	projectRoot   string
+	launchWorker  func(WorkerRequest) (string, error)
+	persistError  error
+	workerStarted bool
 	// uploadLimits bound new executions' files; filesRoot is the absolute
 	// uploads folder, resolved on first use.
 	uploadLimits UploadLimits
@@ -268,6 +271,9 @@ func (eng *Engine) startLocked(spec startSpec) (*liveExec, error) {
 
 // Approve resolves a pending approval gate.
 func (eng *Engine) Approve(execID, runID string, approved bool, approvedBy, comment string) error {
+	if _, remote, err := eng.remote(WorkerRequest{Op: "approve", ExecID: execID, RunID: runID, Decision: approved, Actor: approvedBy, Text: comment}); remote {
+		return err
+	}
 	eng.mu.Lock()
 	defer eng.mu.Unlock()
 	le, ok := eng.execs[execID]
@@ -286,6 +292,9 @@ func (eng *Engine) Approve(execID, runID string, approved bool, approvedBy, comm
 
 // SubmitManualEdit resumes a manual_edit node with the edited payload.
 func (eng *Engine) SubmitManualEdit(execID, runID, output, editedBy string) error {
+	if _, remote, err := eng.remote(WorkerRequest{Op: "edit", ExecID: execID, RunID: runID, Text: output, Actor: editedBy}); remote {
+		return err
+	}
 	eng.mu.Lock()
 	defer eng.mu.Unlock()
 	le, ok := eng.execs[execID]
@@ -308,6 +317,9 @@ func (eng *Engine) SubmitManualEdit(execID, runID, output, editedBy string) erro
 // ResolveFailure resumes a run paused after a failed agent call: retry
 // re-invokes the agent with the same input; otherwise the execution fails.
 func (eng *Engine) ResolveFailure(execID, runID string, retry bool) error {
+	if _, remote, err := eng.remote(WorkerRequest{Op: "retry", ExecID: execID, RunID: runID, Decision: retry}); remote {
+		return err
+	}
 	eng.mu.Lock()
 	defer eng.mu.Unlock()
 	le, ok := eng.execs[execID]
@@ -339,6 +351,9 @@ func (eng *Engine) Retry(execID, runID string) error {
 
 // Cancel aborts a running execution.
 func (eng *Engine) Cancel(execID string) error {
+	if _, remote, err := eng.remote(WorkerRequest{Op: "cancel", ExecID: execID}); remote {
+		return err
+	}
 	eng.mu.Lock()
 	defer eng.mu.Unlock()
 	le, ok := eng.execs[execID]
@@ -362,6 +377,9 @@ func (eng *Engine) Cancel(execID string) error {
 // are still running (including canceled ones whose agent calls have not yet
 // wound down) cannot be deleted.
 func (eng *Engine) Delete(execID string) error {
+	if _, remote, err := eng.remote(WorkerRequest{Op: "delete", ExecID: execID}); remote {
+		return err
+	}
 	eng.mu.Lock()
 	defer eng.mu.Unlock()
 	le, ok := eng.execs[execID]
@@ -509,7 +527,15 @@ func (eng *Engine) runsWithStatus(execID string, status Status) []*NodeRun {
 	defer eng.mu.Unlock()
 	le, ok := eng.execs[execID]
 	if !ok {
-		return nil
+		var out []*NodeRun
+		for _, execution := range eng.persistedTree(execID, true) {
+			for _, run := range execution.Runs {
+				if run.Status == status {
+					out = append(out, run)
+				}
+			}
+		}
+		return out
 	}
 	var out []*NodeRun
 	var collect func(x *liveExec)
@@ -537,7 +563,17 @@ func (eng *Engine) SurfacedRuns(execID string) []SurfacedRun {
 	defer eng.mu.Unlock()
 	le, ok := eng.execs[execID]
 	if !ok {
-		return nil
+		var out []SurfacedRun
+		for _, execution := range eng.persistedTree(execID, false) {
+			for _, run := range execution.Runs {
+				switch run.Status {
+				case StatusWaitingApproval, StatusWaitingManualEdit, StatusWaitingRetry:
+					run.Snapshot = nil
+					out = append(out, SurfacedRun{Execution: execution.ID, Pipeline: execution.Pipeline, ParentRun: execution.Parent.RunID, Run: run})
+				}
+			}
+		}
+		return out
 	}
 	var out []SurfacedRun
 	var collect func(x *liveExec)
@@ -1406,6 +1442,7 @@ func (eng *Engine) finishRunErr(le *liveExec, run *NodeRun, node *pipeline.Node,
 	} else {
 		run.Status = StatusFailed
 		run.Error = err.Error()
+		log.Printf("execution %s: node %s run %s failed: %v", le.exec.ID, node.ID, run.ID, err)
 		if !le.exec.Status.Terminal() {
 			le.exec.Status = StatusFailed
 			le.exec.Error = fmt.Sprintf("agent %q failed: %v", node.ID, err)
@@ -1698,7 +1735,25 @@ func (eng *Engine) invokeWithRetries(le *liveExec, run *NodeRun, policy *pipelin
 				return "", le.ctx.Err()
 			}
 		}
+		var release func() error
+		if useSlot && eng.store != nil && eng.store.owner != "" {
+			var err error
+			release, err = eng.store.acquireSlot(le.ctx, cap(eng.callSlots))
+			if err != nil {
+				<-eng.callSlots
+				return "", err
+			}
+		}
 		out, err := invoke()
+		if release != nil {
+			if releaseErr := release(); releaseErr != nil {
+				eng.mu.Lock()
+				eng.failPersistenceLocked(fmt.Errorf("releasing runtime slot: %w", releaseErr))
+				eng.mu.Unlock()
+				<-eng.callSlots
+				return "", releaseErr
+			}
+		}
 		if useSlot {
 			<-eng.callSlots
 		}
@@ -1723,6 +1778,8 @@ func (eng *Engine) invokeWithRetries(le *liveExec, run *NodeRun, policy *pipelin
 			automaticRetries++
 			run.Retries++
 			run.Error = err.Error()
+			log.Printf("execution %s: node %s run %s call failed; automatic retry %d/%d: %v",
+				le.exec.ID, run.NodeID, run.ID, automaticRetries, maxRetries, err)
 			eng.persistLocked(le)
 			eng.mu.Unlock()
 			if backoff > 0 {
@@ -1750,6 +1807,8 @@ func (eng *Engine) invokeWithRetries(le *liveExec, run *NodeRun, policy *pipelin
 		pending := &pendingRetry{run: run, resume: run.Status, ch: make(chan bool, 1)}
 		run.Status = StatusWaitingRetry
 		run.Error = err.Error()
+		log.Printf("execution %s: node %s run %s call failed; awaiting manual retry: %v",
+			le.exec.ID, run.NodeID, run.ID, err)
 		le.retries[run.ID] = pending
 		eng.persistLocked(le)
 		eng.mu.Unlock()
@@ -1793,9 +1852,15 @@ func (eng *Engine) cancelOrchRun(le *liveExec, oi *orchInstance) {
 // --- helpers ---
 
 func (eng *Engine) persistLocked(le *liveExec) {
+	if eng.persistError != nil {
+		return
+	}
 	if eng.store != nil {
 		if err := eng.store.Save(le.exec); err != nil {
 			log.Printf("persisting execution %s: %v", le.exec.ID, err)
+			if eng.store.owner != "" {
+				eng.failPersistenceLocked(err)
+			}
 			return
 		}
 		select {
@@ -1803,6 +1868,15 @@ func (eng *Engine) persistLocked(le *liveExec) {
 			delete(eng.execs, le.exec.ID)
 		default:
 		}
+	}
+}
+
+func (eng *Engine) failPersistenceLocked(err error) {
+	if eng.persistError == nil {
+		eng.persistError = err
+	}
+	for _, active := range eng.execs {
+		active.cancel()
 	}
 }
 

@@ -139,6 +139,9 @@ func logMiddleware(next http.Handler) http.Handler {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	if status >= http.StatusBadRequest {
+		log.Printf("HTTP %d error: %v", status, v)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)

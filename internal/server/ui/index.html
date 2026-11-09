@@ -23,6 +23,12 @@
   }
   a { color: var(--accent2); text-decoration: none; }
   a:hover { text-decoration: underline; }
+  .github-link {
+    position: fixed; right: 16px; bottom: 16px; z-index: 10;
+    padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg2); box-shadow: 0 2px 8px rgba(0,0,0,.3);
+  }
+  .github-link:focus-visible { outline: 2px solid var(--accent2); outline-offset: 3px; }
   .layout { display: flex; min-height: 100vh; min-width: 0; }
 
   /* Sidebar: timber-panelled box wall with a lever frame. */
@@ -100,7 +106,7 @@
   .diagram-mini .occupied { stroke: var(--err); stroke-width: 3; fill: none; stroke-dasharray: 26 400; animation: occupy 9s linear infinite; }
   @keyframes occupy { from { stroke-dashoffset: 26; } to { stroke-dashoffset: -230; } }
 
-  .main { flex: 1 1 0; min-width: 0; width: 100%; padding: 28px 36px; }
+  .main { flex: 1 1 0; min-width: 0; width: 100%; padding: 28px 36px 76px; }
   h2 { margin: 0 0 4px; font: 600 22px/1.3 var(--sign); letter-spacing: .4px; }
   h2.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 18px; letter-spacing: 0; }
   .page-sub { color: var(--muted); margin-bottom: 22px; }
@@ -285,7 +291,7 @@
   .badge-installed { font-size: 11px; color: var(--ok); border: 1px solid var(--ok); border-radius: 3px; padding: 0 6px; margin-left: 6px; }
   @media (max-width: 900px) { .registry-grid { grid-template-columns: 1fr; } }
   .topline { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
-  .toast { position: fixed; bottom: 20px; right: 20px; background: var(--enamel); color: var(--cream); border: 2px solid var(--cream);
+  .toast { position: fixed; bottom: 68px; right: 20px; background: var(--enamel); color: var(--cream); border: 2px solid var(--cream);
            font-family: var(--sign); letter-spacing: .5px; padding: 10px 18px; border-radius: 4px; opacity: 0; transition: opacity .25s; pointer-events: none; }
   .toast.show { opacity: 1; }
   .empty { text-align: center; color: var(--muted); padding: 40px 0; }
@@ -305,7 +311,7 @@
     .dashboard-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .dashboard-board { grid-template-columns: minmax(0, 1fr); }
     .sidebar { width: 200px; }
-    .main { padding: 24px; }
+    .main { padding: 24px 24px 76px; }
     .topline { flex-wrap: wrap; }
   }
   @media (max-width: 640px) {
@@ -327,7 +333,7 @@
     .lever::before { left: 5px; bottom: 5px; width: 5px; height: 23px; }
     .lever::after { width: 14px; }
     .diagram-mini { display: none; }
-    .main { width: 100%; padding: 20px 14px 30px; }
+    .main { width: 100%; padding: 20px 14px 76px; }
     .execution-diagram .diagram-card { max-height: 320px; }
     .topline { align-items: center; }
     .topline > div { min-width: 0; }
@@ -338,7 +344,7 @@
     .runhead { gap: 7px; }
     .results-head { flex-wrap: wrap; }
     .card:has(table) table { min-width: 680px; }
-    .toast { left: 14px; right: 14px; bottom: 14px; text-align: center; }
+    .toast { left: 14px; right: 14px; bottom: 68px; text-align: center; }
   }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition: none !important; }
@@ -346,6 +352,7 @@
 </style>
 </head>
 <body>
+<a class="github-link" href="https://github.com/kaladinstorm84/SignalBox" target="_blank" rel="noopener noreferrer">SignalBox on GitHub</a>
 <div class="layout">
   <aside class="sidebar">
     <div class="nameboard">
@@ -1753,7 +1760,9 @@ async function showNewRun() {
       <label>Pipeline</label><select id="pl">${options}</select>
       <div id="pl-info" class="muted" style="margin-top:8px"></div>
       <div id="pl-params"></div>
-      <label>Input</label><textarea id="input" placeholder="The task, question, or payload handed to the entry agent..."></textarea>
+      <label for="input">Input</label><textarea id="input" aria-describedby="input-requirements input-error" placeholder="The task, question, or payload handed to the entry agent..."></textarea>
+      <div id="input-requirements" class="muted"></div>
+      <div id="input-error" class="err-banner" role="alert" hidden></div>
       <label>Files <span class="muted">optional</span></label>
       <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Attach files">
         <div>Drop files here or <u>browse</u></div>
@@ -1766,6 +1775,21 @@ async function showNewRun() {
   const info = document.getElementById('pl-info');
   const paramsBox = document.getElementById('pl-params');
   const sel = document.getElementById('pl');
+  const inputField = document.getElementById('input');
+  const inputError = document.getElementById('input-error');
+  const inputRequirements = document.getElementById('input-requirements');
+  let inputValidationAttempted = false;
+  const validateInput = () => {
+    const p = pipelines.find(q => q.name === sel.value);
+    const message = structuredInputError(inputField.value, p && p.input_schema);
+    inputError.textContent = message;
+    inputError.hidden = !message;
+    inputField.setAttribute('aria-invalid', String(Boolean(message)));
+    return !message;
+  };
+  inputField.addEventListener('input', () => {
+    if (inputValidationAttempted) validateInput();
+  });
   const requestedPipeline = new URLSearchParams(location.hash.split('?')[1] || '').get('pipeline');
   if (pipelines.some(p => p.name === requestedPipeline)) sel.value = requestedPipeline;
   const dropzone = document.getElementById('dropzone');
@@ -1794,6 +1818,16 @@ async function showNewRun() {
   dropzone.addEventListener('drop', e => { e.preventDefault(); dropzone.classList.remove('over'); addFiles(e.dataTransfer.files); });
   const describe = () => {
     const p = pipelines.find(q => q.name === sel.value);
+    inputRequirements.textContent = p && p.input_schema
+      ? `Required: valid JSON matching schema "${p.input_schema}".`
+      : '';
+    inputField.placeholder = p && p.input_schema
+      ? 'Enter a JSON document matching the required input schema...'
+      : 'The task, question, or payload handed to the entry agent...';
+    inputValidationAttempted = false;
+    inputError.hidden = true;
+    inputError.textContent = '';
+    inputField.removeAttribute('aria-invalid');
     paramsBox.innerHTML = p && p.params && p.params.length
       ? `<div class="params-form"><div class="params-title">Parameters</div>${p.params.map(paramField).join('')}</div>` : '';
     if (!p) { info.textContent = ''; return; }
@@ -1804,6 +1838,8 @@ async function showNewRun() {
   };
   sel.addEventListener('change', describe); describe();
   document.getElementById('start').addEventListener('click', async () => {
+    inputValidationAttempted = true;
+    if (!validateInput()) { inputField.focus(); return; }
     const input = document.getElementById('input').value.trim();
     const params = {};
     for (const el of paramsBox.querySelectorAll('[data-param]')) {
@@ -1837,6 +1873,17 @@ async function showNewRun() {
 }
 
 // --- pipelines ---
+function structuredInputError(input, schema) {
+  if (!schema) return '';
+  if (!input.trim()) return `Input is required: enter a JSON document matching schema "${schema}".`;
+  try {
+    JSON.parse(input);
+    return '';
+  } catch {
+    return `Input must be valid JSON matching schema "${schema}". Plain text is not valid JSON.`;
+  }
+}
+
 function pipelineLink(name) {
   return '#/pipelines/view/' + encodeURIComponent(name);
 }

@@ -21,6 +21,8 @@ type Store struct {
 	db        *sql.DB
 	stateDir  string
 	retention int
+	owner     string
+	ownerLock *os.File
 }
 
 // NewStore opens the execution database and imports any legacy JSON records.
@@ -105,6 +107,7 @@ func (s *Store) sweepUploads() {
 
 func (s *Store) initialize() error {
 	for _, statement := range []string{
+		"PRAGMA busy_timeout = 5000",
 		"PRAGMA journal_mode = WAL",
 		"PRAGMA synchronous = FULL",
 		"PRAGMA busy_timeout = 5000",
@@ -121,6 +124,25 @@ func (s *Store) initialize() error {
 		)`,
 		"CREATE INDEX IF NOT EXISTS executions_created_at ON executions(created_at DESC, id DESC)",
 		"CREATE INDEX IF NOT EXISTS executions_terminal_created_at ON executions(status, created_at DESC)",
+		`CREATE TABLE IF NOT EXISTS workers (
+			token TEXT PRIMARY KEY, lease INTEGER NOT NULL, state TEXT NOT NULL,
+			pid INTEGER NOT NULL DEFAULT 0
+		)`,
+		"CREATE INDEX IF NOT EXISTS workers_state ON workers(state)",
+		`CREATE TABLE IF NOT EXISTS execution_owners (
+			execution TEXT PRIMARY KEY, worker TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS worker_commands (
+			id TEXT PRIMARY KEY, worker TEXT NOT NULL, request BLOB NOT NULL,
+			state TEXT NOT NULL, deadline INTEGER NOT NULL, response BLOB
+		)`,
+		`CREATE INDEX IF NOT EXISTS worker_commands_pending ON worker_commands(worker, state)`,
+		`CREATE TABLE IF NOT EXISTS runtime_slots (
+			id TEXT PRIMARY KEY, worker TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS runtime_limit (
+			id INTEGER PRIMARY KEY CHECK(id=1), slots INTEGER NOT NULL
+		)`,
 	} {
 		if _, err := s.db.Exec(statement); err != nil {
 			return fmt.Errorf("initializing execution database: %w", err)
@@ -131,6 +153,10 @@ func (s *Store) initialize() error {
 
 // Close releases the database connection.
 func (s *Store) Close() error {
+	if s.ownerLock != nil {
+		_ = s.ownerLock.Close()
+		s.ownerLock = nil
+	}
 	return s.db.Close()
 }
 
@@ -147,6 +173,9 @@ func (s *Store) Save(e *Execution) error {
 		return fmt.Errorf("starting execution save: %w", err)
 	}
 	defer tx.Rollback()
+	if err := s.checkWriter(tx, e.ID); err != nil {
+		return err
+	}
 	if err := saveExecution(tx, e, payload, summary); err != nil {
 		return err
 	}
@@ -271,7 +300,15 @@ func (s *Store) ListPage(page, pageSize int) ([]Summary, int, error) {
 
 // LoadAll returns all records, primarily for migration and tests.
 func (s *Store) LoadAll() ([]*Execution, error) {
-	rows, err := s.db.Query("SELECT payload FROM executions ORDER BY created_at DESC, id DESC")
+	return s.loadExecutions("")
+}
+
+func (s *Store) activeExecutions() ([]*Execution, error) {
+	return s.loadExecutions("WHERE status NOT IN ('completed','failed','rejected','canceled','interrupted')")
+}
+
+func (s *Store) loadExecutions(filter string) ([]*Execution, error) {
+	rows, err := s.db.Query("SELECT payload FROM executions " + filter + " ORDER BY created_at DESC, id DESC")
 	if err != nil {
 		return nil, fmt.Errorf("loading execution history: %w", err)
 	}
@@ -308,6 +345,10 @@ func (s *Store) importLegacy() error {
 	if err != nil {
 		return err
 	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("UPDATE workers SET lease=lease WHERE token=''"); err != nil {
+		return err
+	}
 	var imported []string
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
@@ -315,6 +356,9 @@ func (s *Store) importLegacy() error {
 		}
 		path := filepath.Join(dir, entry.Name())
 		data, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue // another opener already finished the import
+		}
 		if err != nil {
 			_ = tx.Rollback()
 			return err
@@ -323,6 +367,14 @@ func (s *Store) importLegacy() error {
 		if err := json.Unmarshal(data, &execution); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("%s: %w", entry.Name(), err)
+		}
+		var exists int
+		if err := tx.QueryRow("SELECT COUNT(*) FROM executions WHERE id=?", execution.ID).Scan(&exists); err != nil {
+			return err
+		}
+		if exists > 0 {
+			imported = append(imported, path)
+			continue
 		}
 		interruptExecution(&execution)
 		payload, err := json.Marshal(&execution)
@@ -352,9 +404,15 @@ func (s *Store) importLegacy() error {
 }
 
 func (s *Store) markInterrupted() error {
-	rows, err := s.db.Query(`SELECT payload FROM executions
+	return s.recoverOwners()
+}
+
+func (s *Store) interruptUnowned(tx *sql.Tx) error {
+	rows, err := tx.Query(`SELECT payload FROM executions
 		WHERE status IN ('pending', 'running', 'waiting_approval', 'waiting_manual_edit',
-			'waiting_inputs', 'waiting_retry', 'canceled')`)
+			'waiting_inputs', 'waiting_retry', 'canceled')
+		AND NOT EXISTS (SELECT 1 FROM execution_owners o JOIN workers w ON w.token=o.worker
+			WHERE o.execution=executions.id AND w.state IN ('starting','running'))`)
 	if err != nil {
 		return err
 	}
@@ -382,7 +440,7 @@ func (s *Store) markInterrupted() error {
 		return err
 	}
 	for _, execution := range changed {
-		if err := s.Save(execution); err != nil {
+		if err := saveExecution(tx, execution, mustPayload(execution), summarizeExecution(execution)); err != nil {
 			return err
 		}
 	}
@@ -393,7 +451,7 @@ func interruptExecution(e *Execution) bool {
 	changed := false
 	if !e.Status.Terminal() {
 		e.Status = StatusInterrupted
-		e.Error = "server stopped while the execution was in flight"
+		e.Error = "execution owner stopped or lost its lease while the execution was in flight"
 		changed = true
 	}
 	for _, run := range e.Runs {
@@ -413,6 +471,8 @@ func pruneExecutions(tx *sql.Tx, retention int) ([]string, error) {
 	}
 	rows, err := tx.Query(`DELETE FROM executions
 		WHERE status IN ('completed', 'failed', 'rejected', 'canceled', 'interrupted')
+		AND NOT EXISTS (SELECT 1 FROM execution_owners o JOIN workers w ON w.token=o.worker
+			WHERE o.execution=executions.id AND w.state IN ('starting','running'))
 		AND id NOT IN (
 			SELECT id FROM executions
 			WHERE status IN ('completed', 'failed', 'rejected', 'canceled', 'interrupted')

@@ -31,6 +31,7 @@ Usage:
 	signalbox init [dir] [--force]     Create a project config, pipeline and AGENTS.md
   signalbox validate                 Validate the config and all pipelines
   signalbox serve [--addr host:port] Serve the tracking & launch web UI
+  signalbox mcp [--url http://host:port] [--allow-review]  Serve MCP over stdio
   signalbox run <pipeline> [--input text] [--param k=v]...  Run a pipeline in the terminal
   signalbox chunks list|add|done|remove <execution> ...  Manage execution chunks
   signalbox list | show | start | approve | reject | edit | retry
@@ -54,6 +55,10 @@ func Main(args []string) int {
 		err = cmdValidate(args[1:])
 	case "serve":
 		err = cmdServe(args[1:])
+	case "_worker":
+		err = cmdWorker(args[1:])
+	case "mcp":
+		err = cmdMCP(args[1:])
 	case "run":
 		err = cmdRun(args[1:])
 	case "chunks":
@@ -182,16 +187,23 @@ func cmdServe(args []string) error {
 	if err != nil {
 		return err
 	}
+	defer eng.Store().Close()
+	if err := eng.Store().ConfigureRuntimeLimit(cfg.MaxConcurrentCalls); err != nil {
+		return err
+	}
+	eng.SetWorkerLauncher(func(req engine.WorkerRequest) (string, error) {
+		return launchWorker(cfg, eng.Store(), req)
+	})
 	listen := cfg.Addr()
 	if *addr != "" {
 		listen = *addr
 	}
 	srv := server.New(eng, cfg.Project, func() (map[string]*pipeline.Pipeline, error) {
-		_, pipelines, err := loadProject()
-		return pipelines, err
+		return loadProjectPipelines(cfg)
 	}, watcher.New(cfg.StatePath(), eng.Start), cfg.Watchers, cfg.Root)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	go recoverWorkers(ctx, eng.Store())
 	return srv.ListenAndServe(ctx, listen)
 }
 
@@ -228,6 +240,29 @@ func cmdRun(args []string) error {
 	if err != nil {
 		return err
 	}
+	defer eng.Store().Close()
+	token, err := eng.Store().PrepareWorker()
+	if err != nil {
+		return err
+	}
+	if err := eng.Store().ClaimWorker(token, os.Getpid()); err != nil {
+		return err
+	}
+	if err := eng.Store().ConfigureRuntimeLimit(cfg.MaxConcurrentCalls); err != nil {
+		_ = eng.Store().FinishWorker(token)
+		return err
+	}
+	ctxOwner, stopOwner := context.WithCancel(context.Background())
+	ownerDone := make(chan struct{})
+	go func() {
+		defer close(ownerDone)
+		renewForeground(ctxOwner, eng)
+	}()
+	defer func() {
+		stopOwner()
+		<-ownerDone
+		_ = eng.Store().FinishWorker(token)
+	}()
 
 	in := *input
 	if in == "" {
@@ -392,6 +427,9 @@ func printResult(eng *engine.Engine, execID string) error {
 	for _, f := range exec.FinalOutputs {
 		fmt.Printf("\n=== result from %s ===\n%s\n", f.NodeID, f.Output)
 	}
+	if err := eng.PersistenceError(); err != nil {
+		return fmt.Errorf("execution persistence failed: %w", err)
+	}
 	if exec.Status != engine.StatusCompleted {
 		return fmt.Errorf("execution did not complete")
 	}
@@ -409,22 +447,30 @@ func loadProject() (*config.Config, map[string]*pipeline.Pipeline, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	pipelines, err := loadProjectPipelines(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	return cfg, pipelines, nil
+}
+
+func loadProjectPipelines(cfg *config.Config) (map[string]*pipeline.Pipeline, error) {
 	pipelines, errs := pipeline.LoadDir(cfg.PipelinesPath(), pipeline.Options{Root: cfg.Root, AllowExternal: cfg.AllowExternalImports, SchemasDir: cfg.SchemasPath()})
 	if len(errs) > 0 {
 		msgs := make([]string, len(errs))
 		for i, e := range errs {
 			msgs[i] = e.Error()
 		}
-		return nil, nil, fmt.Errorf("pipeline errors:\n  %s", strings.Join(msgs, "\n  "))
+		return nil, fmt.Errorf("pipeline errors:\n  %s", strings.Join(msgs, "\n  "))
 	}
 	if len(pipelines) == 0 {
-		return nil, nil, fmt.Errorf("no pipelines found in %s", cfg.PipelinesPath())
+		return nil, fmt.Errorf("no pipelines found in %s", cfg.PipelinesPath())
 	}
 
 	if err := runtime.ValidateProject(cfg, pipelines); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return cfg, pipelines, nil
+	return pipelines, nil
 }
 
 func buildEngine(cfg *config.Config, pipelines map[string]*pipeline.Pipeline, persist bool) (*engine.Engine, error) {

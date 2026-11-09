@@ -32,8 +32,24 @@ func (eng *Engine) Dashboard() (Dashboard, error) {
 		Active:    make([]Summary, 0),
 		Recent:    make([]Summary, 0),
 	}
-	for _, live := range eng.execs {
-		execution := live.exec
+	var executions []*Execution
+	if eng.store != nil {
+		all, err := eng.store.activeExecutions()
+		if err != nil {
+			return Dashboard{}, err
+		}
+		for _, execution := range all {
+			if local, ok := eng.execs[execution.ID]; ok {
+				execution = local.exec
+			}
+			executions = append(executions, execution)
+		}
+	} else {
+		for _, live := range eng.execs {
+			executions = append(executions, live.exec)
+		}
+	}
+	for _, execution := range executions {
 		if eng.store == nil {
 			result.Statuses[execution.Status]++
 			result.Total++

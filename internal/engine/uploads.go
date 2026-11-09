@@ -117,6 +117,9 @@ type StartOptions struct {
 // StartWith begins a new execution with parameters and files. Files and
 // parameters are validated before anything runs.
 func (eng *Engine) StartWith(opts StartOptions) (string, error) {
+	if eng.launchWorker != nil {
+		return eng.launchWorker(WorkerRequest{Op: "start", Start: opts})
+	}
 	eng.mu.Lock()
 	defer eng.mu.Unlock()
 	spec := startSpec{pipeline: opts.Pipeline, input: opts.Input, params: opts.Params, files: opts.Files}
