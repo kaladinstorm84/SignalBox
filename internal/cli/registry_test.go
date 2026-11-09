@@ -25,6 +25,7 @@ func TestRegistryCommands(t *testing.T) {
 	cfg := "version: 1\nruntimes:\n  mock: {type: mock}\nregistry:\n  path: " + filepath.ToSlash(registryDir) + "\n"
 	write(publisher, "signalbox.yaml", cfg)
 	write(publisher, "pipelines/notes.yaml", "name: notes\ndescription: Release notes\nentry: a\nagents:\n  - id: a\n    runtime: mock\n")
+	write(publisher, "knowledge-bases/handbook/guide.md", "Shared reference text")
 	write(consumer, "signalbox.yaml", "version: 1\nruntimes:\n  mock: {type: mock}\n")
 
 	run := func(args ...string) string {
@@ -55,6 +56,15 @@ func TestRegistryCommands(t *testing.T) {
 	if out := run("show", "notes", "--file", "pipelines/notes.yaml"); !strings.Contains(out, "Release notes") {
 		t.Fatalf("show --file: %s", out)
 	}
+	if out := run("publish-knowledge", "handbook", "--description", "Shared handbook"); !strings.Contains(out, "published handbook@0.1.0") {
+		t.Fatalf("publish knowledge: %s", out)
+	}
+	if out := run("search", "handbook"); !strings.Contains(out, "knowledge") {
+		t.Fatalf("search knowledge: %s", out)
+	}
+	if out := run("show", "handbook"); !strings.Contains(out, "Kind: knowledge") || !strings.Contains(out, "guide.md") {
+		t.Fatalf("show knowledge: %s", out)
+	}
 
 	// The consumer has no registry configured, so it passes --registry.
 	t.Chdir(consumer)
@@ -70,5 +80,11 @@ func TestRegistryCommands(t *testing.T) {
 	}
 	if out := run("install", "notes", "--registry", registryDir); !strings.Contains(out, "notes@1.0.0") {
 		t.Fatalf("upgrade: %s", out)
+	}
+	if out := run("install", "handbook", "--registry", registryDir); !strings.Contains(out, "knowledge-bases/handbook/guide.md") {
+		t.Fatalf("install knowledge: %s", out)
+	}
+	if data, err := os.ReadFile(filepath.Join(consumer, "knowledge-bases", "handbook", "guide.md")); err != nil || string(data) != "Shared reference text" {
+		t.Fatalf("installed knowledge = %q, %v", data, err)
 	}
 }

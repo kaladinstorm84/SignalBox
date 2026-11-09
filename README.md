@@ -1305,7 +1305,7 @@ it automatically; otherwise they list the candidates and ask for `--run`.
 ## Pipeline registry
 
 A registry is a directory, usually on a file share, holding versioned,
-hash-verified pipeline packages. Configure it in `signalbox.yaml`:
+hash-verified pipeline and knowledge-base packages. Configure it in `signalbox.yaml`:
 
 ```yaml
 registry:
@@ -1317,22 +1317,30 @@ signalbox registry search [query]
 signalbox registry versions <name>
 signalbox registry show <name>[@version] [--file path]
 signalbox registry publish <pipeline> [--version x.y.z] [--by name]
+signalbox registry publish-knowledge <base> [--version x.y.z] [--description text] [--by name]
 signalbox registry install <name>[@version|@latest] [--digest sha256:...] [--force]
 signalbox registry installed
 ```
 
 Every command accepts `--registry PATH` to override the configured path. The
-**Registry** page in the web UI offers the same search, inspect, install, and
-publish actions.
+**Registry** page in the web UI has separate **Pipelines** and **Knowledge**
+tabs, each offering search, inspect, version selection, install, and publish
+actions. The Knowledge tab lists non-empty local knowledge bases for publishing;
+create or upload documents on the **Knowledge bases** page first.
 
 - **Packages.** Publishing validates the pipeline and packages it together
-  with its imports, the scripts its code steps use, and the schema files it
-  references. Files outside the
+  with its imports, the scripts its code steps use, the schema files it
+  references, and the documents in its attached knowledge bases. Publishing
+  a knowledge base packages all its supported UTF-8 text documents, without
+  requiring a pipeline or a particular runtime. Files outside the
   project are refused. The layout is
   `<registry>/<name>/<version>/manifest.json` plus `files/<project path>`. The
   manifest lists each file's SHA-256 and a package digest, along with the
-  runtimes and params the pipeline needs.
-- **Names.** The package name is the pipeline name. It must be lowercase
+  runtimes and params the pipeline needs. New manifests declare `kind` as
+  `pipeline` or `knowledge`; older manifests without a kind remain pipelines.
+- **Names.** The package name is the pipeline or knowledge-base name. Both
+  package types share a registry namespace, so a name cannot change type
+  between versions. It must be lowercase
   letters, digits, `_`, or `-` (up to 64 characters, starting with a letter or
   digit), so packages behave the same on case-insensitive file systems and
   shares. Windows device names (`con`, `nul`, `com1`, …) are refused, as is
@@ -1340,6 +1348,7 @@ publish actions.
 - **Versions.** These are semantic versions (`1.2.0`, `2.0.0-rc.1`). The
   version comes from `--version`, else the pipeline's `version:` field, else
   the next patch after the latest published version (`0.1.0` first).
+  Knowledge bases use `--version` or the next patch (`0.1.0` first).
   Published versions are immutable.
 - **Integrity.** `show` and `install` verify every file hash and the digest.
   Install can be pinned with `--digest`; the UI always pins to the digest it
@@ -1352,6 +1361,9 @@ publish actions.
   when an existing file differs from the package. Files unchanged since the
   last install upgrade freely; `--force` overwrites local edits. Installed
   versions and file hashes are recorded in `signalbox.lock.json`.
+  Knowledge packages install documents into `knowledge-bases/<name>/` with
+  the same digest verification, upgrade tracking, and local-edit protection.
+  Attach an installed base to an agent with `knowledge_bases: [name]`.
 - **Git.** Keep a `.gitattributes` containing `* -text` in a registry that
   lives in git, so line-ending conversion does not change the hashed bytes.
 
@@ -1572,11 +1584,11 @@ output stable between polls unless a new pipeline run is intended.
 | `POST /api/executions/{id}/chunks` | Add a chunk: `{"title": "...", "by": "..."}`; returns the chunk (409 once the execution has finished) |
 | `POST /api/executions/{id}/chunks/{chunk}/done` | Mark a chunk done: optional `{"by": "..."}` |
 | `DELETE /api/executions/{id}/chunks/{chunk}` | Remove a chunk (its ID is not reused) |
-| `GET /api/registry?q=...` | Registry status: `configured`, `path`, matching `packages`, `installed` (lock entries), and `publishable` pipeline names |
+| `GET /api/registry?q=...` | Registry status: `configured`, `path`, matching `packages` (with `kind`), `installed` (lock entries), `publishable` pipeline names, and `publishable_knowledge` base names |
 | `GET /api/registry/{name}` | Latest version of a package: `manifest`, `versions`, file contents, and `verify_error` if integrity fails |
 | `GET /api/registry/{name}/{version}` | A specific version (`latest` allowed) |
 | `POST /api/registry/install` | Install: `{"ref": "name@1.2.0", "digest": "sha256:...", "force": false}` (409 on conflicts or validation errors) |
-| `POST /api/registry/publish` | Publish: `{"pipeline": "name", "version": "", "by": "..."}`; returns 201 with the manifest |
+| `POST /api/registry/publish` | Publish: `{"pipeline": "name", "version": "", "by": "..."}` or `{"knowledge_base": "name", "description": "...", "version": "", "by": "..."}` (exactly one type); returns 201 with the manifest |
 
 ## Development
 

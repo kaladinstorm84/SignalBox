@@ -1,4 +1,4 @@
-// Package registry shares pipelines through a directory (or file share)
+// Package registry shares pipelines and knowledge bases through a directory (or file share)
 // registry. Each published version is an immutable package:
 //
 //	<registry>/<name>/<version>/manifest.json
@@ -33,6 +33,11 @@ const ManifestFile = "manifest.json"
 // LockFile records installed packages at the project root.
 const LockFile = "signalbox.lock.json"
 
+const (
+	KindPipeline  = "pipeline"
+	KindKnowledge = "knowledge"
+)
+
 // Package names are directory names on whatever file share hosts the
 // registry, so they are restricted to a portable subset: lowercase (no
 // case-only clashes on Windows/macOS), no dots, and no reserved device names.
@@ -51,14 +56,15 @@ type File struct {
 
 // Manifest describes one published package version.
 type Manifest struct {
+	Kind          string    `json:"kind,omitempty"`
 	Name          string    `json:"name"`
 	Version       string    `json:"version"`
 	Description   string    `json:"description,omitempty"`
 	SchemaVersion int       `json:"schema_version"`
 	PublishedAt   time.Time `json:"published_at"`
 	PublishedBy   string    `json:"published_by,omitempty"`
-	// Entry is the pipeline file's path; PipelinesDir is the publisher's
-	// pipelines directory, so installs can map it to the consumer's.
+	// Entry is the pipeline file's path or the first knowledge document.
+	// PipelinesDir maps pipeline files into the consumer's directory.
 	Entry        string `json:"entry"`
 	PipelinesDir string `json:"pipelines_dir"`
 	// SchemasDir is the publisher's schemas directory, when the package
@@ -70,8 +76,18 @@ type Manifest struct {
 	Digest     string   `json:"digest"`
 }
 
+// PackageKind preserves compatibility with pipeline manifests published before
+// the registry supported knowledge bases.
+func (m *Manifest) PackageKind() string {
+	if m.Kind == "" {
+		return KindPipeline
+	}
+	return m.Kind
+}
+
 // Summary is one package in search results.
 type Summary struct {
+	Kind        string   `json:"kind"`
 	Name        string   `json:"name"`
 	Latest      string   `json:"latest"`
 	Description string   `json:"description,omitempty"`
@@ -211,7 +227,7 @@ func (r *Registry) Search(query string) ([]Summary, error) {
 		if query != "" && !strings.Contains(strings.ToLower(m.Name+" "+m.Description), query) {
 			continue
 		}
-		out = append(out, Summary{Name: m.Name, Latest: m.Version, Description: m.Description, Versions: versions})
+		out = append(out, Summary{Kind: m.PackageKind(), Name: m.Name, Latest: m.Version, Description: m.Description, Versions: versions})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
@@ -241,6 +257,9 @@ func (r *Registry) ReadFile(m *Manifest, rel string) ([]byte, error) {
 // Verify checks the schema, every file hash, and the digest, returning the
 // file contents by path.
 func (r *Registry) Verify(m *Manifest) (map[string][]byte, error) {
+	if m.PackageKind() != KindPipeline && m.PackageKind() != KindKnowledge {
+		return nil, fmt.Errorf("package %s@%s: unknown kind %q", m.Name, m.Version, m.Kind)
+	}
 	if m.SchemaVersion > pipeline.SchemaVersion {
 		return nil, fmt.Errorf("package %s@%s needs pipeline schema %d; this SignalBox supports %d (upgrade SignalBox)", m.Name, m.Version, m.SchemaVersion, pipeline.SchemaVersion)
 	}
@@ -259,6 +278,11 @@ func (r *Registry) Verify(m *Manifest) (map[string][]byte, error) {
 	}
 	if !hasEntry {
 		return nil, fmt.Errorf("package %s@%s: entry %s is not among its files", m.Name, m.Version, m.Entry)
+	}
+	if m.PackageKind() == KindKnowledge {
+		if err := validateKnowledgePackage(m, contents); err != nil {
+			return nil, err
+		}
 	}
 	return contents, nil
 }
@@ -322,6 +346,15 @@ func (r *Registry) Publish(cfg *config.Config, name string, opts PublishOptions)
 		version = p.Version
 	}
 	existing, _ := r.Versions(name)
+	if len(existing) > 0 {
+		previous, err := r.Manifest(name, existing[0])
+		if err != nil {
+			return nil, err
+		}
+		if previous.PackageKind() != KindPipeline {
+			return nil, fmt.Errorf("package %q is already used by a knowledge base; choose a different name", name)
+		}
+	}
 	if version == "" {
 		version = "0.1.0"
 		if len(existing) > 0 {
@@ -373,6 +406,15 @@ func (r *Registry) Publish(cfg *config.Config, name string, opts PublishOptions)
 				return nil, err
 			}
 		}
+		for _, base := range n.KnowledgeBases {
+			documents, err := knowledgeDocuments(cfg.Root, base)
+			if err != nil {
+				return nil, fmt.Errorf("agent %q: %w", n.ID, err)
+			}
+			for rel := range documents {
+				rels[rel] = true
+			}
+		}
 	}
 
 	schemasDir := ""
@@ -397,6 +439,7 @@ func (r *Registry) Publish(cfg *config.Config, name string, opts PublishOptions)
 		return nil, err
 	}
 	m := &Manifest{
+		Kind:          KindPipeline,
 		SchemasDir:    schemasDir,
 		Name:          name,
 		Version:       version,
@@ -409,6 +452,19 @@ func (r *Registry) Publish(cfg *config.Config, name string, opts PublishOptions)
 		Runtimes:      sortedKeys(runtimes),
 		Params:        sortedKeys(p.Params),
 	}
+	contents := make(map[string][]byte, len(rels))
+	for _, rel := range sortedKeys(rels) {
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+		if err != nil {
+			return nil, err
+		}
+		contents[rel] = data
+	}
+	return r.publishContents(m, contents)
+}
+
+func (r *Registry) publishContents(m *Manifest, contents map[string][]byte) (*Manifest, error) {
+	name, version := m.Name, m.Version
 	pkgDir := filepath.Join(r.Dir, name)
 	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
 		return nil, err
@@ -418,11 +474,8 @@ func (r *Registry) Publish(cfg *config.Config, name string, opts PublishOptions)
 		return nil, err
 	}
 	defer os.RemoveAll(tmp)
-	for _, rel := range sortedKeys(rels) {
-		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
-		if err != nil {
-			return nil, err
-		}
+	for _, rel := range sortedKeys(contents) {
+		data := contents[rel]
 		dst := filepath.Join(tmp, "files", filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return nil, err
@@ -465,9 +518,8 @@ type InstallResult struct {
 	Replaced []string  `json:"replaced,omitempty"`
 }
 
-// Install verifies a package and copies it into the project, after checking
-// it validates against the project's runtimes and does not clash with
-// existing pipelines or locally modified files.
+// Install verifies a package and copies it into the project. Pipelines must
+// validate against the project's runtimes; all packages protect local edits.
 func (r *Registry) Install(cfg *config.Config, ref string, opts InstallOptions) (*InstallResult, error) {
 	name, version, err := r.Resolve(ref)
 	if err != nil {
@@ -500,51 +552,61 @@ func (r *Registry) Install(cfg *config.Config, ref string, opts InstallOptions) 
 	schemasDir = path.Clean(filepath.ToSlash(schemasDir))
 	targets := map[string]string{}
 	for rel := range contents {
-		target := mapPath(rel, m.PipelinesDir, pipelinesDir)
-		if m.SchemasDir != "" && strings.HasPrefix(rel, path.Clean(m.SchemasDir)+"/") {
-			target = mapPath(rel, m.SchemasDir, schemasDir)
+		target := rel
+		if m.PackageKind() == KindPipeline {
+			target = mapPath(rel, m.PipelinesDir, pipelinesDir)
+			if m.SchemasDir != "" && strings.HasPrefix(rel, path.Clean(m.SchemasDir)+"/") {
+				target = mapPath(rel, m.SchemasDir, schemasDir)
+			}
 		}
 		if err := safeRel(target); err != nil {
 			return nil, fmt.Errorf("package %s@%s: %w", name, version, err)
 		}
+		if strings.HasPrefix(target, "knowledge-bases/") {
+			if err := checkKnowledgeTarget(root, target); err != nil {
+				return nil, err
+			}
+		}
 		targets[rel] = target
 	}
-	entryTarget := targets[m.Entry]
-	if path.Dir(entryTarget) != pipelinesDir {
-		return nil, fmt.Errorf("package %s@%s: entry %s would not land in the pipelines directory", name, version, m.Entry)
-	}
+	if m.PackageKind() == KindPipeline {
+		entryTarget := targets[m.Entry]
+		if path.Dir(entryTarget) != pipelinesDir {
+			return nil, fmt.Errorf("package %s@%s: entry %s would not land in the pipelines directory", name, version, m.Entry)
+		}
 
-	// Validate the package in a staging copy before touching the project.
-	stage, err := os.MkdirTemp("", "signalbox-install-")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(stage)
-	for rel, data := range contents {
-		dst := filepath.Join(stage, filepath.FromSlash(targets[rel]))
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		// Validate the package in a staging copy before touching the project.
+		stage, err := os.MkdirTemp("", "signalbox-install-")
+		if err != nil {
 			return nil, err
 		}
-		if err := os.WriteFile(dst, data, 0o644); err != nil {
-			return nil, err
+		defer os.RemoveAll(stage)
+		for rel, data := range contents {
+			dst := filepath.Join(stage, filepath.FromSlash(targets[rel]))
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(dst, data, 0o644); err != nil {
+				return nil, err
+			}
 		}
-	}
-	stageCfg := *cfg
-	stageCfg.Root = stage
-	p, err := pipeline.Load(filepath.Join(stage, filepath.FromSlash(entryTarget)), pipeline.Options{Root: stage, SchemasDir: filepath.Join(stage, filepath.FromSlash(schemasDir))})
-	if err != nil {
-		return nil, fmt.Errorf("package %s@%s is not a valid pipeline: %w", name, version, err)
-	}
-	if p.Name != name {
-		return nil, fmt.Errorf("package %s@%s defines pipeline %q", name, version, p.Name)
-	}
-	if err := runtime.ValidatePipeline(&stageCfg, p); err != nil {
-		return nil, fmt.Errorf("package %s@%s cannot run in this project: %w", name, version, err)
-	}
+		stageCfg := *cfg
+		stageCfg.Root = stage
+		p, err := pipeline.Load(filepath.Join(stage, filepath.FromSlash(entryTarget)), pipeline.Options{Root: stage, SchemasDir: filepath.Join(stage, filepath.FromSlash(schemasDir))})
+		if err != nil {
+			return nil, fmt.Errorf("package %s@%s is not a valid pipeline: %w", name, version, err)
+		}
+		if p.Name != name {
+			return nil, fmt.Errorf("package %s@%s defines pipeline %q", name, version, p.Name)
+		}
+		if err := runtime.ValidatePipeline(&stageCfg, p); err != nil {
+			return nil, fmt.Errorf("package %s@%s cannot run in this project: %w", name, version, err)
+		}
 
-	entryPath := filepath.Join(root, filepath.FromSlash(entryTarget))
-	if existingFile, _, err := findPipeline(cfg, name); err == nil && !strings.EqualFold(filepath.Clean(existingFile), entryPath) {
-		return nil, fmt.Errorf("pipeline %q already exists in %s; remove or rename it first", name, mustRel(root, existingFile))
+		entryPath := filepath.Join(root, filepath.FromSlash(entryTarget))
+		if existingFile, _, err := findPipeline(cfg, name); err == nil && !strings.EqualFold(filepath.Clean(existingFile), entryPath) {
+			return nil, fmt.Errorf("pipeline %q already exists in %s; remove or rename it first", name, mustRel(root, existingFile))
+		}
 	}
 
 	lock, err := ReadLock(root)
@@ -592,6 +654,7 @@ func (r *Registry) Install(cfg *config.Config, ref string, opts InstallOptions) 
 		lockFiles = append(lockFiles, File{Path: target, SHA256: hashBytes(contents[rel]), Size: int64(len(contents[rel]))})
 	}
 	lock.Packages[name] = LockEntry{
+		Kind:        m.PackageKind(),
 		Version:     version,
 		Digest:      m.Digest,
 		Registry:    r.Dir,
@@ -619,6 +682,7 @@ func mapPath(rel, from, to string) string {
 
 // LockEntry is one installed package.
 type LockEntry struct {
+	Kind        string    `json:"kind,omitempty"`
 	Version     string    `json:"version"`
 	Digest      string    `json:"digest"`
 	Registry    string    `json:"registry,omitempty"`

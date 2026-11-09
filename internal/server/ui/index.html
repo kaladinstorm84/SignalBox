@@ -61,6 +61,10 @@
   }
   .nav a:hover { background: rgba(255,255,255,.04); }
   .nav a.active { background: rgba(201,163,74,.1); color: var(--accent2); }
+  .registry-tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--border); margin-bottom: 18px; }
+  .registry-tabs a { padding: 10px 18px; border-bottom: 3px solid transparent; color: var(--muted); }
+  .registry-tabs a[aria-current="page"] { color: var(--accent2); border-bottom-color: var(--accent); }
+  .registry-tabs a:focus-visible { outline: 2px solid var(--accent2); outline-offset: -2px; }
   .pipeline-menu { margin: 0 0 8px 22px; padding-left: 10px; border-left: 1px solid var(--border); }
   .pipeline-menu[hidden] { display: none; }
   .pipeline-menu input { margin: 4px 0 8px; padding: 6px 8px; }
@@ -516,8 +520,8 @@ function route() {
   if (hash.startsWith('#/pipelines')) return showPipelines();
   if (hash.startsWith('#/knowledge-bases')) return showKnowledgeBases();
   if (hash.startsWith('#/settings')) return showSettings();
-  const registryRoute = hash.match(/^#\/registry(?:\/(.+))?$/);
-  if (registryRoute) return showRegistry(registryRoute[1] ? decodeURIComponent(registryRoute[1]) : '');
+  const registryRoute = hash.match(/^#\/registry(?:\/(pipelines|knowledge))?(?:\/(.+))?$/);
+  if (registryRoute) return showRegistry(registryRoute[2] ? decodeURIComponent(registryRoute[2]) : '', registryRoute[1] === 'knowledge' ? 'knowledge' : 'pipeline');
   return showDashboard();
 }
 window.addEventListener('hashchange', route);
@@ -2070,29 +2074,39 @@ async function showPipelines(selected) {
 }
 
 // --- registry ---
-async function showRegistry(selected) {
+function registryLink(kind, ref = '') {
+  return '#/registry/' + (kind === 'knowledge' ? 'knowledge' : 'pipelines') + (ref ? '/' + encodeURIComponent(ref) : '');
+}
+async function showRegistry(selected, kind = 'pipeline') {
   setNav('registry');
+  const expectedHash = location.hash;
+  const isKnowledge = kind === 'knowledge';
   const query = new URLSearchParams(location.search).get('q') || (window.registryQuery || '');
   let data;
   try { data = await api('/registry?q=' + encodeURIComponent(query), {cache: 'no-store'}); }
   catch (e) { $main.innerHTML = `<h2>Registry</h2><div class="err-banner">${esc(e.message)}</div>`; return; }
-  if (!location.hash.startsWith('#/registry')) return;
+  if (location.hash !== expectedHash) return;
   const installed = data.installed || {};
-  const header = `<div class="topline"><div><h2>Registry</h2><div class="page-sub">Share versioned pipelines through a directory or file share${data.configured ? ` · <span class="mono">${esc(data.path)}</span>` : ''}.</div></div></div>`;
+  const header = `<div class="topline"><div><h2>Registry</h2><div class="page-sub">Share versioned pipelines and knowledge bases through a directory or file share${data.configured ? ` · <span class="mono">${esc(data.path)}</span>` : ''}.</div></div></div>
+    <nav class="registry-tabs" aria-label="Registry package type">
+      <a href="#/registry/pipelines" ${!isKnowledge ? 'aria-current="page"' : ''}><b>Pipelines</b></a>
+      <a href="#/registry/knowledge" ${isKnowledge ? 'aria-current="page"' : ''}><b>Knowledge</b></a>
+    </nav>`;
   if (!data.configured) {
     $main.innerHTML = header + `<div class="card"><p>No registry is configured. Add one to <span class="mono">signalbox.yaml</span> (in <a href="#/settings">Settings</a>):</p>
       <pre class="out">registry:\n  path: ./registry        # or an absolute path / file:// share</pre>
       <p class="muted">The command line can also use <span class="mono">signalbox registry ... --registry PATH</span>.</p></div>`;
     return;
   }
-  const rows = (data.packages || []).map(p => `
-    <tr class="row pkg-row ${p.name === selected.split('@')[0] ? 'selected' : ''}" onclick="location.hash='#/registry/${encodeURIComponent(p.name)}'">
+  const rows = (data.packages || []).filter(p => (p.kind || 'pipeline') === kind).map(p => `
+    <tr class="row pkg-row ${p.name === selected.split('@')[0] ? 'selected' : ''}" onclick="location.hash='${registryLink(kind, p.name)}'">
       <td><b>${esc(p.name)}</b>${installed[p.name] ? `<span class="badge-installed">installed ${esc(installed[p.name].version)}</span>` : ''}
         ${p.description ? `<div class="muted">${esc(p.description)}</div>` : ''}</td>
       <td class="mono">${esc(p.latest)}</td><td class="muted">${p.versions.length}</td></tr>`).join('');
-  const publishable = data.publishable || [];
+  const publishable = (isKnowledge ? data.publishable_knowledge : data.publishable) || [];
   $main.innerHTML = header + `
     ${data.error ? `<div class="err-banner">${esc(data.error)}</div>` : ''}
+    ${!isKnowledge && data.publish_error ? `<div class="err-banner" role="alert">${esc(data.publish_error)}</div>` : ''}
     <div class="registry-grid">
       <div>
         <div class="card">
@@ -2100,18 +2114,19 @@ async function showRegistry(selected) {
             <input id="registry-q" type="search" placeholder="Search name or description" value="${esc(query)}" style="flex:1">
             <button class="secondary" type="submit">Search</button></form>
           ${rows ? `<table style="margin-top:10px"><thead><tr><th>Package</th><th>Latest</th><th>Versions</th></tr></thead><tbody>${rows}</tbody></table>`
-                 : `<div class="empty">${query ? 'No packages match.' : 'The registry is empty. Publish a pipeline below.'}</div>`}
+                 : `<div class="empty">${query ? 'No packages match.' : `No ${isKnowledge ? 'knowledge bases' : 'pipelines'} published yet. Publish one below.`}</div>`}
         </div>
         <div class="card" style="margin-top:14px">
-          <h3 style="margin-top:0">Publish a pipeline</h3>
+          <h3 style="margin-top:0">Publish ${isKnowledge ? 'a knowledge base' : 'a pipeline'}</h3>
           ${publishable.length ? `
-          <label for="publish-pipeline">Pipeline</label>
+          <label for="publish-pipeline">${isKnowledge ? 'Knowledge base' : 'Pipeline'}</label>
           <select id="publish-pipeline">${publishable.map(n => `<option>${esc(n)}</option>`).join('')}</select>
-          <label for="publish-version">Version <span class="muted">(blank: the pipeline's <span class="mono">version:</span>, else next patch)</span></label>
+          ${isKnowledge ? '<label for="publish-description">Description</label><input id="publish-description" type="text" placeholder="What does this knowledge base cover?">' : ''}
+          <label for="publish-version">Version <span class="muted">(blank: ${isKnowledge ? 'next patch, starting at 0.1.0' : 'the pipeline\'s version, else next patch'})</span></label>
           <input id="publish-version" type="text" placeholder="e.g. 1.2.0">
           <div class="approve-actions"><button id="publish-button">Publish</button>
-          <span class="muted">Packages the pipeline with its imports and code files. Versions are immutable.</span></div>`
-          : '<div class="muted">No pipelines can be published. Package names must be lowercase letters, digits, "_" or "-".</div>'}
+          <span class="muted">${isKnowledge ? 'Packages all text documents in this knowledge base.' : 'Packages the pipeline with its imports, code, schemas and attached knowledge.'} Versions are immutable.</span></div>`
+          : `<div class="muted">No ${isKnowledge ? 'non-empty knowledge bases' : 'pipelines'} can be published. Package names must be lowercase letters, digits, "_" or "-".${isKnowledge ? ' <a href="#/knowledge-bases">Manage knowledge bases</a>.' : ''}</div>`}
         </div>
       </div>
       <div id="registry-detail">${selected ? '<div class="card muted">Loading…</div>' : '<div class="card empty">Select a package to inspect its files and install it.</div>'}</div>
@@ -2126,15 +2141,17 @@ async function showRegistry(selected) {
     publishButton.disabled = true;
     try {
       const m = await api('/registry/publish', {method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({pipeline: $main.querySelector('#publish-pipeline').value, version: $main.querySelector('#publish-version').value.trim(), by: 'web-ui'})});
+        body: JSON.stringify({[isKnowledge ? 'knowledge_base' : 'pipeline']: $main.querySelector('#publish-pipeline').value,
+          description: isKnowledge ? $main.querySelector('#publish-description').value.trim() : '',
+          version: $main.querySelector('#publish-version').value.trim(), by: 'web-ui'})});
       toast(`Published ${m.name}@${m.version}`);
-      location.hash = '#/registry/' + encodeURIComponent(m.name + '@' + m.version);
+      location.hash = registryLink(kind, m.name + '@' + m.version);
     } catch (e) { toast('Error: ' + e.message); publishButton.disabled = false; }
   });
-  if (selected) renderRegistryPackage(selected, installed);
+  if (selected) renderRegistryPackage(selected, installed, kind);
 }
 
-async function renderRegistryPackage(ref, installed) {
+async function renderRegistryPackage(ref, installed, kind) {
   const [name, version] = ref.split('@');
   const panel = document.getElementById('registry-detail');
   let d;
@@ -2142,6 +2159,11 @@ async function renderRegistryPackage(ref, installed) {
   catch (e) { panel.innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; return; }
   if (document.getElementById('registry-detail') !== panel) return;
   const m = d.manifest;
+  if ((m.kind || 'pipeline') !== kind) {
+    panel.innerHTML = `<div class="err-banner" role="alert">This package belongs in the other registry tab.</div>`;
+    return;
+  }
+  const isKnowledge = kind === 'knowledge';
   const current = installed[m.name];
   const files = m.files.map(f => `<details data-key="pkg:${esc(f.path)}" ${f.path === m.entry ? 'open' : ''}>
       <summary><span class="mono">${esc(f.path)}</span> <span class="muted">${f.size} bytes · sha256 ${esc(f.sha256.slice(0, 12))}…</span></summary>
@@ -2153,8 +2175,9 @@ async function renderRegistryPackage(ref, installed) {
     <dl class="pkg-meta">
       <dt>Published</dt><dd>${fmtTime(m.published_at)}${m.published_by ? ' by ' + esc(m.published_by) : ''}</dd>
       <dt>Digest</dt><dd class="mono">${esc(m.digest)}</dd>
-      <dt>Schema</dt><dd>${m.schema_version}</dd>
-      <dt>Runtimes</dt><dd>${(m.runtimes || []).map(r => `<span class="mono">${esc(r)}</span>`).join(', ') || '—'}</dd>
+      <dt>Type</dt><dd>${isKnowledge ? 'Knowledge base' : 'Pipeline'}</dd>
+      ${!isKnowledge ? `<dt>Schema</dt><dd>${m.schema_version}</dd>
+      <dt>Runtimes</dt><dd>${(m.runtimes || []).map(r => `<span class="mono">${esc(r)}</span>`).join(', ') || '—'}</dd>` : ''}
       ${m.params && m.params.length ? `<dt>Params</dt><dd>${m.params.map(esc).join(', ')}</dd>` : ''}
       <dt>Installed</dt><dd>${current ? `${esc(current.version)}${current.digest === m.digest ? ' (this version)' : ''}` : 'no'}</dd>
     </dl>
@@ -2162,10 +2185,10 @@ async function renderRegistryPackage(ref, installed) {
       <button id="install-button" ${d.verify_error ? 'disabled' : ''}>${current ? (current.digest === m.digest ? 'Reinstall' : 'Install ' + esc(m.version)) : 'Install'}</button>
       <label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" id="install-force" style="width:auto"> overwrite local changes</label>
     </div>
-    <div class="muted" style="font-size:12.5px">Install is pinned to the digest above, verifies every file, and validates the pipeline against this project's runtimes before writing anything.</div>
+    <div class="muted" style="font-size:12.5px">Install is pinned to the digest above and verifies every file.${isKnowledge ? ` Documents are installed into knowledge-bases/${esc(m.name)}/ and can then be attached to workflow agents with knowledge_bases: [${esc(m.name)}].` : ' The pipeline is validated against this project\'s runtimes before writing anything.'}</div>
     <h4>Files</h4>${files}</div>`;
   panel.querySelector('#pkg-version').addEventListener('change', event => {
-    location.hash = '#/registry/' + encodeURIComponent(m.name + '@' + event.target.value);
+    location.hash = registryLink(kind, m.name + '@' + event.target.value);
   });
   const button = panel.querySelector('#install-button');
   button.addEventListener('click', async () => {

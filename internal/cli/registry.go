@@ -17,22 +17,24 @@ const registryUsage = `Usage:
   signalbox registry versions <name>
   signalbox registry show <name[@version]> [--file path]
   signalbox registry publish <pipeline> [--version x.y.z] [--by name]
+  signalbox registry publish-knowledge <base> [--version x.y.z] [--description text] [--by name]
   signalbox registry install <name[@version]> [--digest sha256:...] [--force]
   signalbox registry installed
 
 Flags:
   --registry path    Registry directory (default: registry.path in signalbox.yaml)
 
-The registry is a directory or file share. Published versions are immutable;
-installs verify every file's sha256 and the package digest, validate the
-pipeline against this project's runtimes, and record the result in
+The registry shares pipeline and knowledge-base packages through a directory
+or file share. Published versions are immutable; installs verify every file's
+sha256 and the package digest, validate pipelines against this project's
+runtimes, and record the result in
 signalbox.lock.json.
 `
 
 // cmdRegistry works directly on the registry directory and the project in
 // the current directory.
 func cmdRegistry(args []string, out io.Writer) error {
-	a, err := parseOpsArgs(args, []string{"registry", "file", "version", "by", "digest"}, []string{"force"})
+	a, err := parseOpsArgs(args, []string{"registry", "file", "version", "by", "digest", "description"}, []string{"force"})
 	if err != nil {
 		return err
 	}
@@ -77,9 +79,9 @@ func cmdRegistry(args []string, out io.Writer) error {
 			return nil
 		}
 		w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tLATEST\tVERSIONS\tDESCRIPTION")
+		fmt.Fprintln(w, "NAME\tKIND\tLATEST\tVERSIONS\tDESCRIPTION")
 		for _, s := range results {
-			fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", s.Name, s.Latest, len(s.Versions), oneLine(s.Description, 70))
+			fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n", s.Name, s.Kind, s.Latest, len(s.Versions), oneLine(s.Description, 70))
 		}
 		return w.Flush()
 	case "versions":
@@ -118,6 +120,7 @@ func cmdRegistry(args []string, out io.Writer) error {
 			return err
 		}
 		fmt.Fprintf(out, "%s@%s\n", m.Name, m.Version)
+		fmt.Fprintf(out, "Kind: %s\n", m.PackageKind())
 		if m.Description != "" {
 			fmt.Fprintf(out, "%s\n", strings.TrimSpace(m.Description))
 		}
@@ -136,15 +139,21 @@ func cmdRegistry(args []string, out io.Writer) error {
 		for _, f := range m.Files {
 			fmt.Fprintf(out, "  %s  %6d  %s\n", f.SHA256[:12], f.Size, f.Path)
 		}
-	case "publish":
-		if err := need(1, "publish <pipeline> [--version x.y.z]"); err != nil {
+	case "publish", "publish-knowledge":
+		if err := need(1, sub+" <name> [--version x.y.z]"); err != nil {
 			return err
 		}
 		by := a.value("by")
 		if by == "" {
 			by = cliUser()
 		}
-		m, err := reg.Publish(cfg, rest[0], registry.PublishOptions{Version: a.value("version"), By: by})
+		opts := registry.PublishOptions{Version: a.value("version"), By: by}
+		var m *registry.Manifest
+		if sub == "publish-knowledge" {
+			m, err = reg.PublishKnowledge(cfg, rest[0], a.value("description"), opts)
+		} else {
+			m, err = reg.Publish(cfg, rest[0], opts)
+		}
 		if err != nil {
 			return err
 		}
@@ -184,10 +193,14 @@ func registryInstalled(cfg *config.Config, out io.Writer) error {
 		return nil
 	}
 	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tVERSION\tINSTALLED\tDIGEST")
+	fmt.Fprintln(w, "NAME\tKIND\tVERSION\tINSTALLED\tDIGEST")
 	for _, name := range sortedNames(lock.Packages) {
 		e := lock.Packages[name]
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", name, e.Version, e.InstalledAt.Local().Format("2006-01-02 15:04"), e.Digest)
+		kind := e.Kind
+		if kind == "" {
+			kind = registry.KindPipeline
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", name, kind, e.Version, e.InstalledAt.Local().Format("2006-01-02 15:04"), e.Digest)
 	}
 	return w.Flush()
 }

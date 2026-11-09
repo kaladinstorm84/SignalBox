@@ -23,7 +23,7 @@ func (s *Server) openRegistry() (*config.Config, *registry.Registry, error) {
 }
 
 // handleRegistry searches the configured registry and reports installed and
-// publishable pipelines. An unconfigured registry is not an error.
+// publishable pipelines and knowledge bases. An unconfigured registry is not an error.
 func (s *Server) handleRegistry(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	cfg, err := s.pipelineFileConfig()
@@ -36,13 +36,22 @@ func (s *Server) handleRegistry(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	publishable, _ := registry.Publishable(cfg)
+	publishable, publishErr := registry.Publishable(cfg)
+	knowledge, err := registry.PublishableKnowledge(cfg)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("listing publishable knowledge bases: %w", err))
+		return
+	}
 	resp := map[string]any{
-		"configured":  cfg.Registry.Path != "",
-		"path":        cfg.RegistryPath(),
-		"installed":   lock.Packages,
-		"publishable": publishable,
-		"packages":    []registry.Summary{},
+		"configured":            cfg.Registry.Path != "",
+		"path":                  cfg.RegistryPath(),
+		"installed":             lock.Packages,
+		"publishable":           publishable,
+		"publishable_knowledge": knowledge,
+		"packages":              []registry.Summary{},
+	}
+	if publishErr != nil {
+		resp["publish_error"] = publishErr.Error()
 	}
 	if cfg.Registry.Path != "" {
 		reg, err := registry.Open(cfg.RegistryPath())
@@ -105,6 +114,10 @@ func (s *Server) handleRegistryPackage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRegistryInstall(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeErr(w, http.StatusForbidden, fmt.Errorf("cross-origin registry updates are not allowed"))
+		return
+	}
 	var req struct {
 		Ref    string `json:"ref"`
 		Digest string `json:"digest"`
@@ -126,22 +139,31 @@ func (s *Server) handleRegistryInstall(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, err)
 		return
 	}
-	if err := s.refreshPipelines(); err != nil {
-		writeErr(w, http.StatusInternalServerError, fmt.Errorf("installed, but reloading pipelines failed: %w", err))
-		return
+	if result.Manifest.PackageKind() == registry.KindPipeline {
+		if err := s.refreshPipelines(); err != nil {
+			writeErr(w, http.StatusInternalServerError, fmt.Errorf("installed, but reloading pipelines failed: %w", err))
+			return
+		}
 	}
 	log.Printf("installed %s@%s from registry", result.Manifest.Name, result.Manifest.Version)
 	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleRegistryPublish(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Pipeline string `json:"pipeline"`
-		Version  string `json:"version"`
-		By       string `json:"by"`
+	if !sameOrigin(r) {
+		writeErr(w, http.StatusForbidden, fmt.Errorf("cross-origin registry updates are not allowed"))
+		return
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Pipeline == "" {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("pipeline is required"))
+	var req struct {
+		Pipeline      string `json:"pipeline"`
+		KnowledgeBase string `json:"knowledge_base"`
+		Description   string `json:"description"`
+		Version       string `json:"version"`
+		By            string `json:"by"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || (req.Pipeline == "") == (req.KnowledgeBase == "") {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("exactly one of pipeline or knowledge_base is required"))
 		return
 	}
 	s.settingsMu.Lock()
@@ -151,7 +173,13 @@ func (s *Server) handleRegistryPublish(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	m, err := reg.Publish(cfg, req.Pipeline, registry.PublishOptions{Version: req.Version, By: req.By})
+	opts := registry.PublishOptions{Version: req.Version, By: req.By}
+	var m *registry.Manifest
+	if req.KnowledgeBase != "" {
+		m, err = reg.PublishKnowledge(cfg, req.KnowledgeBase, req.Description, opts)
+	} else {
+		m, err = reg.Publish(cfg, req.Pipeline, opts)
+	}
 	if err != nil {
 		writeErr(w, http.StatusConflict, err)
 		return

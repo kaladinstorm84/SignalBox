@@ -65,6 +65,63 @@ func TestRegistryEndpointsPublishInspectAndInstall(t *testing.T) {
 		return rec
 	}
 
+	t.Run("knowledge packages", func(t *testing.T) {
+		dir := t.TempDir()
+		pub, _, _ := registryProject(t, dir, map[string]string{
+			"pipelines/notes.yaml":              "name: notes\nagents:\n  - id: a\n    runtime: mock\n",
+			"knowledge-bases/handbook/guide.md": "Reusable knowledge",
+		})
+		call := func(h http.Handler, method, path, body string) *httptest.ResponseRecorder {
+			t.Helper()
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(method, path, strings.NewReader(body)))
+			return rec
+		}
+		rec := call(pub, http.MethodGet, "/api/registry", "")
+		var listing struct {
+			PublishableKnowledge []string `json:"publishable_knowledge"`
+			Packages             []struct {
+				Kind string `json:"kind"`
+			} `json:"packages"`
+		}
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &listing) != nil || strings.Join(listing.PublishableKnowledge, ",") != "handbook" {
+			t.Fatalf("listing = %d %s", rec.Code, rec.Body.String())
+		}
+		rec = call(pub, http.MethodPost, "/api/registry/publish", `{"knowledge_base":"handbook","description":"Reference docs","version":"1.0.0"}`)
+		if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"kind":"knowledge"`) {
+			t.Fatalf("publish knowledge = %d %s", rec.Code, rec.Body.String())
+		}
+		rec = call(pub, http.MethodGet, "/api/registry", "")
+		if json.Unmarshal(rec.Body.Bytes(), &listing) != nil || len(listing.Packages) != 1 || listing.Packages[0].Kind != "knowledge" {
+			t.Fatalf("package kind listing = %s", rec.Body.String())
+		}
+		rec = call(pub, http.MethodGet, "/api/registry/handbook/latest", "")
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Reusable knowledge") {
+			t.Fatalf("inspect knowledge = %d %s", rec.Code, rec.Body.String())
+		}
+		consumer, _, root := registryProject(t, dir, map[string]string{
+			"pipelines/other.yaml": "name: other\nagents:\n  - id: a\n    runtime: mock\n",
+		})
+		rec = call(consumer, http.MethodPost, "/api/registry/install", `{"ref":"handbook@1.0.0"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("install knowledge = %d %s", rec.Code, rec.Body.String())
+		}
+		if data, err := os.ReadFile(filepath.Join(root, "knowledge-bases", "handbook", "guide.md")); err != nil || string(data) != "Reusable knowledge" {
+			t.Fatalf("installed document = %q, %v", data, err)
+		}
+		rec = call(pub, http.MethodPost, "/api/registry/publish", `{"pipeline":"notes","knowledge_base":"handbook"}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("ambiguous publish = %d", rec.Code)
+		}
+		foreign := httptest.NewRequest(http.MethodPost, "/api/registry/publish", strings.NewReader(`{"knowledge_base":"handbook"}`))
+		foreign.Header.Set("Origin", "https://unrelated.example")
+		rec = httptest.NewRecorder()
+		pub.ServeHTTP(rec, foreign)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("foreign publish = %d", rec.Code)
+		}
+	})
+
 	var listing struct {
 		Configured  bool     `json:"configured"`
 		Publishable []string `json:"publishable"`
