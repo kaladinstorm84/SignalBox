@@ -1,0 +1,27 @@
+{
+  "packages": {
+    "release-notes": {
+      "version": "1.1.0",
+      "digest": "sha256:059d8dd7fb29175fb3a3c9d4d941f17e6e698a13e30b8b8db955fb07c73e3391",
+      "registry": "C:\\Users\\Matt.Anderson\\source\\repos\\signalbox\\SignalBox\\testproject\\registry",
+      "installed_at": "2026-11-09T16:33:31Z",
+      "files": [
+        {
+          "path": "libs/notes_lint.py",
+          "sha256": "483e7cfd5650163c31fb75f72689f44898a9b52a2ee97fd0a2d5e2613898ec46",
+          "size": 204
+        },
+        {
+          "path": "pipelines/release-notes.yaml",
+          "sha256": "97de8bf04f7eefc91e5c4503cf69d218ab1f3ae35ea77b9ed29df3eedc9a9c7e",
+          "size": 923
+        },
+        {
+          "path": "shared/release-agents.yaml",
+          "sha256": "7a71be2698fee3f0f8bd637403bfc391a4bbc6681dd31bf452f3049d845e6fdd",
+          "size": 311
+        }
+      ]
+    }
+  }
+}

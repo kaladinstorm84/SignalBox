@@ -1,9 +1,43 @@
 package engine
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/kaladinstorm84/SignalBox/internal/pipeline"
 	"github.com/kaladinstorm84/SignalBox/internal/runtime"
 )
+
+func (eng *Engine) withKnowledge(input string, names []string) (string, error) {
+	if len(names) == 0 {
+		return input, nil
+	}
+	if eng.knowledge == nil {
+		return "", fmt.Errorf("knowledge_bases requires a project root")
+	}
+	content, err := eng.knowledge.Content(names)
+	if err != nil {
+		return "", err
+	}
+	if content == "" {
+		return input, nil
+	}
+	return strings.TrimRight(input, "\n") + content, nil
+}
+
+func mergeKnowledgeBases(groups ...[]string) []string {
+	seen := map[string]bool{}
+	var names []string
+	for _, group := range groups {
+		for _, name := range group {
+			if !seen[name] {
+				seen[name] = true
+				names = append(names, name)
+			}
+		}
+	}
+	return names
+}
 
 // recordIntegrationsLocked records the model override and MCP grants a run
 // will use. Grants are resolved against the current registry each time the

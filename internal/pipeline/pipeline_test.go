@@ -73,6 +73,7 @@ agents:
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	routes := p.Node("review").Handoff
 	if len(routes) != 2 || routes[0].To != "accepted" || routes[0].Condition != "on_approve" ||
 		routes[1].To != "rejected" || routes[1].Condition != "on_reject" {
@@ -98,6 +99,32 @@ agents:
 				invalid = strings.Replace(definition, "input: \"Approved {{ output }}; original {{ input }}; note {{ comment }}\"", test.replacement, 1)
 			}
 			if _, err := Parse([]byte(invalid)); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestKnowledgeBasesValidation(t *testing.T) {
+	valid := "name: p\nentry: a\nagents:\n  - id: a\n    runtime: mock\n    knowledge_bases: [handbook, product-docs]\n"
+	p, err := Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(p.Node("a").KnowledgeBases, ","); got != "handbook,product-docs" {
+		t.Fatalf("knowledge bases = %q", got)
+	}
+	for _, test := range []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{name: "invalid name", yaml: strings.Replace(valid, "handbook", "../handbook", 1), want: "invalid knowledge base name"},
+		{name: "duplicate", yaml: strings.Replace(valid, "handbook, product-docs", "handbook, handbook", 1), want: "more than once"},
+		{name: "unsupported node", yaml: strings.Replace(valid, "runtime: mock", "type: approval", 1), want: "only supported"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := Parse([]byte(test.yaml)); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want %q", err, test.want)
 			}
 		})

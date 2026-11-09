@@ -115,6 +115,13 @@ func (eng *Engine) sessionTurn(le *liveExec, run *NodeRun, node *pipeline.Node, 
 	if err != nil {
 		return err
 	}
+	eng.mu.Lock()
+	turnInput := sessionTurnInput(runtimeInput(run), run.Session, le.exec.Chunks, node.ChunksEnabled())
+	eng.mu.Unlock()
+	input, err := eng.withKnowledge(turnInput, mergeKnowledgeBases(node.KnowledgeBases, participant.KnowledgeBases))
+	if err != nil {
+		return err
+	}
 
 	eng.mu.Lock()
 	run.Session.Round = round
@@ -123,7 +130,7 @@ func (eng *Engine) sessionTurn(le *liveExec, run *NodeRun, node *pipeline.Node, 
 	}
 	req := runtime.Request{
 		SystemPrompt: sessionSystemPrompt(node, participant, round, summary),
-		Input:        sessionTurnInput(runtimeInput(run), run.Session, le.exec.Chunks, node.ChunksEnabled()),
+		Input:        input,
 		Model:        participant.Model,
 		MCP:          agentGrants(run.MCP, participantID),
 	}

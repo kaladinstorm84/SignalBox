@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -187,9 +189,86 @@ func TestMCPGrantFailsWhenDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	execution := waitDone(t, eng, id)
 	if execution.Status != StatusFailed || !strings.Contains(execution.Error+findRun(t, execution, "a").Error, "mcp.enabled") {
 		t.Fatalf("status %s, error %q / %q", execution.Status, execution.Error, findRun(t, execution, "a").Error)
+	}
+}
+
+func TestKnowledgeBasesAreAppendedToRuntimeInput(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "knowledge-bases", "handbook")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "guide.md"), []byte("Product policy: retain records for 30 days."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := pipeline.Parse([]byte(`name: p
+entry: researcher
+agents:
+  - id: researcher
+    runtime: worker
+    knowledge_bases: [handbook]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got runtime.Request
+	registry, err := runtime.NewRegistry(map[string]config.RuntimeConfig{"worker": {Type: "mock"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.Register(&runtime.Mock{RuntimeName: "worker", Handler: func(_ context.Context, req runtime.Request) (string, error) {
+		got = req
+		return "done", nil
+	}})
+	eng, err := NewWithLimit(map[string]*pipeline.Pipeline{"p": p}, registry, nil, 1, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := eng.Start("p", "How long do we retain records?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution := waitDone(t, eng, id)
+	if execution.Status != StatusCompleted {
+		t.Fatalf("status = %s (%s)", execution.Status, execution.Error)
+	}
+	if !strings.Contains(got.Input, "How long do we retain records?") ||
+		!strings.Contains(got.Input, "Product policy: retain records for 30 days.") ||
+		!strings.Contains(got.Input, "Knowledge base: handbook / guide.md") {
+		t.Fatalf("runtime input = %q", got.Input)
+	}
+	if run := findRun(t, execution, "researcher"); strings.Contains(run.Input, "Product policy") {
+		t.Fatalf("knowledge content was persisted as the downstream payload: %q", run.Input)
+	}
+
+	missing, err := pipeline.Parse([]byte(`name: missing
+entry: researcher
+agents:
+  - id: researcher
+    runtime: worker
+    knowledge_bases: [not-created]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.SetPipelines(map[string]*pipeline.Pipeline{"missing": missing})
+	id, err = eng.Start("missing", "question")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := waitForRetry(t, eng, id)
+	if !strings.Contains(failed.Error, `knowledge base "not-created" does not exist`) {
+		t.Fatalf("missing knowledge base error = %q", failed.Error)
+	}
+	if err := eng.Cancel(id); err != nil {
+		t.Fatal(err)
+	}
+	if canceled := waitDone(t, eng, id); canceled.Status != StatusCanceled {
+		t.Fatalf("canceled execution status = %s", canceled.Status)
 	}
 }
 

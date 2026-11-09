@@ -378,10 +378,12 @@
       <a href="#/pipelines" data-nav="pipelines">
         <span class="lever black" data-n="3" aria-hidden="true"></span><span>Pipelines</span></a>
       <div class="pipeline-menu" id="pipeline-menu" hidden></div>
+      <a href="#/knowledge-bases" data-nav="knowledge-bases">
+        <span class="lever black" data-n="4" aria-hidden="true"></span><span>Knowledge bases</span></a>
       <a href="#/settings" data-nav="settings">
-        <span class="lever yellow" data-n="4" aria-hidden="true"></span><span>Settings</span></a>
+        <span class="lever yellow" data-n="5" aria-hidden="true"></span><span>Settings</span></a>
       <a href="#/registry" data-nav="registry">
-        <span class="lever black" data-n="5" aria-hidden="true"></span><span>Registry</span></a>
+        <span class="lever black" data-n="6" aria-hidden="true"></span><span>Registry</span></a>
     </nav>
     <div class="diagram-mini" aria-hidden="true">
       <div class="panel">
@@ -512,6 +514,7 @@ function route() {
   const pipelineView = hash.match(/^#\/pipelines\/view\/(.+)$/);
   if (pipelineView) return showPipelines(decodeURIComponent(pipelineView[1]));
   if (hash.startsWith('#/pipelines')) return showPipelines();
+  if (hash.startsWith('#/knowledge-bases')) return showKnowledgeBases();
   if (hash.startsWith('#/settings')) return showSettings();
   const registryRoute = hash.match(/^#\/registry(?:\/(.+))?$/);
   if (registryRoute) return showRegistry(registryRoute[1] ? decodeURIComponent(registryRoute[1]) : '');
@@ -1621,6 +1624,90 @@ async function showSettings() {
   update();
 }
 
+async function showKnowledgeBases() {
+  setNav('knowledge-bases');
+  const expectedHash = location.hash;
+  $main.innerHTML = '<h2>Knowledge bases</h2><div class="muted" role="status">Loading...</div>';
+  let bases;
+  try { bases = await api('/knowledge-bases', {cache: 'no-store'}); }
+  catch (error) {
+    if (location.hash === expectedHash) $main.innerHTML = `<h2>Knowledge bases</h2><div class="err-banner" role="alert">${esc(error.message)}</div>`;
+    return;
+  }
+  if (location.hash !== expectedHash) return;
+  $main.innerHTML = `
+    <div class="topline"><div><h2>Knowledge bases</h2><div class="page-sub">Store plain-text reference material and attach it to workflow agents with <span class="mono">knowledge_bases: [name]</span>.</div></div></div>
+    <div class="card">
+      <b>Create a knowledge base</b>
+      <div class="topline" style="margin-top:8px"><input id="kb-new-name" type="text" maxlength="64" placeholder="e.g. product-handbook" autocomplete="off"><button id="kb-create">Create</button></div>
+    </div>
+    ${bases.length ? bases.map(base => `
+      <div class="card">
+        <div class="topline"><div><b style="font-size:16px">${esc(base.name)}</b><div class="muted">${base.documents.length} document${base.documents.length === 1 ? '' : 's'}</div></div>
+          <button class="secondary" data-kb-delete="${esc(base.name)}">Delete knowledge base</button></div>
+        ${base.documents.length ? `<table style="margin-top:10px"><thead><tr><th>Document</th><th>Size</th><th></th></tr></thead><tbody>${base.documents.map(doc => `
+          <tr><td class="mono">${esc(doc.name)}</td><td>${fmtBytes(doc.size)}</td><td><button class="secondary sm" data-kb-doc-delete="${esc(base.name)}" data-kb-filename="${esc(doc.name)}">Remove</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">No documents yet.</div>'}
+        <details style="margin-top:14px"><summary><b>Add or replace a text document</b></summary>
+          <label for="kb-doc-name-${esc(base.name)}">Filename (txt, md, csv, tsv, json, yaml, yml, xml or log)</label>
+          <input id="kb-doc-name-${esc(base.name)}" type="text" placeholder="reference.md" autocomplete="off">
+          <label for="kb-doc-content-${esc(base.name)}">Document content</label>
+          <textarea id="kb-doc-content-${esc(base.name)}" placeholder="Paste reference material here..."></textarea>
+          <div style="margin-top:8px"><button data-kb-doc-save="${esc(base.name)}">Save text document</button></div>
+        </details>
+        <details style="margin-top:10px"><summary><b>Upload text files</b></summary>
+          <label for="kb-upload-${esc(base.name)}">Select files (up to 1 MiB each; plain text only)</label>
+          <input id="kb-upload-${esc(base.name)}" type="file" multiple accept=".txt,.md,.csv,.tsv,.json,.yaml,.yml,.xml,.log">
+          <div style="margin-top:8px"><button class="secondary" data-kb-upload="${esc(base.name)}">Upload selected files</button></div>
+        </details>
+        <div class="muted" style="margin-top:12px">Attach this base in an agent definition, for example: <span class="mono">knowledge_bases: [${esc(base.name)}]</span>. Its text is appended to that agent's input on every call.</div>
+      </div>`).join('') : '<div class="empty">No knowledge bases yet. Create one above to get started.</div>'}
+    <div id="kb-error" class="err-banner" role="alert" hidden></div>`;
+  const errorBox = document.getElementById('kb-error');
+  const reportError = error => { errorBox.textContent = error.message; errorBox.hidden = false; };
+  document.getElementById('kb-create').addEventListener('click', async () => {
+    const name = document.getElementById('kb-new-name').value.trim();
+    try {
+      await api('/knowledge-bases', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name})});
+      await showKnowledgeBases();
+    } catch (error) { reportError(error); }
+  });
+  $main.querySelectorAll('[data-kb-delete]').forEach(button => button.addEventListener('click', async () => {
+    const name = button.dataset.kbDelete;
+    if (!confirm(`Delete knowledge base "${name}" and all its documents?`)) return;
+    try { await api('/knowledge-bases/' + encodeURIComponent(name), {method: 'DELETE'}); await showKnowledgeBases(); }
+    catch (error) { reportError(error); }
+  }));
+  $main.querySelectorAll('[data-kb-doc-save]').forEach(button => button.addEventListener('click', async () => {
+    const base = button.dataset.kbDocSave;
+    const name = document.getElementById(`kb-doc-name-${base}`).value.trim();
+    const content = document.getElementById(`kb-doc-content-${base}`).value;
+    try {
+      await api(`/knowledge-bases/${encodeURIComponent(base)}/documents/${encodeURIComponent(name)}`, {
+        method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({content}),
+      });
+      await showKnowledgeBases();
+    } catch (error) { reportError(error); }
+  }));
+  $main.querySelectorAll('[data-kb-upload]').forEach(button => button.addEventListener('click', async () => {
+    const base = button.dataset.kbUpload;
+    const input = document.getElementById(`kb-upload-${base}`);
+    if (!input.files.length) { reportError(new Error('Select at least one text file to upload.')); return; }
+    const form = new FormData();
+    [...input.files].forEach(file => form.append('file', file, file.name));
+    try {
+      await api(`/knowledge-bases/${encodeURIComponent(base)}/documents`, {method: 'POST', body: form});
+      await showKnowledgeBases();
+    } catch (error) { reportError(error); }
+  }));
+  $main.querySelectorAll('[data-kb-doc-delete]').forEach(button => button.addEventListener('click', async () => {
+    const base = button.dataset.kbDocDelete;
+    const filename = button.dataset.kbFilename;
+    if (!confirm(`Remove "${filename}" from "${base}"?`)) return;
+    try { await api(`/knowledge-bases/${encodeURIComponent(base)}/documents/${encodeURIComponent(filename)}`, {method: 'DELETE'}); await showKnowledgeBases(); }
+    catch (error) { reportError(error); }
+  }));
+}
+
 async function showPipelineEditor(filename, creating) {
   setNav('pipelines');
   const expectedHash = location.hash;
@@ -1954,7 +2041,7 @@ async function showPipelines(selected) {
             <td><b>${esc(n.id)}</b>${n.id === p.entry ? ' <span class="muted">(entry)</span>' : ''}
             ${n.description ? `<div class="muted">${esc(n.description)}</div>` : ''}</td>
             <td><span class="type ${esc(n.type)}">${esc(n.type)}</span></td>
-            <td class="mono">${n.type === 'code' ? `${esc(n.language)}<div class="muted">${esc(n.code_source)}</div>` : n.type === 'session' ? `<div class="muted">${(n.participants || []).map(esc).join(', ')}</div><div class="muted">${n.max_rounds} rounds · ${esc(n.consensus ? n.consensus.method : '')}${n.chunks && n.chunks.enabled ? ' · chunks' : ''}</div>` : n.type === 'pipeline' ? `→ ${esc(n.pipeline)}${n.from || n.until ? `<div class="muted">${esc(n.from || 'entry')} … ${esc(n.until || 'end')}</div>` : ''}${n.params && Object.keys(n.params).length ? `<div class="muted">params: ${Object.keys(n.params).sort().map(esc).join(', ')}</div>` : ''}` : esc(n.runtime || '—')}${contextLabel(n.context) ? `<div class="muted">${esc(contextLabel(n.context))}</div>` : ''}${integrationsLabel(n.model, n.mcp) ? `<div class="muted">${integrationsLabel(n.model, n.mcp)}</div>` : ''}${n.output ? `<div class="muted">${esc(outputLabel(n.output))}</div>` : ''}${nodeFilesLabel(n) ? `<div class="muted">${esc(nodeFilesLabel(n))}</div>` : ''}</td>
+            <td class="mono">${n.type === 'code' ? `${esc(n.language)}<div class="muted">${esc(n.code_source)}</div>` : n.type === 'session' ? `<div class="muted">${(n.participants || []).map(esc).join(', ')}</div><div class="muted">${n.max_rounds} rounds · ${esc(n.consensus ? n.consensus.method : '')}${n.chunks && n.chunks.enabled ? ' · chunks' : ''}</div>` : n.type === 'pipeline' ? `→ ${esc(n.pipeline)}${n.from || n.until ? `<div class="muted">${esc(n.from || 'entry')} … ${esc(n.until || 'end')}</div>` : ''}${n.params && Object.keys(n.params).length ? `<div class="muted">params: ${Object.keys(n.params).sort().map(esc).join(', ')}</div>` : ''}` : esc(n.runtime || '—')}${contextLabel(n.context) ? `<div class="muted">${esc(contextLabel(n.context))}</div>` : ''}${integrationsLabel(n.model, n.mcp) ? `<div class="muted">${integrationsLabel(n.model, n.mcp)}</div>` : ''}${n.knowledge_bases && n.knowledge_bases.length ? `<div class="muted">Knowledge: ${n.knowledge_bases.map(esc).join(', ')}</div>` : ''}${n.output ? `<div class="muted">${esc(outputLabel(n.output))}</div>` : ''}${nodeFilesLabel(n) ? `<div class="muted">${esc(nodeFilesLabel(n))}</div>` : ''}</td>
             <td>${n.stages ? n.stages.map(s => `<div class="muted">stage <b>${esc(s.id)}</b> → ${s.agents.map(esc).join(', ')}</div>`).join('') : ''}
                 ${(n.handoff || []).map(route => typeof route === 'string' ? esc(route) : `${esc(route.to)}${route.condition ? ` (${esc(route.condition)})` : ''}`).join(', ') || (n.stages ? '' : '<span class="muted">terminates</span>')}</td>
           </tr>`).join('')}</tbody></table>

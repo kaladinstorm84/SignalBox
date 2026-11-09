@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -43,6 +44,8 @@ const (
 	// child execution and hands off the child's final output.
 	TypePipeline NodeType = "pipeline"
 )
+
+var knowledgeBaseNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 
 // MaxPipelineDepth bounds how deeply pipeline nodes may nest child
 // executions at run time.
@@ -151,6 +154,9 @@ type Node struct {
 	Model string `yaml:"model,omitempty"`
 	// MCP opts this agent in to MCP servers registered in signalbox.yaml.
 	MCP []MCPUse `yaml:"mcp,omitempty"`
+	// KnowledgeBases appends the contents of these project knowledge bases
+	// to this agent's runtime input.
+	KnowledgeBases []string `yaml:"knowledge_bases,omitempty"`
 
 	// Handoff lists node IDs that receive this node's output. A standard
 	// agent may hand off to several standard/approval nodes (parallel
@@ -648,6 +654,23 @@ func (p *Pipeline) checkStageClosures() error {
 }
 
 func (p *Pipeline) validateNode(n *Node) error {
+	if len(n.KnowledgeBases) > 0 {
+		switch n.Type {
+		case TypeStandard, TypeLLMGate, TypeOrchestrator, TypeSession:
+		default:
+			return fmt.Errorf("agent %q: knowledge_bases is only supported on standard, llm_gate, orchestrator, and session nodes", n.ID)
+		}
+		seenKnowledgeBases := map[string]bool{}
+		for _, name := range n.KnowledgeBases {
+			if !knowledgeBaseNamePattern.MatchString(name) {
+				return fmt.Errorf("agent %q: invalid knowledge base name %q", n.ID, name)
+			}
+			if seenKnowledgeBases[name] {
+				return fmt.Errorf("agent %q lists knowledge base %q more than once", n.ID, name)
+			}
+			seenKnowledgeBases[name] = true
+		}
+	}
 	if n.RejectTo != "" {
 		if n.Type != TypeApproval && n.Type != TypeLLMGate {
 			return fmt.Errorf("agent %q: reject-to is only supported on approval nodes and llm_gate nodes", n.ID)

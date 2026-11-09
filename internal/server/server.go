@@ -80,6 +80,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/pipeline-files", s.handleListPipelineFiles)
 	mux.HandleFunc("GET /api/pipeline-files/{filename}", s.handleGetPipelineFile)
 	mux.HandleFunc("PUT /api/pipeline-files/{filename}", s.handleSavePipelineFile)
+	mux.HandleFunc("GET /api/knowledge-bases", s.handleListKnowledgeBases)
+	mux.HandleFunc("POST /api/knowledge-bases", s.handleCreateKnowledgeBase)
+	mux.HandleFunc("DELETE /api/knowledge-bases/{name}", s.handleDeleteKnowledgeBase)
+	mux.HandleFunc("PUT /api/knowledge-bases/{name}/documents/{filename}", s.handleSaveKnowledgeDocument)
+	mux.HandleFunc("POST /api/knowledge-bases/{name}/documents", s.handleUploadKnowledgeDocuments)
+	mux.HandleFunc("DELETE /api/knowledge-bases/{name}/documents/{filename}", s.handleDeleteKnowledgeDocument)
 	mux.HandleFunc("GET /api/executions", s.handleListExecutions)
 	mux.HandleFunc("POST /api/executions", s.handleStartExecution)
 	mux.HandleFunc("GET /api/executions/{id}", s.handleGetExecution)
@@ -214,6 +220,7 @@ type nodeView struct {
 	Context        *pipeline.ContextConfig `json:"context,omitempty"`
 	Model          string                  `json:"model,omitempty"`
 	MCP            []pipeline.MCPUse       `json:"mcp,omitempty"`
+	KnowledgeBases []string                `json:"knowledge_bases,omitempty"`
 	Pipeline       string                  `json:"pipeline,omitempty"`
 	From           string                  `json:"from,omitempty"`
 	Until          string                  `json:"until,omitempty"`
@@ -277,6 +284,7 @@ func (s *Server) handlePipelines(w http.ResponseWriter, r *http.Request) {
 				Context:        n.Context,
 				Model:          n.Model,
 				MCP:            n.MCP,
+				KnowledgeBases: n.KnowledgeBases,
 				Pipeline:       n.Pipeline,
 				From:           n.From,
 				Until:          n.Until,

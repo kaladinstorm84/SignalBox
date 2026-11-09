@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kaladinstorm84/SignalBox/internal/knowledgebase"
 	"github.com/kaladinstorm84/SignalBox/internal/pipeline"
 	"github.com/kaladinstorm84/SignalBox/internal/runtime"
 	"github.com/kaladinstorm84/SignalBox/internal/schema"
@@ -32,6 +33,7 @@ type Engine struct {
 	execs         map[string]*liveExec
 	callSlots     chan struct{}
 	projectRoot   string
+	knowledge     *knowledgebase.Store
 	launchWorker  func(WorkerRequest) (string, error)
 	persistError  error
 	workerStarted bool
@@ -151,6 +153,7 @@ func NewWithLimit(pipelines map[string]*pipeline.Pipeline, registry *runtime.Reg
 	}
 	if len(projectRoot) > 0 {
 		eng.projectRoot = projectRoot[0]
+		eng.knowledge = knowledgebase.New(projectRoot[0])
 	}
 	return eng, nil
 }
@@ -834,7 +837,11 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 			return
 		}
 		invokeWith = func(input string) (string, error) {
-			req := agentRequest(run, node.Prompt, input)
+			knowledgeInput, err := eng.withKnowledge(input, node.KnowledgeBases)
+			if err != nil {
+				return "", err
+			}
+			req := agentRequest(run, node.Prompt, knowledgeInput)
 			req.Schema = sch
 			delivery.apply(&req)
 			return rt.Invoke(le.ctx, req)
@@ -937,7 +944,11 @@ func (eng *Engine) runLLMGate(le *liveExec, run *NodeRun, node *pipeline.Node, o
 	}
 	retrying := func(input string) (string, error) {
 		return eng.invokeRetrying(le, run, node.Retry, func() (string, error) {
-			req := agentRequest(run, prompt, input)
+			knowledgeInput, err := eng.withKnowledge(input, node.KnowledgeBases)
+			if err != nil {
+				return "", err
+			}
+			req := agentRequest(run, prompt, knowledgeInput)
 			req.Schema = sch
 			delivery.apply(&req)
 			return rt.Invoke(le.ctx, req)
@@ -1611,7 +1622,11 @@ func (eng *Engine) invokeOrchPrompt(le *liveExec, run *NodeRun, node *pipeline.N
 		return "", err
 	}
 	return eng.invokeRetrying(le, run, node.Retry, func() (string, error) {
-		return rt.Invoke(le.ctx, runtime.Request{SystemPrompt: prompt, Input: input, Model: node.Model})
+		knowledgeInput, err := eng.withKnowledge(input, node.KnowledgeBases)
+		if err != nil {
+			return "", err
+		}
+		return rt.Invoke(le.ctx, runtime.Request{SystemPrompt: prompt, Input: knowledgeInput, Model: node.Model})
 	})
 }
 
