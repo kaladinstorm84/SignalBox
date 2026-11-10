@@ -22,6 +22,7 @@ and script interpreters are installed separately when needed.
 | `llm_gate` | An automated quality gate. It evaluates its input with the configured runtime and records an approve/reject decision and feedback separately from human approvals. Rejected work can be sent to `reject-to` for a bounded number of reworks. |
 | `manual_edit` | Pauses for a person to edit the incoming payload in the web UI or terminal, then hands the edited text downstream. |
 | `code` | Executes a local script with its input on stdin, then hands stdout to downstream nodes. No AI runtime is required. |
+| `openspec` | Runs an OpenSpec CLI command in the project directory and hands stdout downstream. No AI runtime is required. See [OpenSpec integration](#openspec-integration). |
 | `session` | A multi-round discussion between participant agents. Participants take turns, each seeing the transcript, until they reach consensus or the round limit. See [Sessions and chunks](#sessions-and-chunks). |
 | `pipeline` | Runs another pipeline (or a section of it) by name as a linked child execution and hands off its final output. See [Pipeline chaining](#pipeline-chaining). |
 
@@ -832,6 +833,79 @@ print(json.dumps({"validated": True, "tests": data["tests"]}))
 The QA example's `libs/verify.py` currently checks for non-empty planner output
 and passes it through; replace its body with your validation rules.
 
+### OpenSpec integration
+
+[OpenSpec](https://github.com/Fission-AI/OpenSpec) manages specification-driven
+change workflows; it is not an AI model runtime. Use **`type: openspec`** for
+CLI operations and normal agents for writing artifacts or implementing tasks.
+No `runtime: openspec` entry is needed.
+
+```yaml
+- id: implementation_instructions
+  type: openspec
+  timeout_seconds: 60
+  openspec:
+    args: [instructions, apply, --change, "${{ params.change }}", --json]
+  handoff: [developer]
+```
+
+Install the OpenSpec CLI separately (see its
+[CLI reference](https://github.com/Fission-AI/OpenSpec/blob/main/docs/cli.md))
+and initialize OpenSpec in the SignalBox project directory before running a
+workflow. `openspec` must be on the server's `PATH`. Optionally set
+`openspec.command` to an executable name or absolute path. For example, to
+invoke a JavaScript CLI entry point directly, use `command: node` and put
+the entry-point path first in `args`.
+On Windows, standard global and local npm `openspec.cmd` installations are
+launched through their Node.js entry point automatically, without a shell.
+For other shim layouts, configure `command: node` and the entry-point path
+explicitly; SignalBox reports an actionable error rather than shell-parsing
+your arguments.
+
+- `openspec.args` is a required non-empty argument list. Each item supports
+  `${{ params.name }}` substitution and remains one argument, without shell
+  parsing. The executable itself is not parameterized.
+- Commands run in the directory containing `signalbox.yaml`, with the server
+  user's permissions, not in a sandbox. Only run trusted pipeline definitions.
+  Incoming handoff text is **not** appended as an argument or sent on stdin.
+- Use explicit change names and non-interactive flags where supported:
+  `status --change <name> --json`, `instructions <artifact> --change <name> --json`,
+  or `validate <name> --type change --strict --no-interactive --json`.
+  SignalBox does not add confirmation flags or automatically initialize,
+  implement, or archive changes.
+- Stdout is the node output; nonzero exits, missing executables, and timeouts
+  use the normal retry/error handling, including stderr diagnostics. These
+  nodes share the runtime concurrency cap, cancellation, and interrupted-run
+  restart handling. The default timeout is 600 seconds. Retrying a mutating
+  command can repeat side effects; use automatic `retry` only when safe.
+- To preserve incoming requirements through a CLI step, use a handoff `input`
+  template combining `{{ input }}` and `{{ output }}`. Agents can also consume
+  completed OpenSpec outputs through execution `context`.
+- AI-only settings (`runtime`, `prompt`, `model`, `mcp`, `knowledge_bases`),
+  context consumption, file delivery, and `output.schema` are not supported on
+  OpenSpec command nodes. Use a downstream agent or code node when needed.
+
+**Example:** [openspec-change.yaml](testproject/pipelines/openspec-change.yaml)
+creates a new `spec-driven` change, obtains CLI instructions for proposal,
+specs, design and tasks, and has Codex write each artifact. It validates the
+planning pack, pauses for human approval, obtains `apply` instructions, then
+implements and validates again. A clean pass makes **five LLM calls**.
+Rejection revises planning without recreating the change. The final validation
+checks OpenSpec artifacts; it is not a substitute for application tests.
+
+From `testproject`, with OpenSpec initialized and the configured Codex runtime
+allowed to write workspace files:
+
+```powershell
+..\signalbox.exe run openspec-change --param change=add-export --input "Add CSV export"
+```
+
+Use a new kebab-case change name for each execution. Do not pass `--yes`, which
+bypasses human approvals. Planning agents are instructed to write only change
+artifacts before approval; this is a prompt-level contract, not a filesystem
+sandbox. Review the actual files as well as the planning summary. Changes are
+left active for review; archiving remains an explicit separate action.
+
 ### Runtimes
 
 Configured in `signalbox.yaml` and referenced by name from agents:
@@ -904,6 +978,49 @@ root you can also use `go run ./cmd/signalbox` followed by a CLI command. Runnin
 After changing Go source or the embedded UI, rebuild from the repository root
 and restart the executable. Pipeline YAML is reloaded for new UI runs, but
 runtime definitions and other project settings require a server restart.
+
+### Downloadable releases
+
+Windows x64 builds are published on the
+[GitHub Releases page](https://github.com/kaladinstorm84/SignalBox/releases).
+Download `signalbox-v<VERSION>-windows-amd64.zip`, extract it, and run
+`signalbox.exe`. The archive contains the executable (including the embedded
+web UI), README, and license. Agent runtimes such as Codex, Claude, Copilot,
+and optional tools such as Python or OpenSpec must still be installed separately.
+
+Each release includes `SHA256SUMS.txt`. Compare the ZIP's checksum before
+extracting it:
+
+```powershell
+Get-FileHash .\signalbox-v1.0.0-windows-amd64.zip -Algorithm SHA256
+Get-Content .\SHA256SUMS.txt
+```
+
+#### Publishing a release
+
+The [release workflow](.github/workflows/release.yml) runs when a tag starting
+with `v` is pushed. It verifies dependencies, runs the Go tests, builds a
+Windows x64 executable stamped with the tag, validates the example pipelines,
+and checks the packaged executable. Only after these steps succeed does it
+create a GitHub Release with generated notes, the ZIP, and its checksum.
+The release is initially a draft while its files upload, then published.
+
+Commit and push the source and workflow first, then tag the commit to release:
+
+```powershell
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Use `vMAJOR.MINOR.PATCH` for normal releases or a suffix such as
+`v1.0.0-rc.1` for prereleases. The workflow rejects other tag formats and
+automatically marks suffixed versions as prereleases. It uses GitHub's built-in
+`GITHUB_TOKEN`; no personal access token or signing secrets are needed.
+Only the publishing job has repository-content write permission.
+
+Existing releases are not overwritten. If upload or publication fails after a
+draft is created, inspect that draft before retrying: finish publishing it
+manually, or delete the incomplete draft before rerunning the workflow.
 
 `signalbox run` prompts for approvals on the terminal; pass `--yes` to
 auto-approve every gate (useful in scripts/CI). Pass pipeline parameters with

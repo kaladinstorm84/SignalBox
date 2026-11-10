@@ -230,6 +230,11 @@ func ValidatePipeline(cfg *config.Config, p *pipeline.Pipeline) error {
 				return err
 			}
 		}
+		if n.Type == pipeline.TypeOpenSpec {
+			if _, err := NewOpenSpec(n, cfg.Root); err != nil {
+				return err
+			}
+		}
 		if n.Runtime == "" {
 			continue
 		}

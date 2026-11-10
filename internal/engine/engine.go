@@ -819,8 +819,14 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 	}
 	var invokeWith func(input string) (string, error)
 	sch := le.p.SchemaFor(node.OutputSchema())
-	if node.Type == pipeline.TypeCode {
-		rt, err := runtime.NewCode(node, eng.projectRoot)
+	if node.Type == pipeline.TypeCode || node.Type == pipeline.TypeOpenSpec {
+		var rt runtime.Runtime
+		var err error
+		if node.Type == pipeline.TypeOpenSpec {
+			rt, err = runtime.NewOpenSpec(node, eng.projectRoot)
+		} else {
+			rt, err = runtime.NewCode(node, eng.projectRoot)
+		}
 		if err != nil {
 			eng.finishRunErr(le, run, node, octx, err)
 			return

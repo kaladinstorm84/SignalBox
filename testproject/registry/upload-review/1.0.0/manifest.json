@@ -1,0 +1,33 @@
+{
+  "kind": "pipeline",
+  "name": "upload-review",
+  "version": "1.0.0",
+  "description": "File uploads: an agent reads attached files inline, a script reads them by path, and a gate checks the summary against the same files.",
+  "schema_version": 1,
+  "published_at": "2026-11-10T14:16:21Z",
+  "published_by": "web-ui",
+  "entry": "pipelines/upload-review.yaml",
+  "pipelines_dir": "pipelines",
+  "schemas_dir": "schemas",
+  "runtimes": [
+    "mock"
+  ],
+  "files": [
+    {
+      "path": "libs/file_stats.py",
+      "sha256": "5ea38f17842de31109aa35589e35320091b49c2b77904d0d8b40d114e395cd00",
+      "size": 1278
+    },
+    {
+      "path": "pipelines/upload-review.yaml",
+      "sha256": "4e62beaf6b2a3c0379934b4e867e13f4009b163858c0bd9af198b635b0711564",
+      "size": 2110
+    },
+    {
+      "path": "schemas/review-verdict.yaml",
+      "sha256": "40131b247655350bf31db3e4d702495714649c285425658271ec3c346b48c000",
+      "size": 449
+    }
+  ],
+  "digest": "sha256:fcaf1c6f40c59bf331943c8d0feba2f3ac331d1f0ddd3e9eff301ad9159ecf3e"
+}

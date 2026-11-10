@@ -212,6 +212,7 @@
   .type.final { border-top-color: var(--ok); }
   .type.session { border-top-color: #2f6fd0; }
   .type.pipeline { border-top-color: #d08a2f; }
+  .type.openspec { border-top-color: #378b87; background: #dceee9; }
   /* Linked pipelines: child executions point back at the parent's junction. */
   .link-banner { background: var(--bg2); border: 1px solid var(--border); border-left: 4px solid #d08a2f; border-radius: 6px; padding: 8px 12px; margin: 10px 0; }
   .child-links { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -741,7 +742,7 @@ function renderRun(x, r) {
   const waiting = r.status === 'waiting_approval';
   const manualEdit = r.status === 'waiting_manual_edit';
   const retryable = r.status === 'waiting_retry';
-  const interrupted = !x.parent && r.status === 'interrupted' && ['standard', 'code', 'llm_gate', 'session', 'pipeline'].includes(r.type);
+  const interrupted = !x.parent && r.status === 'interrupted' && ['standard', 'code', 'openspec', 'llm_gate', 'session', 'pipeline'].includes(r.type);
   // Any top-level run of a finished execution can be a restart point; stage
   // runs restart through their orchestrator's stage. Child executions are
   // restarted through their parent.
@@ -1390,7 +1391,7 @@ function flowDiagram(p, execution = null) {
       text(mid, y + 24, it.num, 'num', 'middle');
       text(mid, y + 35, pipelineLineLabel(n), 'participant', 'middle');
     } else {
-      out.push(`<rect x="${mid - 17}" y="${y - 6.5}" width="34" height="13" rx="6.5" fill="#fff" stroke="${INK}" stroke-width="2.2" />`);
+      out.push(`<rect x="${mid - 17}" y="${y - 6.5}" width="34" height="13" rx="6.5" fill="${n.type === 'openspec' ? '#dceee9' : '#fff'}" stroke="${n.type === 'openspec' ? '#378b87' : INK}" stroke-width="2.2" />`);
       text(mid, y - 12, label, 'label', 'middle');
       text(mid, y + 19, it.num, 'num', 'middle');
     }
@@ -2051,7 +2052,7 @@ async function showPipelines(selected) {
             <td><b>${esc(n.id)}</b>${n.id === p.entry ? ' <span class="muted">(entry)</span>' : ''}
             ${n.description ? `<div class="muted">${esc(n.description)}</div>` : ''}</td>
             <td><span class="type ${esc(n.type)}">${esc(n.type)}</span></td>
-            <td class="mono">${n.type === 'code' ? `${esc(n.language)}<div class="muted">${esc(n.code_source)}</div>` : n.type === 'session' ? `<div class="muted">${(n.participants || []).map(esc).join(', ')}</div><div class="muted">${n.max_rounds} rounds · ${esc(n.consensus ? n.consensus.method : '')}${n.chunks && n.chunks.enabled ? ' · chunks' : ''}</div>` : n.type === 'pipeline' ? `→ ${esc(n.pipeline)}${n.from || n.until ? `<div class="muted">${esc(n.from || 'entry')} … ${esc(n.until || 'end')}</div>` : ''}${n.params && Object.keys(n.params).length ? `<div class="muted">params: ${Object.keys(n.params).sort().map(esc).join(', ')}</div>` : ''}` : esc(n.runtime || '—')}${contextLabel(n.context) ? `<div class="muted">${esc(contextLabel(n.context))}</div>` : ''}${integrationsLabel(n.model, n.mcp) ? `<div class="muted">${integrationsLabel(n.model, n.mcp)}</div>` : ''}${n.knowledge_bases && n.knowledge_bases.length ? `<div class="muted">Knowledge: ${n.knowledge_bases.map(esc).join(', ')}</div>` : ''}${n.output ? `<div class="muted">${esc(outputLabel(n.output))}</div>` : ''}${nodeFilesLabel(n) ? `<div class="muted">${esc(nodeFilesLabel(n))}</div>` : ''}</td>
+            <td class="mono">${n.type === 'openspec' ? `${esc(n.openspec?.command || 'openspec')}<div class="muted">${esc((n.openspec?.args || []).map(arg => JSON.stringify(arg)).join(' '))}</div>` : n.type === 'code' ? `${esc(n.language)}<div class="muted">${esc(n.code_source)}</div>` : n.type === 'session' ? `<div class="muted">${(n.participants || []).map(esc).join(', ')}</div><div class="muted">${n.max_rounds} rounds · ${esc(n.consensus ? n.consensus.method : '')}${n.chunks && n.chunks.enabled ? ' · chunks' : ''}</div>` : n.type === 'pipeline' ? `→ ${esc(n.pipeline)}${n.from || n.until ? `<div class="muted">${esc(n.from || 'entry')} … ${esc(n.until || 'end')}</div>` : ''}${n.params && Object.keys(n.params).length ? `<div class="muted">params: ${Object.keys(n.params).sort().map(esc).join(', ')}</div>` : ''}` : esc(n.runtime || '—')}${contextLabel(n.context) ? `<div class="muted">${esc(contextLabel(n.context))}</div>` : ''}${integrationsLabel(n.model, n.mcp) ? `<div class="muted">${integrationsLabel(n.model, n.mcp)}</div>` : ''}${n.knowledge_bases && n.knowledge_bases.length ? `<div class="muted">Knowledge: ${n.knowledge_bases.map(esc).join(', ')}</div>` : ''}${n.output ? `<div class="muted">${esc(outputLabel(n.output))}</div>` : ''}${nodeFilesLabel(n) ? `<div class="muted">${esc(nodeFilesLabel(n))}</div>` : ''}</td>
             <td>${n.stages ? n.stages.map(s => `<div class="muted">stage <b>${esc(s.id)}</b> → ${s.agents.map(esc).join(', ')}</div>`).join('') : ''}
                 ${(n.handoff || []).map(route => typeof route === 'string' ? esc(route) : `${esc(route.to)}${route.condition ? ` (${esc(route.condition)})` : ''}`).join(', ') || (n.stages ? '' : '<span class="muted">terminates</span>')}</td>
           </tr>`).join('')}</tbody></table>

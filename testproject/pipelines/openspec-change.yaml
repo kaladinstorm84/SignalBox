@@ -1,0 +1,170 @@
+# Plan an OpenSpec change, obtain human approval, then implement and validate.
+# Prerequisites: OpenSpec CLI on PATH, an initialized OpenSpec project, and a
+# Codex runtime allowed to write workspace files. Five LLM calls per clean pass.
+# From testproject:
+# ..\signalbox.exe run openspec-change --param change=add-export --input "Add CSV export"
+# Do not use --yes: it bypasses the implementation approval.
+name: openspec-change
+description: OpenSpec proposal, specs, design and tasks with approval before implementation.
+params:
+  change:
+    type: string
+    required: true
+    description: A new lowercase kebab-case OpenSpec change name; use a different name for each run.
+entry: create_change
+templates:
+  - id: planner
+    runtime: codex
+    format: true
+agents:
+  - id: create_change
+    type: openspec
+    openspec:
+      args: [new, change, "${{ params.change }}", --schema, spec-driven]
+    handoff:
+      - to: proposal_instructions
+        input: "{{ input }}"
+
+  - id: proposal_instructions
+    type: openspec
+    openspec:
+      args: [instructions, proposal, --change, "${{ params.change }}", --json]
+    handoff:
+      - to: draft_proposal
+        input: |
+          User requirements:
+          {{ input }}
+
+          OpenSpec proposal instructions:
+          {{ output }}
+
+  - id: draft_proposal
+    extends: planner
+    description: Write the proposal only; rejection returns here without recreating the change.
+    prompt: |
+      Draft the proposal artifact for OpenSpec change "${{ params.change }}".
+      Follow the supplied OpenSpec instructions, template, project context and rules.
+      Read project conventions and relevant source files. Write the actual artifact
+      at its instructed path; on rework revise it using the rejection feedback.
+      Only modify planning files under openspec/changes/${{ params.change }}/.
+      Do not implement anything, run mutating project commands, or archive the change.
+      If requirements are uncertain, record assumptions and questions rather than inventing facts.
+      Return a Markdown summary of requirements, proposal, file paths and uncertainties.
+    handoff: [specs_instructions]
+
+  - id: specs_instructions
+    type: openspec
+    openspec:
+      args: [instructions, specs, --change, "${{ params.change }}", --json]
+    handoff: [draft_specs]
+
+  - id: draft_specs
+    extends: planner
+    additional-input: [draft_proposal]
+    prompt: |
+      Write or revise the specs artifact for OpenSpec change "${{ params.change }}".
+      Follow the supplied OpenSpec instructions and read their dependency files.
+      Create the actual delta specs at the instructed paths, with requirements and
+      scenarios grounded in the approved scope of the proposal.
+      Only modify planning files under openspec/changes/${{ params.change }}/.
+      Do not implement anything or change the project's live specs.
+      Return a Markdown summary of capabilities, scenarios, file paths and open questions.
+    handoff: [design_instructions]
+
+  - id: design_instructions
+    type: openspec
+    openspec:
+      args: [instructions, design, --change, "${{ params.change }}", --json]
+    handoff: [draft_design]
+
+  - id: draft_design
+    extends: planner
+    additional-input: [draft_proposal, draft_specs]
+    prompt: |
+      Write or revise the design artifact for OpenSpec change "${{ params.change }}".
+      Follow the supplied OpenSpec instructions and read their dependency files.
+      Inspect the existing implementation, document technical decisions, risks,
+      alternatives and a concrete test approach. Write the actual design file.
+      Only modify planning files under openspec/changes/${{ params.change }}/.
+      Do not implement anything.
+      Return a Markdown summary of decisions, risks, file paths and open questions.
+    handoff: [tasks_instructions]
+
+  - id: tasks_instructions
+    type: openspec
+    openspec:
+      args: [instructions, tasks, --change, "${{ params.change }}", --json]
+    handoff: [draft_tasks]
+
+  - id: draft_tasks
+    extends: planner
+    additional-input: [draft_proposal, draft_specs, draft_design]
+    prompt: |
+      Write or revise the tasks artifact for OpenSpec change "${{ params.change }}".
+      Follow the supplied OpenSpec instructions and read all dependency files.
+      Write the actual tasks file, with unchecked implementation and test checkboxes.
+      Only modify planning files under openspec/changes/${{ params.change }}/.
+      Do not implement anything or mark tasks complete.
+      Return a human-reviewable Markdown planning pack: original scope, proposal,
+      specification scenarios, design, risks, task checklist, all artifact paths,
+      and any unresolved decisions. This is the implementation approval payload.
+    handoff: [validate_plan]
+
+  - id: validate_plan
+    type: openspec
+    openspec:
+      args: [validate, "${{ params.change }}", --type, change, --strict, --no-interactive, --json]
+    handoff:
+      - to: approve_implementation
+        input: |
+          Planning pack:
+          {{ input }}
+
+          OpenSpec validation:
+          {{ output }}
+
+  - id: approve_implementation
+    type: approval
+    description: Review the actual proposal/specs/design/tasks files, scope, risks and tests. Approve to allow source changes; reject with revision notes.
+    reject-to: draft_proposal
+    handoff:
+      - to: apply_instructions
+        input: |
+          {{ output }}
+
+          Reviewer notes:
+          {{ comment }}
+
+  - id: apply_instructions
+    type: openspec
+    openspec:
+      args: [instructions, apply, --change, "${{ params.change }}", --json]
+    handoff:
+      - to: implement
+        input: |
+          Approved planning pack and reviewer notes:
+          {{ input }}
+
+          OpenSpec implementation instructions:
+          {{ output }}
+
+  - id: implement
+    extends: planner
+    prompt: |
+      Implement the approved OpenSpec change "${{ params.change }}".
+      Read the actual proposal, specs, design and tasks, and follow the supplied
+      apply instructions and project conventions. If apply is blocked, stop with
+      the blocker rather than claiming success. Never expand the approved scope.
+      Implement and test each task; check off only tasks actually completed.
+      Run the project's relevant tests and report the exact commands and results.
+      Do not archive the change or merge delta specs into live specs.
+      Return a Markdown implementation report with changed files, completed tasks,
+      test results, remaining work and uncertainties. Do not claim tests passed
+      unless they actually ran.
+    handoff: [validate_change]
+
+  - id: validate_change
+    type: openspec
+    description: Validate OpenSpec artifacts after implementation; source-code tests are run by the implementer.
+    openspec:
+      args: [validate, "${{ params.change }}", --type, change, --strict, --no-interactive, --json]

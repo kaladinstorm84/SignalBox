@@ -195,7 +195,7 @@ func (eng *Engine) RestartFromInterrupted(execID, runID string) (string, error) 
 // resumed in place by RestartFromInterrupted.
 func restartableType(t pipeline.NodeType) bool {
 	switch t {
-	case pipeline.TypeStandard, pipeline.TypeCode, pipeline.TypeLLMGate, pipeline.TypeSession, pipeline.TypePipeline:
+	case pipeline.TypeStandard, pipeline.TypeCode, pipeline.TypeOpenSpec, pipeline.TypeLLMGate, pipeline.TypeSession, pipeline.TypePipeline:
 		return true
 	}
 	return false

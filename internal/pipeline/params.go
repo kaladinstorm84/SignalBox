@@ -184,6 +184,11 @@ func (p *Pipeline) paramFields() []paramField {
 			paramField{where + " prompt", &n.Prompt},
 			paramField{where + " model", &n.Model},
 		)
+		if n.OpenSpec != nil {
+			for j := range n.OpenSpec.Args {
+				fields = append(fields, paramField{where + " openspec.args", &n.OpenSpec.Args[j]})
+			}
+		}
 		for j := range n.Handoff {
 			fields = append(fields, paramField{fmt.Sprintf("%s handoff to %q input", where, n.Handoff[j].To), &n.Handoff[j].Input})
 		}
@@ -298,6 +303,11 @@ func (p *Pipeline) clone() *Pipeline {
 	for i, n := range p.Nodes {
 		n.Handoff = append([]HandoffRule(nil), n.Handoff...)
 		n.Stages = append([]Stage(nil), n.Stages...)
+		if n.OpenSpec != nil {
+			spec := *n.OpenSpec
+			spec.Args = append([]string(nil), n.OpenSpec.Args...)
+			n.OpenSpec = &spec
+		}
 		if n.Chunks != nil {
 			chunks := *n.Chunks
 			chunks.Initial = append([]string(nil), n.Chunks.Initial...)

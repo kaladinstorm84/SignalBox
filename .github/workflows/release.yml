@@ -1,0 +1,130 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Test and package Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CGO_ENABLED: '0'
+      GOOS: windows
+      GOARCH: amd64
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate release tag
+        run: |
+          if ($env:GITHUB_REF_NAME -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$') {
+            throw "Expected a version tag such as v1.0.0 or v1.0.0-rc.1, got $env:GITHUB_REF_NAME"
+          }
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify modules
+        run: |
+          go mod download
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go mod verify
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run tests
+        run: |
+          go test ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build and verify executable
+        run: |
+          New-Item -ItemType Directory -Path dist\package -Force | Out-Null
+          $ldflags = "-s -w -X github.com/kaladinstorm84/SignalBox/internal/cli.Version=$env:GITHUB_REF_NAME"
+          go build -trimpath -ldflags $ldflags -o dist\package\signalbox.exe .\cmd\signalbox
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $actual = & .\dist\package\signalbox.exe version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($actual -ne "signalbox $env:GITHUB_REF_NAME") {
+            throw "Unexpected binary version: $actual"
+          }
+          Push-Location testproject
+          try {
+            & ..\dist\package\signalbox.exe validate
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            Pop-Location
+          }
+
+      - name: Package release and checksum
+        run: |
+          Copy-Item README.md, LICENSE -Destination dist\package
+          $archive = "signalbox-$env:GITHUB_REF_NAME-windows-amd64.zip"
+          Compress-Archive -Path dist\package\* -DestinationPath "dist\$archive"
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "dist\$archive").Hash.ToLowerInvariant()
+          "$hash  $archive" | Set-Content -LiteralPath dist\SHA256SUMS.txt -Encoding ascii
+          Expand-Archive -LiteralPath "dist\$archive" -DestinationPath dist\verify
+          $actual = & .\dist\verify\signalbox.exe version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($actual -ne "signalbox $env:GITHUB_REF_NAME") {
+            throw "Packaged binary has an unexpected version: $actual"
+          }
+
+      - name: Upload release files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-amd64-release
+          path: |
+            dist/signalbox-*-windows-amd64.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download release files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows-amd64-release
+          path: dist
+
+      - name: Verify checksum
+        working-directory: dist
+        run: sha256sum --check SHA256SUMS.txt
+
+      - name: Create and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          options=(--verify-tag --generate-notes --draft --title "SignalBox $RELEASE_TAG")
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            options+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" dist/*.zip dist/SHA256SUMS.txt "${options[@]}"
+          gh release edit "$RELEASE_TAG" --draft=false

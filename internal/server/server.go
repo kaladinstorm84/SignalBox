@@ -204,6 +204,7 @@ type nodeView struct {
 	Runtime        string                  `json:"runtime,omitempty"`
 	Language       string                  `json:"language,omitempty"`
 	CodeSource     string                  `json:"code_source,omitempty"`
+	OpenSpec       *pipeline.OpenSpecSpec  `json:"openspec,omitempty"`
 	TimeoutSeconds int                     `json:"timeout_seconds,omitempty"`
 	Codes          map[string]int          `json:"codes,omitempty"`
 	Handoff        []handoffView           `json:"handoff,omitempty"`
@@ -276,6 +277,7 @@ func (s *Server) handlePipelines(w http.ResponseWriter, r *http.Request) {
 				Runtime:        n.Runtime,
 				Language:       n.Language,
 				CodeSource:     n.CodeSource,
+				OpenSpec:       n.OpenSpec,
 				TimeoutSeconds: n.TimeoutSeconds,
 				Codes:          n.Codes,
 				RejectTo:       n.RejectTo,

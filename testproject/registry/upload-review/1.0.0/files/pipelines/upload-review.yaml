@@ -1,0 +1,64 @@
+# Demo: file uploads.
+#
+# Attach files when starting the run (New run → Files, or the CLI):
+#
+#   signalbox run upload-review --file samples/orders.csv --file samples/notes.md
+#
+# The pipeline requires at least one file and accepts .csv, .md, .txt and
+# .json. Each node chooses how it receives the files:
+#
+#   files: inline  the text is appended to the prompt, up to files_budget
+#                  characters (binary files are listed by name only)
+#   files: path    read-only copies are placed in a directory named by
+#                  SIGNALBOX_FILES_DIR (and given to claude/copilot with
+#                  --add-dir); code nodes read them from there
+#   (unset)        the node never sees the files
+#
+# Download the stored files from the execution page; each run card says which
+# files it received and whether any were truncated.
+name: upload-review
+description: >-
+  File uploads: an agent reads attached files inline, a script reads them by
+  path, and a gate checks the summary against the same files.
+files:
+  required: true
+  max_count: 5
+  extensions: [.csv, .md, .txt, .json]
+entry: intake
+
+agents:
+  - id: intake
+    runtime: mock
+    description: Reads the attached files inline (budget 4,000 characters).
+    files: inline
+    files_budget: 4000
+    prompt: |
+      Summarise what the attached files contain and anything that looks wrong.
+    handoff: [stats]
+
+  - id: stats
+    type: code
+    language: python
+    code-source: libs/file_stats.py
+    description: Counts rows and totals by reading SIGNALBOX_FILES_DIR.
+    files: path
+    handoff: [check]
+
+  - id: check
+    type: llm_gate
+    runtime: mock
+    description: Checks the figures against the original files.
+    files: inline
+    prompt: |
+      Do the statistics match the attached files?
+    output:
+      schema: review-verdict
+    reject-to: stats
+    max_reworks: 1
+    handoff: [report]
+
+  - id: report
+    runtime: mock
+    description: Writes the report; it does not see the files.
+    prompt: |
+      Write a short report from the reviewed statistics.

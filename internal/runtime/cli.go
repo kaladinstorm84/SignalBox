@@ -35,6 +35,8 @@ type cliRuntime struct {
 	// code marks a code node: its stdin is the raw input, so file paths are
 	// only passed through the environment.
 	code bool
+	// commandOnly runs a CLI operation with no prompt argument or stdin.
+	commandOnly bool
 }
 
 // filesInstructions tells an agent CLI where the uploaded files are.
@@ -166,6 +168,7 @@ func (c *cliRuntime) Invoke(ctx context.Context, req Request) (string, error) {
 	args := c.baseArgs(extra)
 	var stdin *bytes.Reader
 	switch {
+	case c.commandOnly:
 	case c.promptMode == "stdin":
 		stdin = bytes.NewReader([]byte(prompt))
 	case argLength(prompt) <= maxArgPrompt:
@@ -177,7 +180,14 @@ func (c *cliRuntime) Invoke(ctx context.Context, req Request) (string, error) {
 		return "", fmt.Errorf("prompt is %d characters, too long to pass to %s as a command-line argument; set prompt_mode: stdin for runtime %q if the command can read its prompt from stdin", len(prompt), c.command, c.name)
 	}
 
-	cmd := exec.CommandContext(ctx, c.command, args...)
+	command := c.command
+	if c.kind == "openspec" {
+		command, args, err = openSpecCommand(command, args)
+		if err != nil {
+			return "", err
+		}
+	}
+	cmd := exec.CommandContext(ctx, command, args...)
 	configureProcess(cmd)
 	cmd.Dir = c.dir
 	if len(env) > 0 {

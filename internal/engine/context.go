@@ -14,7 +14,7 @@ import (
 // input through unchanged, so they would only duplicate other entries.
 func contextSourceType(t pipeline.NodeType) bool {
 	switch t {
-	case pipeline.TypeStandard, pipeline.TypeCode, pipeline.TypeSession, pipeline.TypeOrchestrator, pipeline.TypeManualEdit:
+	case pipeline.TypeStandard, pipeline.TypeCode, pipeline.TypeOpenSpec, pipeline.TypeSession, pipeline.TypeOrchestrator, pipeline.TypeManualEdit:
 		return true
 	}
 	return false

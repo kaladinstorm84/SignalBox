@@ -37,6 +37,8 @@ const (
 	// handing it off.
 	TypeManualEdit NodeType = "manual_edit"
 	TypeCode       NodeType = "code"
+	// TypeOpenSpec runs an OpenSpec CLI command without an AI runtime.
+	TypeOpenSpec NodeType = "openspec"
 	// TypeSession runs a multi-round discussion between participant agents
 	// until they reach consensus or the round limit.
 	TypeSession NodeType = "session"
@@ -185,6 +187,7 @@ type Node struct {
 	CodeSource     string         `yaml:"code-source,omitempty"`
 	TimeoutSeconds int            `yaml:"timeout_seconds,omitempty"`
 	Codes          map[string]int `yaml:"codes,omitempty"`
+	OpenSpec       *OpenSpecSpec  `yaml:"openspec,omitempty"`
 
 	// Stages is only valid for orchestrators.
 	Stages []Stage `yaml:"stages,omitempty"`
@@ -471,9 +474,9 @@ func (p *Pipeline) validate() error {
 			n.Type = TypeStandard
 		}
 		switch n.Type {
-		case TypeStandard, TypeOrchestrator, TypeApproval, TypeLLMGate, TypeManualEdit, TypeCode, TypeSession, TypePipeline:
+		case TypeStandard, TypeOrchestrator, TypeApproval, TypeLLMGate, TypeManualEdit, TypeCode, TypeOpenSpec, TypeSession, TypePipeline:
 		default:
-			return fmt.Errorf("pipeline %q: agent %q has unknown type %q (want standard, orchestrator, approval, llm_gate, manual_edit, code, session, or pipeline)", p.Name, n.ID, n.Type)
+			return fmt.Errorf("pipeline %q: agent %q has unknown type %q (want standard, orchestrator, approval, llm_gate, manual_edit, code, openspec, session, or pipeline)", p.Name, n.ID, n.Type)
 		}
 		p.byID[n.ID] = n
 	}
@@ -683,8 +686,14 @@ func (p *Pipeline) validateNode(n *Node) error {
 			return fmt.Errorf("gate %q: reject-to must reference another non-orchestrator node", n.ID)
 		}
 	}
-	if n.Type != TypeCode && (n.Language != "" || n.CodeSource != "" || n.TimeoutSeconds != 0 || n.Codes != nil) {
-		return fmt.Errorf("agent %q: language, code-source, timeout_seconds, and codes are only supported on code nodes", n.ID)
+	if n.Type != TypeCode && (n.Language != "" || n.CodeSource != "" || n.Codes != nil) {
+		return fmt.Errorf("agent %q: language, code-source, and codes are only supported on code nodes", n.ID)
+	}
+	if n.TimeoutSeconds != 0 && n.Type != TypeCode && n.Type != TypeOpenSpec {
+		return fmt.Errorf("agent %q: timeout_seconds is only supported on code and openspec nodes", n.ID)
+	}
+	if n.OpenSpec != nil && n.Type != TypeOpenSpec {
+		return fmt.Errorf("agent %q: openspec is only supported on openspec nodes", n.ID)
 	}
 	seenAdditional := map[string]bool{}
 	for _, id := range n.AdditionalInput {
@@ -766,7 +775,7 @@ func (p *Pipeline) validateNode(n *Node) error {
 	}
 	if n.Retry != nil {
 		switch n.Type {
-		case TypeStandard, TypeCode, TypeLLMGate, TypeOrchestrator, TypeSession, TypePipeline:
+		case TypeStandard, TypeCode, TypeOpenSpec, TypeLLMGate, TypeOrchestrator, TypeSession, TypePipeline:
 		default:
 			return fmt.Errorf("agent %q: retry is only supported on callable nodes", n.ID)
 		}
@@ -799,6 +808,8 @@ func (p *Pipeline) validateNode(n *Node) error {
 	}
 
 	switch n.Type {
+	case TypeOpenSpec:
+		return validateOpenSpec(n)
 	case TypePipeline:
 		if strings.TrimSpace(n.Pipeline) == "" {
 			return fmt.Errorf("pipeline agent %q is missing pipeline (the name of the pipeline to run)", n.ID)
