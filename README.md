@@ -939,24 +939,102 @@ their language's interpreter on `PATH`.
 
 ### Install from GitHub
 
-```bash
-go install github.com/kaladinstorm84/SignalBox/cmd/signalbox@latest
+Install [Go](https://go.dev/dl/) 1.25 or newer, then run:
 
-signalbox init my-project     # creates config, starter pipeline, .gitignore, and AGENTS.md
-cd my-project
-signalbox validate            # check config and all pipelines
-signalbox serve               # web UI on http://127.0.0.1:8484
-signalbox run default --input "Hello SignalBox"   # terminal run
+```powershell
+go install github.com/kaladinstorm84/SignalBox/cmd/signalbox@latest
 ```
 
-The Go binary installation directory must be on `PATH` to invoke `signalbox`
-directly. `serve` runs until stopped; use another terminal for `run`, or stop
-the server first.
+This builds the latest released version and installs only the executable, not
+a project. Go installs it into `GOBIN` when set, otherwise the first
+`GOPATH` directory's `bin` folder. On Windows the default is
+`C:\Users\<your-user>\go\bin\signalbox.exe`. Check your settings with:
+
+```powershell
+go env GOBIN GOPATH
+```
+
+#### Add the install directory to PATH on Windows
+
+If `signalbox` is not recognized, run the following in PowerShell. It adds
+the effective Go install directory permanently to your **user Path**, preserving
+existing entries, and also enables it in the current terminal. Administrator
+rights are not required.
+
+```powershell
+$bin = go env GOBIN
+if (-not $bin) {
+    $goPath = go env GOPATH
+    $bin = Join-Path (($goPath -split ';')[0]) 'bin'
+}
+
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+$entries = @($userPath -split ';' | Where-Object { $_ })
+if ($entries -notcontains $bin) {
+    [Environment]::SetEnvironmentVariable('Path', (($entries + $bin) -join ';'), 'User')
+}
+if (($env:Path -split ';') -notcontains $bin) {
+    $env:Path += ";$bin"
+}
+
+signalbox version
+```
+
+Fully close and reopen VS Code and any other terminals so future sessions pick
+up the permanent change. On macOS/Linux, add `GOBIN` (or `$(go env GOPATH)/bin`
+when unset) to `PATH` in your shell profile.
+
+#### Create and run a project
+
+```powershell
+signalbox init my-project     # creates config, starter pipeline, .gitignore, and AGENTS.md
+Set-Location my-project
+signalbox validate            # check config and all pipelines
+signalbox serve               # web UI on http://127.0.0.1:8484
+```
+
+Open `http://127.0.0.1:8484`. `serve` runs until stopped; use another terminal
+in the project directory for a terminal execution, or stop the server first:
+
+```powershell
+signalbox run default --input "Hello SignalBox"
+```
 
 `signalbox init` also creates an `AGENTS.md` project guide with layout,
 workflow, and pipeline-authoring conventions, plus a `.gitignore` for local
 execution state. Existing scaffold files are left untouched by default; pass
 `--force` to overwrite them.
+
+#### Update an installed version
+
+Stop the running SignalBox server and allow active executions/workers to finish
+or cancel them before replacing the executable. Then reinstall:
+
+```powershell
+go install github.com/kaladinstorm84/SignalBox/cmd/signalbox@latest
+signalbox version
+```
+
+Your projects, configuration, and execution history are not replaced. Restart
+`signalbox serve` from your project directory afterward. To select a specific
+published version instead, replace `@latest` with its tag, for example:
+
+```powershell
+go install github.com/kaladinstorm84/SignalBox/cmd/signalbox@v1.0.0
+```
+
+`@latest` selects a published module version, not unreleased changes on the
+default branch. Older releases before the module-version reporting fix may
+print `dev` even when installed from a version tag. To see the version embedded
+in the installed executable, run:
+
+```powershell
+go version -m (Get-Command signalbox).Source
+```
+
+If you see an unexpected version, `Get-Command signalbox -All` lists matching
+commands and their paths; an older executable earlier on `PATH` may be taking
+precedence.
 
 ### Build and run locally on Windows
 
@@ -1018,6 +1096,23 @@ Commit and push the source and workflow first, then tag the commit to release:
 git tag v1.0.0
 git push origin v1.0.0
 ```
+
+For subsequent releases, [retag.ps1](retag.ps1) selects the highest local stable
+`vMAJOR.MINOR.REVISION` tag and increments it:
+
+```powershell
+git fetch origin --tags
+.\retag.ps1 --revision   # v1.2.3 -> v1.2.4
+.\retag.ps1 --minor      # v1.2.3 -> v1.3.0
+.\retag.ps1 --major      # v1.2.3 -> v2.0.0
+```
+
+Choose exactly one flag. The script ignores prerelease tags, pushes the current
+committed `HEAD` to `origin`, creates the new tag, and pushes it to trigger the
+release workflow. Commit your changes first; the script does not commit files
+or move existing tags. If a Git command fails, it stops without running the
+remaining commands. If the tag push fails after local creation, resolve the
+push error and push that tag explicitly rather than incrementing again.
 
 Use `vMAJOR.MINOR.PATCH` for normal releases or a suffix such as
 `v1.0.0-rc.1` for prereleases. The workflow rejects other tag formats and
