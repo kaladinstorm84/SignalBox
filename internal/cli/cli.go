@@ -22,7 +22,7 @@ import (
 	"github.com/kaladinstorm84/SignalBox/internal/watcher"
 )
 
-// Version is stamped at build time via -ldflags.
+// Version may be stamped via -ldflags; otherwise module build metadata is used.
 var Version = "dev"
 
 const usage = `SignalBox - YAML based AI agent workflow system with human approvals.

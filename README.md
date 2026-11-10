@@ -1033,7 +1033,9 @@ manually, or delete the incomplete draft before rerunning the workflow.
 auto-approve every gate (useful in scripts/CI). Pass pipeline parameters with
 a repeatable `--param name=value`. `signalbox serve --addr
 127.0.0.1:8485` overrides the configured listen address; `signalbox version`
-prints the build version.
+prints the build version. Tagged `go install` builds report their module version
+automatically (including prereleases and commit pseudo-versions). Release
+workflow stamps take precedence; unstamped local source builds report `dev`.
 
 ## MCP server (`signalbox mcp`)
 
