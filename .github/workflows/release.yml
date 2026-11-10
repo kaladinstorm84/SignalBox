@@ -13,6 +13,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  test:
+    name: Full regression tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run full test suite including detached-worker lifecycle
+        run: go test ./...
+
   build:
     name: Test and package Windows x64
     runs-on: windows-latest
@@ -49,9 +70,11 @@ jobs:
           go mod verify
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Run tests
+      # Hosted Windows jobs forbid the breakaway required by the binary
+      # lifecycle test. Short mode skips it; the Linux job runs the full suite.
+      - name: Run Windows tests (short mode)
         run: |
-          go test ./...
+          go test -short ./...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build and verify executable
@@ -99,7 +122,7 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    needs: build
+    needs: [test, build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

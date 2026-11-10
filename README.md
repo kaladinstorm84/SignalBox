@@ -1005,6 +1005,13 @@ and checks the packaged executable. Only after these steps succeed does it
 create a GitHub Release with generated notes, the ZIP, and its checksum.
 The release is initially a draft while its files upload, then published.
 
+The full test suite runs on Linux, including the detached-worker binary
+lifecycle test. Windows runs `go test -short ./...`, which skips that lifecycle
+test because GitHub-hosted Windows jobs forbid the process breakaway it
+requires. Windows-specific unit tests and executable/package checks still run.
+Both jobs must pass before publication. This does not relax the application's
+breakaway requirement: Windows hosts running detached workers must permit it.
+
 Commit and push the source and workflow first, then tag the commit to release:
 
 ```powershell
