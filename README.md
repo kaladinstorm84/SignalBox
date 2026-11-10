@@ -61,7 +61,6 @@ on your PATH, or to install without Go.
 - [SignalBox MCP server](help/mcp-server.md)
 - [HTTP API](help/http-api.md)
 - [Development](help/development.md)
-- [Publishing releases](help/releasing.md)
 
 ## Examples
 
