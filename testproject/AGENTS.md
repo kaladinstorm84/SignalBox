@@ -3,14 +3,14 @@
 This folder is a SignalBox project: YAML pipelines of AI agents, code steps,
 quality gates and human approvals, run by the `signalbox` executable. Use
 this guide to manage the project and to design, write and verify new
-pipelines. The full reference is the [SignalBox README](../README.md); link to
-its sections rather than restating them.
+pipelines. The [SignalBox README](../README.md) indexes the full reference in
+the [help directory](../help/); link to its guides rather than restating them.
 
 ## Layout
 
 | Path | Contents |
 |------|----------|
-| `signalbox.yaml` | Project config: runtimes, MCP servers, registry, uploads, server address. See [Project configuration](../README.md#project-configuration-signalboxyaml). |
+| `signalbox.yaml` | Project config: runtimes, MCP servers, registry, uploads, server address. See [Project configuration](../help/configuration.md#project-configuration-signalboxyaml). |
 | `pipelines/` | One pipeline per `.yaml` file. Every file here is loaded as a pipeline. |
 | `shared/` | Importable templates and agents (`imports:`). Keep shared files out of `pipelines/`. |
 | `schemas/` | JSON Schemas (`.json`/`.yaml`) referenced by name without extension. |
@@ -36,8 +36,8 @@ Run from this folder. Build first from the repository root with
 
 `--yes` auto-approves approval gates. Execution management (`list`, `show`,
 `approve`, `reject`, `retry`, `restart`, `rerun`, `cancel`) and `registry`
-commands talk to a running `serve`; see [Command line](../README.md#command-line)
-and [Pipeline registry](../README.md#pipeline-registry).
+commands talk to a running `serve`; see [Command line](../help/command-line.md#command-line)
+and [Pipeline registry](../help/registry.md#pipeline-registry).
 
 Always run `validate` after changing anything in `pipelines/`, `shared/`,
 `schemas/` or `signalbox.yaml`, and fix every error before finishing.
@@ -52,7 +52,7 @@ Always run `validate` after changing anything in `pipelines/`, `shared/`,
    `code` step for anything computable (parsing, statistics, validation), and
    reserve LLM calls for judgement. Count the LLM calls of a successful pass
    and state it.
-3. **Pick node types** (see [Agent types](../README.md#agent-types)):
+3. **Pick node types** (see [Agent types](../help/pipelines.md#agent-types)):
 
    | Need | Use |
    |------|-----|

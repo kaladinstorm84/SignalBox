@@ -99,6 +99,7 @@ jobs:
       - name: Package release and checksum
         run: |
           Copy-Item README.md, LICENSE -Destination dist\package
+          Copy-Item help, image -Destination dist\package -Recurse
           $archive = "signalbox-$env:GITHUB_REF_NAME-windows-amd64.zip"
           Compress-Archive -Path dist\package\* -DestinationPath "dist\$archive"
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "dist\$archive").Hash.ToLowerInvariant()
