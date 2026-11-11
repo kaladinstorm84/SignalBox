@@ -144,7 +144,7 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 func logMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		next.ServeHTTP(w, r)
-		if r.URL.Path != "/api/executions" && r.URL.Path != "/" { // keep polling noise out of the log
+		if r.URL.Path != "/api/executions" && r.URL.Path != "/api/dashboard/active" && r.URL.Path != "/" { // keep polling noise out of the log
 			log.Printf("%s %s", r.Method, r.URL.Path)
 		}
 	})
