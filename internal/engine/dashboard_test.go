@@ -92,6 +92,13 @@ func TestDashboard(t *testing.T) {
 			if len(dashboard.Active) != 8 || len(dashboard.Recent) != 8 || dashboard.Active[0].ID != "waiting-09" || dashboard.Recent[7].ID != "waiting-02" {
 				t.Fatalf("bounded newest-first lists = %+v", dashboard)
 			}
+			active, err := eng.ActiveDashboard()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if active.InProgress != dashboard.InProgress || len(active.Active) != 8 || active.Active[0].ID != dashboard.Active[0].ID {
+				t.Fatalf("active dashboard = %+v", active)
+			}
 			root.Status, child.Status = StatusCompleted, StatusCanceled
 			dashboard, err = eng.Dashboard()
 			if err != nil {
@@ -100,6 +107,10 @@ func TestDashboard(t *testing.T) {
 			if dashboard.ActiveAgents != 0 || dashboard.InProgress != 10 ||
 				dashboard.WaitingApprovals+dashboard.WaitingManualEdits+dashboard.WaitingRetries != 0 {
 				t.Fatalf("terminal executions counted as active: %+v", dashboard)
+			}
+			active, err = eng.ActiveDashboard()
+			if err != nil || active.InProgress != 10 {
+				t.Fatalf("terminal executions in active dashboard: %+v, %v", active, err)
 			}
 		})
 	}
@@ -115,5 +126,8 @@ func TestDashboardStoreError(t *testing.T) {
 	}
 	if _, err := (&Engine{store: store}).Dashboard(); err == nil {
 		t.Fatal("expected dashboard to report the store failure")
+	}
+	if _, err := (&Engine{store: store}).ActiveDashboard(); err == nil {
+		t.Fatal("expected active dashboard to report the store failure")
 	}
 }

@@ -312,6 +312,28 @@
   .dashboard-run:last-child { border-bottom: 0; }
   .dashboard-run .topline { align-items: center; flex-wrap: wrap; }
   .dashboard-run a { font-weight: 600; }
+  .dashboard-tabs { display: flex; flex-wrap: wrap; gap: 8px; border-bottom: 1px solid var(--border); margin: 18px 0; }
+  .dashboard-tabs button { border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: transparent; color: var(--muted); padding: 10px 18px; }
+  .dashboard-tabs button[aria-selected="true"] { color: var(--accent2); border-bottom-color: var(--accent); }
+  .dashboard-tabs button:focus-visible { outline: 2px solid var(--accent2); outline-offset: -2px; }
+  .dashboard-filters { display: flex; flex-wrap: wrap; gap: 16px; margin: 18px 0; align-items: end; }
+  .dashboard-filters[hidden] { display: none; }
+  .dashboard-filters > div { display: grid; gap: 4px; }
+  .dashboard-report .card { margin-bottom: 18px; }
+  .dashboard-report .dashboard-stats .card { margin-bottom: 0; }
+  .dashboard-report h3 { margin-top: 0; }
+  .dashboard-outcome { display: grid; grid-template-columns: 110px 1fr 90px; gap: 10px; align-items: center; margin: 10px 0; }
+  .dashboard-outcome progress { width: 100%; accent-color: var(--accent); }
+  .dashboard-trend { display: flex; align-items: end; gap: 5px; height: 130px; margin: 16px 0 8px; }
+  .dashboard-day { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; justify-content: end; }
+  .dashboard-day span { display: block; min-height: 0; }
+  .dashboard-day .completed { background: var(--ok); }
+  .dashboard-day .failed { background: var(--err); }
+  .dashboard-day .other { background: var(--warn); }
+  .dashboard-sparkline { display: block; width: 100%; height: 90px; margin: 12px 0; }
+  .dashboard-report td, .dashboard-report th { white-space: nowrap; }
+  .dashboard-report td:first-child { white-space: normal; overflow-wrap: anywhere; }
+  .dashboard-report caption { text-align: left; color: var(--muted); margin-bottom: 10px; }
   .card, .runcard { min-width: 0; }
   .card:has(table) { overflow-x: auto; }
   @media (max-width: 900px) {
@@ -411,9 +433,11 @@
 </div>
 <div class="toast" id="toast"></div>
 
+<script src="/vendor/vigil/vigil.js"></script>
 <script>
 const $main = document.getElementById('main');
 let pollTimer = null;
+let dashboardActiveTimer = null;
 let lastRendered = '';
 let currentExec = null;
 let settingsDocument = null;
@@ -514,7 +538,10 @@ function setNav(name) {
     a.classList.toggle('active', a.dataset.nav === name));
   document.getElementById('pipeline-menu').hidden = name !== 'pipelines' || !document.getElementById('pipeline-menu').childElementCount;
 }
-function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  if (dashboardActiveTimer) { clearInterval(dashboardActiveTimer); dashboardActiveTimer = null; }
+}
 
 // --- routing ---
 function route() {
@@ -548,21 +575,152 @@ document.querySelector('[data-nav="new"]').addEventListener('click', event => {
 });
 
 // --- dashboard ---
+const dashboardFilters = {range: '7d', pipeline: ''};
+let dashboardTab = 'report';
+function dashboardDuration(ms) {
+  if (ms == null) return 'No data';
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)} s`;
+  if (ms < 3600000) return `${(ms / 60000).toFixed(1)} min`;
+  return `${(ms / 3600000).toFixed(1)} h`;
+}
+function dashboardPercent(value) { return value == null ? 'No data' : `${value.toFixed(1)}%`; }
+function dashboardReport(a) {
+  const m = a.roots;
+  const outcomes = [
+    ['completed', 'Completed'], ['failed', 'Failed'], ['rejected', 'Rejected'],
+    ['canceled', 'Canceled'], ['interrupted', 'Interrupted'],
+  ];
+  const stats = [
+    ['Completion rate', dashboardPercent(m.success_rate), `${m.statuses.completed || 0} completed / ${m.terminal} terminal runs`],
+    ['Failure rate', dashboardPercent(m.failure_rate), `${m.statuses.failed || 0} failed / ${m.terminal} terminal runs`],
+    ['Median duration', dashboardDuration(m.duration.median_ms), `${m.duration.samples} timed terminal runs; includes waits`],
+    ['p95 duration', dashboardDuration(m.duration.p95_ms), `Average ${dashboardDuration(m.duration.average_ms)}`],
+    ['Throughput', m.completed_per_hour == null ? 'No data' : `${m.completed_per_hour.toFixed(2)}/h`, 'Completed cohort runs per elapsed window hour'],
+    ['Retry rate', dashboardPercent(m.retry_rate), `${m.retried} retried runs; ${m.recovered} completed after retry`],
+  ];
+  const maxDaily = Math.max(1, ...a.daily.map(d => d.total));
+  const dailyRows = a.daily.map(d => `<tr><td>${esc(d.date)}</td><td>${d.total}</td><td>${d.statuses.completed || 0}</td>
+    <td>${d.statuses.failed || 0}</td><td>${dashboardPercent(d.success_rate)}</td><td>${dashboardDuration(d.duration.average_ms)}</td></tr>`).join('');
+  return `<section class="dashboard-report">
+    <h3>Outcomes &amp; performance</h3>
+    <p class="muted">${m.total} top-level runs created in the selected window. Rates use all terminal outcomes, including cancellations, rejections and interruptions.
+      Live activity on the other tab remains global. Updated ${esc(fmtTime(a.as_of))}.</p>
+    <div class="dashboard-stats">${stats.map(([label, value, detail]) => `<section class="card"><h3>${label}</h3>
+      <span class="dashboard-value">${value}</span><div class="muted">${detail}</div></section>`).join('')}</div>
+    <div class="dashboard-board">
+      <section class="card"><h3>Terminal outcomes</h3>${outcomes.map(([status, label]) => {
+        const n = m.statuses[status] || 0;
+        return `<div class="dashboard-outcome"><span>${label}</span><progress aria-label="${label}" value="${n}" max="${m.terminal || 1}"></progress>
+          <span>${n} / ${dashboardPercent(m.terminal ? n * 100 / m.terminal : null)}</span></div>`;
+      }).join('')}
+        <p class="muted">${m.total - m.terminal} non-terminal runs in this cohort.</p>
+        <p>AI-call failures: <strong>${m.failed_calls} / ${m.call_attempts}</strong> (${dashboardPercent(m.call_failure_rate)}).</p>
+        <p class="muted">Calls include retries, repairs and session turns; unfinished recorded calls are included in attempts. Reused nodes are excluded from call, retry and node-duration metrics.</p>
+      </section>
+      <section class="card"><h3>Daily outcomes &amp; duration</h3>
+        <div class="muted">Creation date (UTC); latest 30 calendar days at most. Green: completed, red: failed, amber: all other states.</div>
+        <div class="dashboard-trend" role="img" aria-label="Daily execution outcomes; exact values in the daily data table">${a.daily.map(d =>
+          `<div class="dashboard-day" title="${esc(d.date)}: ${d.total} runs, ${d.statuses.completed || 0} completed, ${d.statuses.failed || 0} failed">
+            <span class="other" style="height:${(d.total - (d.statuses.completed || 0) - (d.statuses.failed || 0)) * 100 / maxDaily}%"></span>
+            <span class="failed" style="height:${(d.statuses.failed || 0) * 100 / maxDaily}%"></span>
+            <span class="completed" style="height:${(d.statuses.completed || 0) * 100 / maxDaily}%"></span></div>`).join('')}</div>
+        <div class="topline muted"><span>${esc(a.daily[0]?.date || '')}</span><span>${esc(a.daily.at(-1)?.date || '')}</span></div>
+        <svg id="dashboard-duration-trend" class="dashboard-sparkline" role="img" aria-label="Average terminal duration on days with timed runs; exact values in the daily data table"></svg>
+        <div class="muted">Average elapsed duration on days with timed terminal runs (empty days omitted).</div>
+        <details data-key="dashboard-daily"><summary>Daily data</summary><table><thead><tr><th>Date (UTC)</th><th>Runs</th><th>Completed</th><th>Failed</th><th>Success</th><th>Average duration</th></tr></thead>
+          <tbody>${dailyRows}</tbody></table></details>
+      </section>
+    </div>
+    <section class="card"><h3>Pipeline performance</h3>
+      ${a.pipelines.length ? `<table><caption>Top-level runs only. Duration percentiles use timed terminal runs, including unsuccessful outcomes.</caption>
+        <thead><tr><th>Pipeline</th><th>Runs</th><th>Success</th><th>Failure</th><th>Median</th><th>p95</th><th>Retries</th><th>Last failure</th></tr></thead>
+        <tbody>${a.pipelines.map(p => `<tr><td><a href="#/pipelines/view/${esc(encodeURIComponent(p.pipeline))}">${esc(p.pipeline)}</a></td><td>${p.total}</td>
+          <td>${dashboardPercent(p.success_rate)}</td><td>${dashboardPercent(p.failure_rate)}</td><td>${dashboardDuration(p.duration.median_ms)}</td>
+          <td>${dashboardDuration(p.duration.p95_ms)}</td><td>${p.retried}</td><td>${esc(fmtTime(p.last_failure)) || 'None'}</td></tr>`).join('')}</tbody></table>`
+        : '<div class="empty">No runs match these filters.</div>'}
+    </section>
+    <div class="dashboard-board">
+      <section class="card"><h3>Slowest nodes</h3>
+        ${a.slow_nodes.length ? `<table><caption>Top eight by average elapsed time, including waits; includes linked child nodes.</caption>
+          <thead><tr><th>Pipeline / node</th><th>Samples</th><th>Average</th><th>p95</th></tr></thead>
+          <tbody>${a.slow_nodes.map(n => `<tr><td>${esc(n.pipeline)} / ${esc(n.node)}</td><td>${n.duration.samples}</td>
+          <td>${dashboardDuration(n.duration.average_ms)}</td><td>${dashboardDuration(n.duration.p95_ms)}</td></tr>`).join('')}</tbody></table>`
+          : '<div class="empty">No node timings available.</div>'}
+      </section>
+      <section class="card"><h3>Longest active runs</h3>
+        ${a.longest_active.map(r => `<div class="dashboard-run"><a href="#/exec/${esc(encodeURIComponent(r.id))}">${esc(r.pipeline)}</a>
+          <div class="mono muted">${esc(r.id)}</div><strong>${dashboardDuration(r.elapsed_ms)}</strong> elapsed</div>`).join('') || '<div class="empty">No active runs in this cohort.</div>'}
+      </section>
+    </div>
+    <section class="card"><h3>Linked child runs</h3><p>${a.children.total} child runs in the selected creation-time window${a.pipeline ? ' and pipeline' : ''};
+      ${a.children.terminal} terminal, ${dashboardPercent(a.children.success_rate)} successful, ${dashboardPercent(a.children.failure_rate)} failed.
+      Median ${dashboardDuration(a.children.duration.median_ms)}; p95 ${dashboardDuration(a.children.duration.p95_ms)}.</p>
+      <div class="muted">Reported separately to avoid counting parent pipeline outcomes twice. Pipeline filters match each execution's own pipeline.</div>
+    </section>
+  </section>`;
+}
 async function showDashboard() {
   setNav('dashboard');
   const expectedHash = location.hash;
-  $main.innerHTML = '<h2>Dashboard</h2><div class="muted" role="status">Loading live activity...</div>';
+  $main.innerHTML = `<div class="topline"><div><h2>Dashboard</h2><div class="page-sub">In-progress pipelines refresh every 2 seconds; other dashboard data refreshes every minute.</div></div>
+    <button id="dashboard-new" onclick="location.hash='#/new'">New run</button></div>
+    <div class="dashboard-tabs" role="tablist" aria-label="Dashboard views">
+      <button type="button" id="dashboard-tab-report" role="tab" aria-controls="dashboard-content">Outcomes &amp; performance</button>
+      <button type="button" id="dashboard-tab-live" role="tab" aria-controls="dashboard-content">Live activity &amp; retained history</button>
+    </div>
+    <div id="dashboard-filters" class="dashboard-filters"><div><label for="dashboard-range">Reporting window</label><select id="dashboard-range">
+      ${[['24h','Last 24 hours'],['7d','Last 7 days'],['30d','Last 30 days'],['all','Retained history']].map(([value,label]) =>
+        `<option value="${value}" ${dashboardFilters.range === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
+      <div><label for="dashboard-pipeline">Pipeline</label><select id="dashboard-pipeline"><option value="">All pipelines</option></select></div></div>
+    <div id="dashboard-error" role="alert" hidden></div>
+    <div id="dashboard-content" role="tabpanel" tabindex="0"><div class="muted" role="status">Loading dashboard...</div></div>`;
+  const content = document.getElementById('dashboard-content');
+  const dashboardError = document.getElementById('dashboard-error');
+  const filters = document.getElementById('dashboard-filters');
+  const tabs = [...$main.querySelectorAll('.dashboard-tabs [role="tab"]')];
   let busy = false;
+  let activeBusy = false;
   let snapshot = '';
-  const render = async () => {
-    if (busy) return;
-    busy = true;
-    try {
-      const data = await api('/dashboard', {cache: 'no-store'});
-      if (location.hash !== expectedHash) return;
-      const nextSnapshot = JSON.stringify(data);
-      if (snapshot === nextSnapshot && !$main.querySelector('[role="alert"]')) return;
-      snapshot = nextSnapshot;
+  let activeSnapshot = '';
+  let pipelineNames = '';
+  let dataCache = null;
+  let cacheQuery = '';
+  let activeData = null;
+  let activeError = '';
+  const updateTabs = () => {
+    for (const tab of tabs) {
+      const selected = tab.id === 'dashboard-tab-' + dashboardTab;
+      tab.setAttribute('aria-selected', String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+    }
+    filters.hidden = dashboardTab !== 'report';
+    content.setAttribute('aria-labelledby', 'dashboard-tab-' + dashboardTab);
+  };
+  updateTabs();
+  const runs = (items, prefix) => items.map(x => `<div class="dashboard-run">
+    <div class="topline"><a id="${prefix}-${esc(x.id)}" href="#/exec/${esc(encodeURIComponent(x.id))}">${esc(x.pipeline)}</a>${pill(x.status)}</div>
+    <div class="mono muted">${esc(x.id)}</div>
+    ${x.input ? `<div>${esc(x.input)}</div>` : ''}
+    <div class="muted">Started ${fmtTime(x.created_at)}</div>
+  </div>`).join('');
+  const renderActive = () => {
+    const section = document.getElementById('dashboard-active-list');
+    if (!section) return;
+    const next = JSON.stringify([activeData, activeError]);
+    if (activeSnapshot === next) return;
+    activeSnapshot = next;
+    const state = captureViewState();
+    section.innerHTML = activeError
+      ? `<div class="err-banner" role="alert">Unable to load pipelines in progress: ${esc(activeError)}. Retrying automatically.</div>`
+      : activeData ? `${runs(activeData.active, 'dashboard-active') || '<div class="empty">No pipelines in progress. <a id="dashboard-start" href="#/new">Start a new run</a>.</div>'}
+        ${activeData.in_progress > activeData.active.length ? `<div class="muted">Showing ${activeData.active.length} of ${activeData.in_progress} active runs.</div>` : ''}`
+      : '<div class="muted" role="status">Loading pipelines in progress...</div>';
+    restoreViewState(state);
+  };
+  const renderCached = () => {
+      if (!dataCache || cacheQuery !== new URLSearchParams(dashboardFilters).toString()) return;
+      const data = dataCache;
       const attention = data.waiting_approvals + data.waiting_manual_edits + data.waiting_retries;
       const stats = [
         ['Agents in use', data.active_agents, 'Running agent nodes, including sessions and orchestrators.'],
@@ -572,39 +730,126 @@ async function showDashboard() {
         ['Completed runs', data.statuses.completed || 0, 'Successfully completed executions in retained history.'],
         ['Failed runs', data.statuses.failed || 0, 'Failed executions in retained history.'],
       ];
-      const runs = (items, prefix) => items.map(x => `<div class="dashboard-run">
-        <div class="topline"><a id="${prefix}-${esc(x.id)}" href="#/exec/${esc(encodeURIComponent(x.id))}">${esc(x.pipeline)}</a>${pill(x.status)}</div>
-        <div class="mono muted">${esc(x.id)}</div>
-        ${x.input ? `<div>${esc(x.input)}</div>` : ''}
-        <div class="muted">Started ${fmtTime(x.created_at)}</div>
-      </div>`).join('');
       const state = captureViewState();
-      $main.innerHTML = `
-        <div class="topline"><div><h2>Dashboard</h2><div class="page-sub">Live activity in the signal box. Refreshes every 2 seconds.</div></div>
-          <button id="dashboard-new" onclick="location.hash='#/new'">New run</button></div>
+      content.innerHTML = dashboardTab === 'report' ? dashboardReport(data.analytics) : `
+        <h3>Live activity &amp; retained history <span class="muted">(all pipelines, all time)</span></h3>
         <div class="dashboard-stats">${stats.map(([label, count, detail]) => `<section class="card">
           <h3>${label}</h3><span class="dashboard-value">${count}</span><div class="muted">${detail}</div>
         </section>`).join('')}</div>
         <div class="dashboard-board">
           <section class="card"><div class="topline"><h3>Pipelines in progress</h3><a id="dashboard-executions" href="#/executions">All executions</a></div>
-            ${runs(data.active, 'dashboard-active') || '<div class="empty">No pipelines in progress. <a id="dashboard-start" href="#/new">Start a new run</a>.</div>'}
-            ${data.in_progress > data.active.length ? `<div class="muted">Showing ${data.active.length} of ${data.in_progress} active runs.</div>` : ''}
+            <div id="dashboard-active-list"></div>
           </section>
           <section class="card"><div class="topline"><h3>Recent activity</h3><a id="dashboard-pipelines" href="#/pipelines">Browse pipelines</a></div>
             ${runs(data.recent, 'dashboard-recent') || '<div class="empty">No executions yet.</div>'}
             <div class="muted">${data.total} executions in retained history, including linked child runs.</div>
           </section>
         </div>`;
+      if (dashboardTab === 'report') {
+        const timedDays = data.analytics.daily.filter(d => d.duration.average_ms != null);
+        const svg = document.getElementById('dashboard-duration-trend');
+        if (timedDays.length > 1) {
+          Vigil.sparkline(svg, timedDays.map(d => d.duration.average_ms), {color: '#e2c26f', type: 'area'});
+        } else {
+          svg.outerHTML = `<div class="empty">${timedDays.length ? 'At least two timed days are needed for a duration trend.' : 'No duration trend data.'}</div>`;
+        }
+      }
       restoreViewState(state);
+      activeSnapshot = '';
+      renderActive();
+  };
+  const render = async () => {
+    if (busy || !$main.contains(content)) return;
+    busy = true;
+    const query = new URLSearchParams(dashboardFilters).toString();
+    try {
+      const data = await api('/dashboard?' + query, {cache: 'no-store'});
+      if (location.hash !== expectedHash || !$main.contains(content) || query !== new URLSearchParams(dashboardFilters).toString()) return;
+      const names = JSON.stringify(data.analytics.pipeline_names);
+      if (names !== pipelineNames) {
+        const select = document.getElementById('dashboard-pipeline');
+        const options = [...data.analytics.pipeline_names];
+        if (dashboardFilters.pipeline && !options.includes(dashboardFilters.pipeline)) options.push(dashboardFilters.pipeline);
+        select.innerHTML = '<option value="">All pipelines</option>' + options.map(name =>
+          `<option value="${esc(name)}">${esc(name)}</option>`).join('');
+        select.value = dashboardFilters.pipeline;
+        pipelineNames = names;
+      }
+      dataCache = data;
+      cacheQuery = query;
+      const nextSnapshot = JSON.stringify(data);
+      const hadError = !dashboardError.hidden;
+      dashboardError.hidden = true;
+      dashboardError.textContent = '';
+      if (snapshot === nextSnapshot && !hadError) return;
+      snapshot = nextSnapshot;
+      renderCached();
     } catch (error) {
-      if (location.hash !== expectedHash) return;
-      $main.innerHTML = `<h2>Dashboard</h2><div class="err-banner" role="alert">Unable to load live activity: ${esc(error.message)}. Retrying automatically.</div>`;
+      if (location.hash !== expectedHash || !$main.contains(content) || query !== new URLSearchParams(dashboardFilters).toString()) return;
+      dashboardError.className = 'err-banner';
+      dashboardError.textContent = `Unable to load dashboard: ${error.message}. Retrying automatically.`;
+      dashboardError.hidden = false;
+      if (!dataCache || cacheQuery !== query) content.innerHTML = '';
     } finally {
       busy = false;
+      if ($main.contains(content) && query !== new URLSearchParams(dashboardFilters).toString()) render();
     }
   };
+  const refreshActive = async () => {
+    if (activeBusy || dashboardTab !== 'live' || !$main.contains(content)) return;
+    activeBusy = true;
+    try {
+      const data = await api('/dashboard/active', {cache: 'no-store'});
+      if (location.hash !== expectedHash || !$main.contains(content) || dashboardTab !== 'live') return;
+      activeData = data;
+      activeError = '';
+      renderActive();
+    } catch (error) {
+      if (location.hash !== expectedHash || !$main.contains(content) || dashboardTab !== 'live') return;
+      activeError = error.message;
+      renderActive();
+    } finally {
+      activeBusy = false;
+    }
+  };
+  const selectTab = tab => {
+    const selected = tab.id === 'dashboard-tab-live' ? 'live' : 'report';
+    if (dashboardTab === selected) return;
+    dashboardTab = selected;
+    updateTabs();
+    snapshot = '';
+    content.innerHTML = '<div class="muted" role="status">Loading dashboard...</div>';
+    if (dataCache && cacheQuery === new URLSearchParams(dashboardFilters).toString()) renderCached();
+    else render();
+    if (dashboardTab === 'live') refreshActive();
+  };
+  for (const tab of tabs) {
+    tab.addEventListener('click', () => selectTab(tab));
+    tab.addEventListener('keydown', event => {
+      let index = tabs.indexOf(tab);
+      if (event.key === 'ArrowRight') index = (index + 1) % tabs.length;
+      else if (event.key === 'ArrowLeft') index = (index + tabs.length - 1) % tabs.length;
+      else if (event.key === 'Home') index = 0;
+      else if (event.key === 'End') index = tabs.length - 1;
+      else return;
+      event.preventDefault();
+      tabs[index].focus();
+      selectTab(tabs[index]);
+    });
+  }
+  for (const key of ['range', 'pipeline']) {
+    document.getElementById('dashboard-' + key).addEventListener('change', event => {
+      dashboardFilters[key] = event.target.value;
+      snapshot = '';
+      render();
+    });
+  }
   await render();
-  if (location.hash === expectedHash) pollTimer = setInterval(render, 2000);
+  if (location.hash === expectedHash && $main.contains(content)) {
+    pollTimer = setInterval(render, 60000);
+    dashboardActiveTimer = setInterval(refreshActive, 2000);
+    if (dashboardTab === 'live') refreshActive();
+  }
 }
 
 // --- executions list ---

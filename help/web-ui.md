@@ -4,14 +4,54 @@
 
 ## The web UI (`signalbox serve`)
 
-- **Dashboard** — the default landing page, refreshing every two seconds.
-  Shows running agent nodes (including sessions, orchestrators, and LLM gates,
+- **Dashboard** — the default landing page. The in-progress pipeline list
+  refreshes every two seconds while the live tab is open; other dashboard data
+  refreshes every minute. Reporting filters refresh the report immediately.
+  The **Outcomes & performance** tab shows reporting; the separate
+  **Live activity & retained history** tab shows running agent nodes (including sessions, orchestrators, and LLM gates,
   but not code, human gates, or pipeline junctions), top-level pipeline runs in
   progress, approvals/manual edits/retries needing attention, and the number of
   currently loaded pipeline definitions. Linked child runs contribute to agent
   and attention counts without counting the parent pipeline twice. Completed
   and failed totals cover retained execution history (including children), not
   just the latest page. Active runs and recent activity link to execution details.
+
+  The reporting panels add **24-hour, 7-day (default), 30-day, and retained-history**
+  windows and a pipeline filter. These select executions by creation time;
+  pipeline filters match each execution's own pipeline, including children.
+  Live activity and recent-history panels remain global on their own tab, regardless
+  of the reporting filters. Switching tabs preserves the reporting filters.
+  Reporting includes:
+
+  - Successful completion and failure percentages, with completed, failed,
+    canceled, rejected, and interrupted outcomes shown separately. Both rates
+    use **all terminal runs** as their denominator; active runs are excluded.
+    No samples are displayed as **No data**, not a misleading zero percent.
+  - Average, median, and nearest-rank p95 elapsed durations for terminal runs
+    with valid creation/finish timestamps. Durations include human and retry
+    waits, not just agent processing time. Missing or negative timings are
+    excluded from duration samples without losing their outcome counts.
+  - Throughput: completed runs in the selected creation-time cohort divided by
+    elapsed window hours. For retained history, the window begins at the
+    earliest matching retained execution. This is a cohort measure, not a count
+    of all completions that happened during the window.
+  - Retry frequency (runs with at least one recorded retry divided by all runs),
+    successful runs after retry, and failed/recorded AI-call attempts. Attempts
+    include unfinished calls, repairs and session turns; a recorded error
+    marks a failed call. Reused nodes do not contribute retries, calls or node timings.
+  - Per-pipeline outcomes, duration percentiles, retry counts and last failure;
+    the eight slowest nodes by average elapsed time (including child nodes);
+    and the eight longest-active top-level runs in the selected cohort.
+  - Daily outcomes by UTC creation date and a Vigil duration sparkline over
+    days with timed terminal runs, with an expandable exact-values table.
+    Charts show at most the latest 30 calendar days, including empty days;
+    overall metrics still cover the entire selected window.
+
+  Main analytics count top-level executions only; linked children are reported
+  separately to avoid inflating parent outcome counts. Metrics cover all matching
+  retained history, not just the eight recent executions on screen. Deleted or
+  retention-pruned executions are not included. Vigil is pinned and bundled
+  locally under its MIT license; no CDN is required.
 
   ![SignalBox dashboard with pipeline activity and recent executions](../image/dashboard.png)
 - **Executions** — live list of every run with status and pending-approval

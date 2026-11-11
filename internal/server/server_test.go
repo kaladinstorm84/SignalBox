@@ -674,6 +674,43 @@ func TestDashboardAPI(t *testing.T) {
 		dashboard.Active == nil || dashboard.Recent == nil || dashboard.Statuses == nil {
 		t.Fatalf("empty dashboard = %+v", dashboard)
 	}
+	activeResponse := httptest.NewRecorder()
+	handler.ServeHTTP(activeResponse, httptest.NewRequest(http.MethodGet, "/api/dashboard/active", nil))
+	var active engine.DashboardActive
+	if activeResponse.Code != http.StatusOK || activeResponse.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("active dashboard response = %d, headers %v", activeResponse.Code, activeResponse.Header())
+	}
+	if err := json.Unmarshal(activeResponse.Body.Bytes(), &active); err != nil {
+		t.Fatal(err)
+	}
+	if active.InProgress != 0 || active.Active == nil {
+		t.Fatalf("empty active dashboard = %+v", active)
+	}
+	for _, window := range []string{"24h", "7d", "30d", "all"} {
+		response = httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/dashboard?range="+window+"&pipeline=missing", nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("filtered dashboard = %d: %s", response.Code, response.Body.String())
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &dashboard); err != nil {
+			t.Fatal(err)
+		}
+		if dashboard.Analytics.Range != window || dashboard.Analytics.Pipeline != "missing" || dashboard.Analytics.Roots.Total != 0 {
+			t.Fatalf("filtered dashboard = %+v", dashboard.Analytics)
+		}
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/dashboard?range=invalid", nil))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid range = %d", response.Code)
+	}
+	for _, asset := range []string{"/vendor/vigil/vigil.js", "/vendor/vigil/LICENSE"} {
+		response = httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, asset, nil))
+		if response.Code != http.StatusOK || response.Body.Len() == 0 {
+			t.Fatalf("embedded asset %s = %d", asset, response.Code)
+		}
+	}
 	store, err := engine.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -689,6 +726,11 @@ func TestDashboardAPI(t *testing.T) {
 	New(eng, "test", nil, nil, nil).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/dashboard", nil))
 	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "loading dashboard") {
 		t.Fatalf("failed dashboard response = %d: %s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	New(eng, "test", nil, nil, nil).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/dashboard/active", nil))
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "loading active dashboard") {
+		t.Fatalf("failed active dashboard response = %d: %s", response.Code, response.Body.String())
 	}
 }
 

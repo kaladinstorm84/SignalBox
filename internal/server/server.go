@@ -76,6 +76,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/meta", s.handleMeta)
 	mux.HandleFunc("GET /api/dashboard", s.handleDashboard)
+	mux.HandleFunc("GET /api/dashboard/active", s.handleDashboardActive)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handleSaveSettings)
 	mux.HandleFunc("GET /api/watchers", s.handleGetWatchers)
@@ -164,12 +165,29 @@ func writeErr(w http.ResponseWriter, status int, err error) {
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	dashboard, err := s.eng.Dashboard()
+	options := engine.DashboardOptions{Range: r.URL.Query().Get("range"), Pipeline: r.URL.Query().Get("pipeline")}
+	switch options.Range {
+	case "", "24h", "7d", "30d", "all":
+	default:
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("range must be 24h, 7d, 30d, or all"))
+		return
+	}
+	dashboard, err := s.eng.DashboardWithOptions(options)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("loading dashboard: %w", err))
 		return
 	}
 	writeJSON(w, http.StatusOK, dashboard)
+}
+
+func (s *Server) handleDashboardActive(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	active, err := s.eng.ActiveDashboard()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("loading active dashboard: %w", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, active)
 }
 
 func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {

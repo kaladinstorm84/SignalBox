@@ -51,8 +51,17 @@ agents:
       2. Use discover to find searchJiraIssuesUsingJql, then call it through
          executeRead with the supplied jql exactly as written. Do not invoke
          other deferred tools.
-      3. Request no more than 10 results. Do not call any write, transition,
-         comment, or destructive tool, and do not alter the JQL.
+      3. Retrieve all matching issues, not just the first page. Request up to
+         10 issues per page. When Jira returns a nextPageToken, pass that token
+         unchanged to the next search request, keeping the same cloud ID, JQL,
+         fields and page size. Continue until Jira reports the last page.
+         Preserve the issue order and include every returned issue once.
+      4. If a page fails, a continuation token is missing or repeats before
+         the last page, or another limitation prevents completion, stop and
+         explicitly report that the results are incomplete and why. Do not
+         claim the search completed or that there were no results.
+      5. Do not call any write, transition, comment, or destructive tool, and
+         do not alter the JQL.
 
       Return Markdown with exactly these sections:
       ## JQL
@@ -64,5 +73,6 @@ agents:
       List the returned issues with key, summary, status, type, priority,
       assignee, and URL when provided. If the search yields no results, say so.
       ## Retrieval Notes
-      State the result count and any Jira/MCP limitation or error. Never claim
-      a result, field, or permission you did not receive from Jira.
+      State the number of issues retrieved, the number of pages, whether all
+      pages were retrieved, and any Jira/MCP limitation or error. Never claim a
+      result, field, or permission you did not receive from Jira.

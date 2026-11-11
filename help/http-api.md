@@ -7,6 +7,8 @@
 | Method & path | Purpose |
 |---------------|---------|
 | `GET /api/meta` | Project name and `uploads` limits (`max_bytes`, `max_files`, `allowed_extensions`) |
+| `GET /api/dashboard?range=7d&pipeline=default` | Global live counts and recent history, plus filtered `analytics`; `range` is `24h`, `7d` (default), `30d`, or `all`; omit `pipeline` for all pipelines. Invalid ranges return 400. Responses are not cached. |
+| `GET /api/dashboard/active` | Unfiltered `in_progress` count and up to eight newest active top-level executions in `active`. Avoids loading retained history and analytics. Responses are not cached. |
 | `GET /api/pipelines` | Loaded pipeline definitions, including `params`, imported `sources`, optional `registry_sources` (package, kind, installed version), `input_schema`, `files` (the upload declaration), and each agent's `model`, `mcp`, `knowledge_bases`, `output` contract (`schema`, `on_invalid`, `max_repairs`) and `files`/`files_budget` |
 | `GET /api/schemas` | Project schema files: `dir`, `schemas` (`name`, `file`, `schema`, `used_by`), and load `errors` |
 | `GET /api/knowledge-bases` | Project knowledge base names, document names/sizes, and optional `registry_sources` (package, kind, installed version), including sources bundled with pipelines |
@@ -47,3 +49,40 @@ language, entry, timeout, exit codes and folder digest), alongside the effective
 code fields. Registry inspection replaces binary/large file contents with
 preview notices; verification still covers all bytes. Install results may
 include `removed`, listing obsolete tracked plugin files deleted on upgrade.
+
+### Dashboard analytics
+
+The existing global dashboard fields (`active_agents`, `in_progress`,
+`waiting_approvals`, `waiting_manual_edits`, `waiting_retries`, `pipelines`,
+`total`, `statuses`, `active`, `recent`) are unaffected by analytics filters.
+
+`analytics` includes:
+
+- `range`, `pipeline`, `since` (null for `all`), `as_of`, and sorted
+  `pipeline_names` (loaded and retained historical definitions).
+- `roots` and `children`: separate outcome metrics, with `total`, `terminal`,
+  `statuses`, `success_rate`, `failure_rate`, `retried`, `retry_rate`,
+  `recovered`, `call_attempts`, `failed_calls`, `call_failure_rate`,
+  `completed_per_hour`, and `duration`.
+- `duration`: `samples`, `average_ms`, `median_ms`, and `p95_ms` (nearest rank).
+  Untimed/invalid records remain in outcomes but not duration samples.
+- `pipelines`: sorted top-level outcome metrics per pipeline, plus `pipeline`
+  and `last_failure` (finish time if recorded, otherwise creation time).
+- `daily`: UTC creation-date buckets for top-level runs, with `date` and
+  outcome metrics, zero-filled for at most the latest 30 calendar days.
+  Per-day throughput is null; these are creation cohorts, not finish-time buckets.
+- `slow_nodes`: up to eight nodes ordered by descending average duration,
+  with `pipeline`, `node`, and `duration`, including children but not reused nodes.
+- `longest_active`: up to eight selected top-level non-terminal runs, ordered by
+  descending `elapsed_ms`, with `id` and `pipeline`.
+
+Filters select creation-time cohorts, not finish-time windows. Pipeline filters
+match each execution's own pipeline. Success/failure rates are percentages
+(0-100) over **all terminal statuses**, including canceled/rejected/interrupted.
+Retry rate uses all runs. Call failure rate uses all recorded attempts, including
+unfinished calls; calls with errors count as failed. Reused nodes are excluded
+from retry, call and node-duration metrics. Elapsed durations include waits.
+Throughput divides cohort completions by elapsed window hours (for `all`, from
+the earliest matching execution). Undefined rates/durations are JSON null.
+All metrics are limited to retained history; they are not derived from the
+bounded `active`/`recent` lists.

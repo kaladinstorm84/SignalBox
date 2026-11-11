@@ -3,27 +3,83 @@ package engine
 import (
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/kaladinstorm84/SignalBox/internal/pipeline"
 )
 
 // Dashboard is a lightweight snapshot of live work and retained execution history.
 type Dashboard struct {
-	ActiveAgents       int            `json:"active_agents"`
-	InProgress         int            `json:"in_progress"`
-	WaitingApprovals   int            `json:"waiting_approvals"`
-	WaitingManualEdits int            `json:"waiting_manual_edits"`
-	WaitingRetries     int            `json:"waiting_retries"`
-	Pipelines          int            `json:"pipelines"`
-	Total              int            `json:"total"`
-	Statuses           map[Status]int `json:"statuses"`
-	Active             []Summary      `json:"active"`
-	Recent             []Summary      `json:"recent"`
+	ActiveAgents       int                `json:"active_agents"`
+	InProgress         int                `json:"in_progress"`
+	WaitingApprovals   int                `json:"waiting_approvals"`
+	WaitingManualEdits int                `json:"waiting_manual_edits"`
+	WaitingRetries     int                `json:"waiting_retries"`
+	Pipelines          int                `json:"pipelines"`
+	Total              int                `json:"total"`
+	Statuses           map[Status]int     `json:"statuses"`
+	Active             []Summary          `json:"active"`
+	Recent             []Summary          `json:"recent"`
+	Analytics          DashboardAnalytics `json:"analytics"`
+}
+
+// DashboardActive is the bounded list of currently active top-level executions.
+type DashboardActive struct {
+	InProgress int       `json:"in_progress"`
+	Active     []Summary `json:"active"`
+}
+
+// ActiveDashboard avoids loading retained history and analytics for frequent polling.
+func (eng *Engine) ActiveDashboard() (DashboardActive, error) {
+	eng.mu.Lock()
+	defer eng.mu.Unlock()
+	result := DashboardActive{Active: make([]Summary, 0)}
+	var executions []*Execution
+	if eng.store != nil {
+		var err error
+		executions, err = eng.store.activeExecutions()
+		if err != nil {
+			return DashboardActive{}, err
+		}
+		for i, execution := range executions {
+			if local, ok := eng.execs[execution.ID]; ok {
+				executions[i] = local.exec
+			}
+		}
+	} else {
+		for _, live := range eng.execs {
+			executions = append(executions, live.exec)
+		}
+	}
+	for _, execution := range executions {
+		if !execution.Status.Terminal() && execution.Parent == nil {
+			result.InProgress++
+			result.Active = append(result.Active, summarizeExecution(execution))
+		}
+	}
+	sortDashboardSummaries(result.Active)
+	if len(result.Active) > 8 {
+		result.Active = result.Active[:8]
+	}
+	return result, nil
+}
+
+func sortDashboardSummaries(items []Summary) {
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].ID > items[j].ID
+		}
+		return items[i].CreatedAt.After(items[j].CreatedAt)
+	})
 }
 
 // Dashboard counts live nodes, including linked children, but lists only root
 // executions as in-progress pipeline runs so chained work is not counted twice.
 func (eng *Engine) Dashboard() (Dashboard, error) {
+	return eng.DashboardWithOptions(DashboardOptions{})
+}
+
+func (eng *Engine) DashboardWithOptions(options DashboardOptions) (Dashboard, error) {
 	eng.mu.Lock()
 	defer eng.mu.Unlock()
 	result := Dashboard{
@@ -89,22 +145,19 @@ func (eng *Engine) Dashboard() (Dashboard, error) {
 			return Dashboard{}, fmt.Errorf("loading recent executions: %w", err)
 		}
 	}
-	newestFirst := func(items []Summary) {
-		sort.Slice(items, func(i, j int) bool {
-			if items[i].CreatedAt.Equal(items[j].CreatedAt) {
-				return items[i].ID > items[j].ID
-			}
-			return items[i].CreatedAt.After(items[j].CreatedAt)
-		})
-	}
-	newestFirst(result.Active)
-	newestFirst(result.Recent)
+	sortDashboardSummaries(result.Active)
+	sortDashboardSummaries(result.Recent)
 	if len(result.Active) > 8 {
 		result.Active = result.Active[:8]
 	}
 	if len(result.Recent) > 8 {
 		result.Recent = result.Recent[:8]
 	}
+	analytics, err := eng.dashboardAnalytics(options, time.Now().UTC())
+	if err != nil {
+		return Dashboard{}, err
+	}
+	result.Analytics = analytics
 	return result, nil
 }
 
