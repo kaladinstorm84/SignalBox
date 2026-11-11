@@ -1,0 +1,42 @@
+templates:
+  - id: qa_agent
+    type: standard
+    runtime:
+      provider: codex
+      effort: medium
+      speed: fast
+    retry:
+      backoff: 2s
+      attempts:
+        - runtime: {effort: high, speed: standard}
+        - runtime: {effort: xhigh, speed: standard}
+
+  - id: test_plan_agent
+    extends: qa_agent
+    output:
+      schema: qa-test-plan
+      on_invalid: repair
+      max_repairs: 2
+
+  # This gate expects an agent named requirements_loader in the pipeline.
+  - id: planner_gate
+    type: llm_gate
+    runtime:
+      provider: codex
+      effort: medium
+      speed: fast
+    retry:
+      backoff: 2s
+      attempts:
+        - runtime: {effort: high, speed: standard}
+        - runtime: {effort: xhigh, speed: standard}
+    additional-input: [requirements_loader]
+    max_reworks: 2
+
+  # Session retries belong to the session, not its participants.
+  - id: amigo
+    type: standard
+    runtime:
+      provider: codex
+      effort: medium
+      speed: fast

@@ -159,6 +159,84 @@ func TestIntegrationArgsCopilot(t *testing.T) {
 	}
 }
 
+func TestIntegrationArgsHTTP(t *testing.T) {
+	t.Setenv("SBX_HTTP_AUTH", "Bearer secret")
+	servers := map[string]config.MCPServerConfig{
+		"remote": {URL: "https://example.com/mcp", HeadersFrom: map[string]string{"Authorization": "SBX_HTTP_AUTH"}, Tools: []string{"search", "write"}},
+		"local":  {Command: "local", EnvFrom: map[string]string{"SIGNALBOX_MCP_HEADER_0": "SBX_HTTP_AUTH"}, Tools: []string{"read"}},
+	}
+	grants := []MCPGrant{{Server: "remote", Tools: []string{"search"}}, {Server: "local", Tools: []string{"read"}}}
+	for _, kind := range []string{"codex", "claude", "copilot"} {
+		t.Run(kind, func(t *testing.T) {
+			c := &cliRuntime{name: kind, kind: kind, mcpServers: servers}
+			args, env, cleanup, err := c.integrationArgs(Request{MCP: grants})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cleanup()
+			if strings.Contains(strings.Join(args, " "), "Bearer secret") {
+				t.Fatal("secret leaked into arguments")
+			}
+			if kind == "codex" {
+				for _, want := range []string{`mcp_servers.remote.url="https://example.com/mcp"`, `mcp_servers.remote.env_http_headers."Authorization"="SIGNALBOX_MCP_HEADER_1"`, `mcp_servers.remote.enabled_tools=["search"]`, `mcp_servers.local.command="local"`} {
+					if !strings.Contains(strings.Join(args, " "), want) {
+						t.Errorf("missing %s in %q", want, args)
+					}
+				}
+				if !reflect.DeepEqual(env, []string{"SIGNALBOX_MCP_HEADER_1=Bearer secret", "SIGNALBOX_MCP_HEADER_0=Bearer secret"}) {
+					t.Fatalf("environment = %q", env)
+				}
+				return
+			}
+			var path string
+			for i, arg := range args {
+				if arg == "--mcp-config" || arg == "--additional-mcp-config" {
+					path = strings.TrimPrefix(args[i+1], "@")
+				}
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var cfg struct {
+				Servers map[string]map[string]any `json:"mcpServers"`
+			}
+			if err := json.Unmarshal(data, &cfg); err != nil {
+				t.Fatal(err)
+			}
+			remote := cfg.Servers["remote"]
+			headers, ok := remote["headers"].(map[string]any)
+			if !ok || headers["Authorization"] != "Bearer secret" || remote["type"] != "http" || remote["url"] != "https://example.com/mcp" {
+				t.Fatalf("remote config = %s", data)
+			}
+			if _, ok := remote["command"]; ok {
+				t.Fatalf("HTTP server contains command: %s", data)
+			}
+			if kind == "copilot" && !reflect.DeepEqual(remote["tools"], []any{"search"}) {
+				t.Fatalf("tool grant = %v", remote["tools"])
+			}
+			if kind == "claude" && !strings.Contains(strings.Join(args, " "), "mcp__remote__search") {
+				t.Fatalf("missing allowed tool: %q", args)
+			}
+		})
+	}
+}
+
+func TestHTTPMCPHeaderErrors(t *testing.T) {
+	servers := map[string]config.MCPServerConfig{"remote": {URL: "https://example.com/mcp", HeadersFrom: map[string]string{"Authorization": "SBX_MISSING_HTTP_AUTH"}}}
+	c := &cliRuntime{name: "codex", kind: "codex", mcpServers: servers}
+	t.Setenv("SBX_MISSING_HTTP_AUTH", "invalid\r\nheader")
+	if _, _, _, err := c.integrationArgs(Request{MCP: []MCPGrant{{Server: "remote"}}}); err == nil || !strings.Contains(err.Error(), "invalid characters") {
+		t.Fatalf("invalid header error = %v", err)
+	}
+	if err := os.Unsetenv("SBX_MISSING_HTTP_AUTH"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := c.integrationArgs(Request{MCP: []MCPGrant{{Server: "remote"}}}); err == nil || !strings.Contains(err.Error(), "SBX_MISSING_HTTP_AUTH") {
+		t.Fatalf("missing header error = %v", err)
+	}
+}
+
 func TestIntegrationArgsErrors(t *testing.T) {
 	os.Unsetenv("SBX_TEST_GH_TOKEN")
 	codex := &cliRuntime{name: "codex", kind: "codex", modelArg: "--model", mcpServers: testServers}

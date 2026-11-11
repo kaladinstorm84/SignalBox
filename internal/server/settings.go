@@ -60,25 +60,7 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid settings request: %w", err))
 		return
 	}
-	cfg, err := config.Parse([]byte(proposed.Content), s.projectRoot)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	if _, err := runtime.NewRegistry(cfg.Runtimes); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	pipelines, errs := pipeline.LoadDir(cfg.PipelinesPath(), pipeline.Options{Root: cfg.Root, AllowExternal: cfg.AllowExternalImports, SchemasDir: cfg.SchemasPath()})
-	if len(errs) > 0 {
-		writeErr(w, http.StatusBadRequest, errs[0])
-		return
-	}
-	if len(pipelines) == 0 {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("no pipelines found in %s", cfg.PipelinesPath()))
-		return
-	}
-	if err := runtime.ValidateProject(cfg, pipelines); err != nil {
+	if err := s.validateSettings([]byte(proposed.Content)); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -100,6 +82,27 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, settingsDocument{Content: proposed.Content, Version: settingsVersion([]byte(proposed.Content))})
+}
+
+func (s *Server) validateSettings(content []byte) error {
+	cfg, err := config.Parse(content, s.projectRoot)
+	if err != nil {
+		return err
+	}
+	if _, err := runtime.NewRegistry(cfg.Runtimes); err != nil {
+		return err
+	}
+	pipelines, errs := pipeline.LoadDir(cfg.PipelinesPath(), pipeline.Options{Root: cfg.Root, AllowExternal: cfg.AllowExternalImports, SchemasDir: cfg.SchemasPath()})
+	if len(errs) > 0 {
+		return errs[0]
+	}
+	if len(pipelines) == 0 {
+		return fmt.Errorf("no pipelines found in %s", cfg.PipelinesPath())
+	}
+	if err := runtime.ValidateProject(cfg, pipelines); err != nil {
+		return err
+	}
+	return nil
 }
 
 // replaceSettings writes a sibling temporary file and preserves permissions

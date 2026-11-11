@@ -1,0 +1,44 @@
+title: ReportPortal flaky-test investigation trigger
+type: object
+additionalProperties: false
+required:
+  - source
+  - base_url
+  - project
+  - launch_id
+  - launch_name
+  - launch_finished_at
+  - launch_name_pattern
+  - history_days
+  - max_historical_runs
+  - include_attachments
+properties:
+  source:
+    const: reportportal
+  base_url:
+    type: string
+    format: uri
+  project:
+    type: string
+    minLength: 1
+  launch_id:
+    type: [string, integer]
+  launch_name:
+    type: string
+    minLength: 1
+  launch_finished_at:
+    type: string
+    format: date-time
+  launch_name_pattern:
+    type: string
+    minLength: 1
+  history_days:
+    type: integer
+    minimum: 1
+    maximum: 90
+  max_historical_runs:
+    type: integer
+    minimum: 1
+    maximum: 100
+  include_attachments:
+    type: boolean

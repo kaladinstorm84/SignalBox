@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -56,21 +57,23 @@ type MCPConfig struct {
 	Servers map[string]MCPServerConfig `yaml:"servers,omitempty"`
 }
 
-// MCPServerConfig describes a stdio MCP server. EnvFrom maps the variable the
-// server receives to the SignalBox process environment variable holding its
-// value, so secrets never appear in configuration or execution history.
+// MCPServerConfig describes either a stdio command or an HTTP MCP endpoint.
+// EnvFrom and HeadersFrom refer to SignalBox process environment variables.
 type MCPServerConfig struct {
-	Command string            `yaml:"command"`
-	Args    []string          `yaml:"args,omitempty"`
-	EnvFrom map[string]string `yaml:"env_from,omitempty"`
+	Command     string            `yaml:"command,omitempty"`
+	Args        []string          `yaml:"args,omitempty"`
+	EnvFrom     map[string]string `yaml:"env_from,omitempty"`
+	URL         string            `yaml:"url,omitempty"`
+	HeadersFrom map[string]string `yaml:"headers_from,omitempty"`
 	// Tools is the allow-list of tools agents may be granted.
 	Tools []string `yaml:"tools"`
 }
 
 var (
-	mcpNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
-	mcpToolPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
-	envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	mcpNamePattern    = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	mcpToolPattern    = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
+	envNamePattern    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	headerNamePattern = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 )
 
 // ServerConfig controls `signalbox serve`.
@@ -298,8 +301,32 @@ func (c *Config) validate() error {
 		if !mcpNamePattern.MatchString(name) {
 			return fmt.Errorf("mcp server name %q must be 1-64 letters, digits, '_' or '-'", name)
 		}
-		if strings.TrimSpace(server.Command) == "" {
-			return fmt.Errorf("mcp server %q is missing a command", name)
+		if server.URL == "" {
+			if strings.TrimSpace(server.Command) == "" {
+				return fmt.Errorf("mcp server %q is missing a command or URL", name)
+			}
+			if len(server.HeadersFrom) != 0 {
+				return fmt.Errorf("mcp server %q headers_from requires a URL", name)
+			}
+		} else {
+			u, err := url.Parse(server.URL)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.Fragment != "" {
+				return fmt.Errorf("mcp server %q URL must be an HTTP(S) endpoint without credentials or a fragment", name)
+			}
+			if server.Command != "" || len(server.Args) != 0 || len(server.EnvFrom) != 0 {
+				return fmt.Errorf("mcp server %q URL cannot be combined with command, args, or env_from", name)
+			}
+		}
+		headers := map[string]bool{}
+		for header, source := range server.HeadersFrom {
+			key := strings.ToLower(header)
+			if !headerNamePattern.MatchString(header) || !envNamePattern.MatchString(source) {
+				return fmt.Errorf("mcp server %q headers_from must map valid HTTP header names to environment variable names", name)
+			}
+			if headers[key] {
+				return fmt.Errorf("mcp server %q lists HTTP header %q more than once", name, header)
+			}
+			headers[key] = true
 		}
 		if len(server.Tools) == 0 {
 			return fmt.Errorf("mcp server %q must list the tools agents may use", name)

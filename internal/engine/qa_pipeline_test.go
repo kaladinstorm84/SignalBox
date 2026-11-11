@@ -37,6 +37,45 @@ func loadQAPipeline(t *testing.T) *pipeline.Pipeline {
 	return p
 }
 
+func TestQATemplatesImportThroughPipeline(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", "..", "testproject"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`name: qa-template-consumer
+entry: planner
+imports:
+  - from: QA.yaml
+    templates: [test_plan_agent]
+    agents: []
+templates:
+  - id: local_planner
+    extends: test_plan_agent
+    description: A local planner based on the QA template.
+agents:
+  - id: planner
+    extends: local_planner
+    prompt: Plan tests.
+`)
+	p, err := pipeline.ParseFile(data, filepath.Join(root, "pipelines", "qa-template-consumer.yaml"), pipeline.Options{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Nodes) != 1 || p.Node("requirements_loader") != nil {
+		t.Fatalf("unexpected imported agents: %+v", p.Nodes)
+	}
+	node := p.Node("planner")
+	if node == nil || node.Runtime != "codex" || node.Retry == nil ||
+		node.Retry.Limit() != 2 || node.Retry.Backoff != "2s" ||
+		node.OutputSchema() != "qa-test-plan" || node.RepairLimit() != 2 ||
+		node.InvalidPolicy() != pipeline.OnInvalidRepair {
+		t.Fatalf("imported template contract = %+v", node)
+	}
+	if p.SchemaFor("qa-test-plan") == nil {
+		t.Fatal("imported template schema is not loaded")
+	}
+}
+
 func TestQATestPlanSchema(t *testing.T) {
 	sch := loadQAPipeline(t).SchemaFor("qa-test-plan")
 	if sch == nil {

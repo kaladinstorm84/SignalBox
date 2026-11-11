@@ -78,6 +78,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/dashboard", s.handleDashboard)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handleSaveSettings)
+	mux.HandleFunc("GET /api/watchers", s.handleGetWatchers)
+	mux.HandleFunc("PUT /api/watchers", s.handleSaveWatchers)
 	mux.HandleFunc("GET /api/pipelines", s.handlePipelines)
 	mux.HandleFunc("GET /api/schemas", s.handleSchemas)
 	mux.HandleFunc("GET /api/pipeline-files", s.handleListPipelineFiles)

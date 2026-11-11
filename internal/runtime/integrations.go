@@ -86,6 +86,7 @@ func (c *cliRuntime) integrationArgs(req Request) (args, env []string, cleanup f
 		def     config.MCPServerConfig
 		env     map[string]string
 		envKeys []string
+		headers map[string]string
 		tools   []string
 	}
 	servers := make([]server, 0, len(req.MCP))
@@ -104,6 +105,19 @@ func (c *cliRuntime) integrationArgs(req Request) (args, env []string, cleanup f
 			s.envKeys = append(s.envKeys, target)
 		}
 		sort.Strings(s.envKeys)
+		s.headers = map[string]string{}
+		for header, source := range def.HeadersFrom {
+			value, ok := os.LookupEnv(source)
+			if !ok {
+				return nil, nil, cleanup, fmt.Errorf("MCP server %q needs environment variable %s, which is not set", grant.Server, source)
+			}
+			for _, ch := range value {
+				if (ch < 32 && ch != '\t') || ch == 127 {
+					return nil, nil, cleanup, fmt.Errorf("MCP server %q HTTP header %q contains invalid characters", grant.Server, header)
+				}
+			}
+			s.headers[header] = value
+		}
 		servers = append(servers, s)
 	}
 
@@ -111,13 +125,39 @@ func (c *cliRuntime) integrationArgs(req Request) (args, env []string, cleanup f
 	case "codex":
 		// codex reads -c overrides as TOML; secrets reach the server through
 		// env_vars forwarding from the child environment, not the command line.
+		reserved := map[string]bool{}
+		for _, s := range servers {
+			for _, key := range s.envKeys {
+				reserved[strings.ToUpper(key)] = true
+			}
+		}
+		headerIndex := 0
 		for _, s := range servers {
 			prefix := "mcp_servers." + s.name + "."
-			args = append(args,
-				"-c", prefix+"command="+tomlValue(s.def.Command),
-				"-c", prefix+"args="+tomlValue(nonNil(s.def.Args)),
-				"-c", prefix+"enabled_tools="+tomlValue(s.tools),
-			)
+			if s.def.URL != "" {
+				args = append(args, "-c", prefix+"url="+tomlValue(s.def.URL))
+				headers := make([]string, 0, len(s.headers))
+				for header := range s.headers {
+					headers = append(headers, header)
+				}
+				sort.Strings(headers)
+				for _, header := range headers {
+					var key string
+					for {
+						key = fmt.Sprintf("SIGNALBOX_MCP_HEADER_%d", headerIndex)
+						headerIndex++
+						if !reserved[key] {
+							break
+						}
+					}
+					reserved[key] = true
+					args = append(args, "-c", prefix+"env_http_headers."+tomlValue(header)+"="+tomlValue(key))
+					env = append(env, key+"="+s.headers[header])
+				}
+			} else {
+				args = append(args, "-c", prefix+"command="+tomlValue(s.def.Command), "-c", prefix+"args="+tomlValue(nonNil(s.def.Args)))
+			}
+			args = append(args, "-c", prefix+"enabled_tools="+tomlValue(s.tools))
 			if len(s.envKeys) > 0 {
 				args = append(args, "-c", prefix+"env_vars="+tomlValue(s.envKeys))
 				for _, key := range s.envKeys {
@@ -130,14 +170,26 @@ func (c *cliRuntime) integrationArgs(req Request) (args, env []string, cleanup f
 		configServers := map[string]any{}
 		var allowed []string
 		for _, s := range servers {
-			entry := map[string]any{"command": s.def.Command, "args": nonNil(s.def.Args), "env": s.env}
+			entry := map[string]any{}
+			if s.def.URL != "" {
+				entry["type"] = "http"
+				entry["url"] = s.def.URL
+				if len(s.headers) > 0 {
+					entry["headers"] = s.headers
+				}
+			} else {
+				entry["command"], entry["args"], entry["env"] = s.def.Command, nonNil(s.def.Args), s.env
+				if c.kind == "claude" {
+					entry["type"] = "stdio"
+				} else {
+					entry["type"] = "local"
+				}
+			}
 			if c.kind == "claude" {
-				entry["type"] = "stdio"
 				for _, tool := range s.tools {
 					allowed = append(allowed, "mcp__"+s.name+"__"+tool)
 				}
 			} else {
-				entry["type"] = "local"
 				entry["tools"] = s.tools
 				for _, tool := range s.tools {
 					allowed = append(allowed, s.name+"("+tool+")")

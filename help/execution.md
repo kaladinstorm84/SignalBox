@@ -84,13 +84,35 @@ child-pipeline retry policies are unchanged.
 The test project's `discovery` pipeline demonstrates conditional handoffs,
 payload templates, an `llm_gate` with bounded rework, and runtime retries. The
 `Full Pipeline QA` pipeline puts an `llm_gate` after each of ten specialist
-planners, retaining two bounded reworks per planner. Local templates share
-runtime/retry settings, and planners plus category judges use the
-`qa-test-plan` schema with bounded repair. Tests include requirement references,
+planners, retaining two bounded reworks per planner. Templates imported from
+`shared/qa-templates.yaml` share runtime/retry settings, and planners plus
+category judges use the `qa-test-plan` schema with bounded repair. Tests include requirement references,
 actionable steps and P0-P3 priorities; empty test lists require a justified
 exclusion. Schemas check structure, while gates check relevance and coverage
 against the requirements summary. Gates pass that requirements context through
 to category judges, so judges do not append another copy.
+
+Other pipelines can import those templates directly from
+`../shared/qa-templates.yaml`, or via `QA.yaml` with `agents: []` to avoid
+importing QA's agents. The `test_plan_agent` template requires the
+`qa-test-plan` schema; `planner_gate` refers to an agent named
+`requirements_loader`, which must exist in the consuming pipeline.
+
+For example, another file in `pipelines/` can use:
+
+```yaml
+imports:
+  - from: QA.yaml
+    templates: [test_plan_agent]
+    agents: []
+templates:
+  - id: my_planner
+    extends: test_plan_agent
+agents:
+  - id: planner
+    extends: my_planner
+    prompt: Create a test plan for the supplied requirements.
+```
 
 The master judge consolidates a draft for a Three Amigos session: Business,
 Developer, then QA take round-robin turns for at most two rounds, requiring

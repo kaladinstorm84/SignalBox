@@ -1,0 +1,68 @@
+# Turns a plain-language search request into JQL and executes it through Atlassian MCP.
+# Example: ..\signalbox.exe run jira-search --input "Open bugs assigned to me in PAYMENTS, newest first"
+name: jira-search
+description: >-
+  Converts a plain-language request into a safe Jira Query Language (JQL)
+  search, then retrieves the matching Jira work items using the configured
+  read-only Atlassian MCP tools.
+entry: jql_author
+
+templates:
+  - id: codex_agent
+    runtime: codex
+    retry: {count: 2, backoff: 2s}
+
+agents:
+  - id: jql_author
+    extends: codex_agent
+    description: Converts the search description into a precise JQL query.
+    output:
+      schema: jira-search-query
+      on_invalid: repair
+      max_repairs: 2
+    prompt: |
+      You are a Jira Query Language (JQL) specialist. Convert the supplied
+      plain-language search description into one precise, read-only JQL query.
+
+      Use only supported JQL fields and functions. Preserve explicit project,
+      issue type, status, assignee, reporter, label, component, priority, date,
+      text, and ordering constraints. Prefer currentUser() when the request
+      says "me" or "my". Quote names and text safely. Do not use automation,
+      mutation, or any non-JQL syntax.
+
+      If the description is ambiguous, choose the narrowest defensible query
+      and record every interpretation in assumptions. Do not invent project
+      keys, custom-field names, status names, dates, or values. Return only an
+      object conforming to the requested output schema.
+    handoff: [jira_search]
+
+  - id: jira_search
+    extends: codex_agent
+    description: Runs the generated JQL against Jira and presents the results.
+    mcp:
+      - server: atlassian
+        tools: [getAccessibleAtlassianResources, discover, executeRead]
+    format: true
+    prompt: |
+      You are a read-only Jira search operator. The supplied input is a
+      schema-validated JQL query object created from the user's request.
+
+      1. Use getAccessibleAtlassianResources if a Jira cloud ID is needed.
+      2. Use discover to find searchJiraIssuesUsingJql, then call it through
+         executeRead with the supplied jql exactly as written. Do not invoke
+         other deferred tools.
+      3. Request no more than 10 results. Do not call any write, transition,
+         comment, or destructive tool, and do not alter the JQL.
+
+      Return Markdown with exactly these sections:
+      ## JQL
+      Put the exact query in a fenced `jql` block.
+      ## Interpretation
+      Repeat the provided interpretation and assumptions, clearly marking
+      assumptions as unconfirmed.
+      ## Results
+      List the returned issues with key, summary, status, type, priority,
+      assignee, and URL when provided. If the search yields no results, say so.
+      ## Retrieval Notes
+      State the result count and any Jira/MCP limitation or error. Never claim
+      a result, field, or permission you did not receive from Jira.

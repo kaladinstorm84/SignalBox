@@ -1,0 +1,96 @@
+# Investigate a newly completed failed ReportPortal launch.
+# The watcher in signalbox.yaml supplies a schema-validated JSON trigger.
+# Manual example: ..\signalbox.exe run flaky-test-investigator --input '{"source":"reportportal",...}'
+name: flaky-test-investigator
+description: >-
+  Collects read-only ReportPortal evidence for a failed launch, distinguishes
+  likely automation, product, and environment causes, and requires human
+  approval before any follow-up action. Defaults are configured by the watcher.
+input:
+  schema: reportportal-trigger
+entry: collect_evidence
+
+templates:
+  - id: investigator
+    type: standard
+    runtime: codex
+    retry: {count: 2, backoff: 2s}
+    context: {strategy: none, window: 0}
+
+agents:
+  - id: collect_evidence
+    type: code
+    language: python
+    code-source: libs/reportportal_collect.py
+    description: Retrieves the failed launch and failed test items through the read-only ReportPortal API.
+    timeout_seconds: 90
+    handoff: [investigation]
+
+  - id: investigation
+    type: orchestrator
+    description: Runs independent automation and product-risk assessments against the collected evidence.
+    stages:
+      - id: assess
+        agents: [automation_assessor, regression_assessor]
+    handoff: [draft_triage]
+
+  - id: draft_triage
+    extends: investigator
+    description: Consolidates independent assessments into an evidence-linked triage draft.
+    format: true
+    prompt: |
+      Consolidate the supplied ReportPortal evidence and independent assessments
+      into a concise human triage report. Use the sections: Evidence Summary,
+      Findings by Classification, Uncertainties, and Recommended Next Actions.
+      Every conclusion must cite a concrete launch/test-item/log field from the
+      evidence. Preserve disagreements and state inconclusive where the evidence
+      does not support a conclusion. Do not recommend automatic quarantine,
+      ticket creation, or ReportPortal updates.
+    handoff: [evidence_gate]
+
+  - id: automation_assessor
+    extends: investigator
+    description: Assesses whether the evidence points to a test-automation cause.
+    prompt: |
+      You are a senior test-automation engineer. Assess the supplied ReportPortal
+      launch evidence for synchronization, selector, test-data, cleanup, shared
+      state, retry, and framework issues. Cite the exact launch/test-item/log
+      evidence available in the input. Do not claim history or attachment facts
+      when their collection status says they were not collected. Classify each
+      finding as likely automation issue, likely environment issue, likely product
+      regression, or inconclusive, and state a safe next diagnostic action.
+
+  - id: regression_assessor
+    extends: investigator
+    description: Assesses whether the evidence points to a product regression.
+    prompt: |
+      You are a product-risk and test-failure analyst. Assess the supplied
+      ReportPortal launch evidence for repeatable application/API failures,
+      common failure signatures, and correlated failed tests. Cite exact evidence
+      from the input. Do not turn absence of history, logs, or attachments into a
+      conclusion. Classify each finding as likely product regression, likely
+      automation issue, likely environment issue, or inconclusive, and state the
+      smallest evidence-backed next action.
+
+  - id: evidence_gate
+    type: llm_gate
+    runtime: codex
+    retry: {count: 2, backoff: 2s}
+    context: {strategy: own, window: 1}
+    description: Rejects unsupported diagnoses and requires uncertainty when ReportPortal evidence is incomplete.
+    prompt: |
+      Review the supplied ReportPortal investigation. Approve only if every
+      diagnosis cites concrete source evidence and the report clearly distinguishes
+      automation, product, environment, and inconclusive findings. Reject if it
+      invents historical trends, attachment contents, code changes, ownership, or
+      root causes. Return specific corrections in feedback.
+    reject-to: draft_triage
+    max_reworks: 1
+    handoff: [human_triage]
+
+  - id: human_triage
+    type: approval
+    format: true
+    description: >-
+      Review the evidence-backed diagnosis. Choose a human follow-up such as a
+      defect, automation repair, environment investigation, or a manual rerun.

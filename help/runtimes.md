@@ -126,7 +126,20 @@ mcp:
       env_from:
         GITHUB_PERSONAL_ACCESS_TOKEN: GITHUB_TOKEN   # server var: SignalBox env var
       tools: [search_issues, get_issue]
+    docs:
+      url: https://docs.example.com/mcp              # Streamable HTTP endpoint
+      headers_from:
+        Authorization: DOCS_MCP_AUTH                 # full header value in environment
+      tools: [search]
 ```
+
+For HTTP servers use `url` instead of `command`, `args` and `env_from`.
+`headers_from` is optional and maps HTTP header names to environment
+variables containing the complete header values (for example,
+`DOCS_MCP_AUTH` could contain `Bearer <token>`). SignalBox reads them when
+the agent is invoked; missing variables fail the call. URLs must use HTTP or
+HTTPS and cannot contain credentials or fragments. Use HTTPS for remote
+servers and do not put secrets in URLs or query strings.
 
 Then each agent names the servers (and optionally a subset of tools) it needs:
 
@@ -151,11 +164,12 @@ agents:
   is not in the server's `tools`, the runtime is not codex/claude/copilot, or
   a wildcard is used. Session participants can use MCP; orchestrators cannot.
 - **Security:**
-  - MCP servers run as the user running SignalBox, with that user's access.
-  - Secrets are never written in YAML: `env_from` names an environment
-    variable that SignalBox reads at call time (a missing variable fails the
-    call without showing values).
-  - codex receives secret values through its environment (`env_vars`).
+  - Local MCP servers run as the user running SignalBox, with that user's
+    access. HTTP servers receive the configured headers and tool requests.
+  - Keep secrets out of YAML: `env_from` and `headers_from` name environment
+    variables that SignalBox reads at call time.
+  - codex receives secret values through its environment (`env_vars` or
+    `env_http_headers`).
     claude and copilot receive them in a temporary JSON file, readable only
     by the current user and deleted after the call.
   - Runs record which servers and tools were granted, never environment

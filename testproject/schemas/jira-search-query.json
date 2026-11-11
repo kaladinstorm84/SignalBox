@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Jira search query",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["jql", "interpretation", "assumptions"],
+  "properties": {
+    "jql": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A syntactically valid, read-only Jira Query Language expression."
+    },
+    "interpretation": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A concise explanation of what the JQL will return."
+    },
+    "assumptions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Any unconfirmed interpretation of the request, including unresolved project names or date ranges."
+    }
+  }
+}

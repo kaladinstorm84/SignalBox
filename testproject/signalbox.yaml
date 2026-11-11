@@ -63,6 +63,31 @@ runtimes:
 registry:
   path: ./registry
 
+# ReportPortal: the token is deliberately not in this file. Set
+# REPORTPORTAL_API_TOKEN in the environment of the process running
+# `signalbox serve`. Change the values below to target another project or
+# launch convention; the watcher passes the resolved settings to the pipeline.
+watchers:
+  - name: reportportal-r2c-failed-launches
+    command: python
+    args:
+      - libs/reportportal_watch.py
+      - --base-url
+      - http://czprgssk8swd1.dev.gfn.global:31780/
+      - --project
+      - R2C
+      - --launch-name-pattern
+      - R2C.*
+      - --history-days
+      - "14"
+      - --max-historical-runs
+      - "30"
+      - --max-launches-per-poll
+      - "100"
+    interval: 12h
+    timeout_seconds: 30
+    pipeline: flaky-test-investigator
+
 # MCP pass-through (opt-in). Agents list the servers they need under `mcp:`
 # in a pipeline; only servers registered here, and only the tools listed under
 # `tools`, can be granted. SignalBox hands the granted servers to the agent CLI
@@ -77,6 +102,12 @@ mcp:
       command: npx
       args: ["-y", "@modelcontextprotocol/server-filesystem", "--read-only", "."]
       tools: [list_directory, directory_tree, read_text_file, get_file_info, search_files]
+    # Match the Codex server name and URL to reuse its OAuth credentials.
+    # Atlassian exposes JQL search via discover and the generic read executor;
+    # the latter can also invoke other read tools.
+    atlassian:
+      url: "https://mcp.atlassian.com/v2/mcp"
+      tools: [getAccessibleAtlassianResources, discover, executeRead]
     # github:
     #   command: github-mcp-server
     #   args: ["stdio"]

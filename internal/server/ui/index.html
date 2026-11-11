@@ -391,6 +391,8 @@
         <span class="lever blue" data-n="6" aria-hidden="true"></span><span>Schema</span></a>
       <a href="#/registry" data-nav="registry">
         <span class="lever blue" data-n="7" aria-hidden="true"></span><span>Registry</span></a>
+      <a href="#/watchers" data-nav="watchers">
+        <span class="lever yellow" data-n="9" aria-hidden="true"></span><span>Watchers</span></a>
       <a href="#/settings" data-nav="settings">
         <span class="lever white" data-n="8" aria-hidden="true"></span><span>Settings</span></a>
     </nav>
@@ -416,13 +418,16 @@ let lastRendered = '';
 let currentExec = null;
 let settingsDocument = null;
 let settingsDraft = null;
+let watcherDocument = null;
+let watcherDraft = null;
+let watcherDraftIndex = -1;
 const pipelineDrafts = new Map();
 const pipelineTemplate = 'name: new-pipeline\nentry: start\n\nagents:\n  - id: start\n    type: standard\n    runtime: mock\n    prompt: |\n      Process the supplied input.\n';
 function pipelineDraftChanged(draft) {
   return draft.content !== draft.savedContent || draft.filename !== draft.savedFilename;
 }
 window.addEventListener('beforeunload', event => {
-  if ((settingsDocument && settingsDraft !== settingsDocument.content) || [...pipelineDrafts.values()].some(pipelineDraftChanged)) {
+  if (watcherDraft || (settingsDocument && settingsDraft !== settingsDocument.content) || [...pipelineDrafts.values()].some(pipelineDraftChanged)) {
     event.preventDefault();
     event.returnValue = '';
   }
@@ -528,6 +533,7 @@ function route() {
   if (hash.startsWith('#/pipelines')) return showPipelines();
   if (hash.startsWith('#/knowledge-bases')) return showKnowledgeBases();
   if (hash === '#/schemas') return showSchemas();
+  if (hash === '#/watchers') return showWatchers();
   if (hash.startsWith('#/settings')) return showSettings();
   const registryRoute = hash.match(/^#\/registry(?:\/(pipelines|knowledge|plugins))?(?:\/(.+))?$/);
   if (registryRoute) return showRegistry(registryRoute[2] ? decodeURIComponent(registryRoute[2]) : '', registryRoute[1] === 'plugins' ? 'plugin' : registryRoute[1] === 'knowledge' ? 'knowledge' : 'pipeline');
@@ -1650,6 +1656,120 @@ async function showSettings() {
     }
   });
   update();
+}
+
+async function showWatchers() {
+  setNav('watchers');
+  $main.innerHTML = '<h2>Watchers</h2><div role="status" class="muted">Loading...</div>';
+  try {
+    if (!watcherDraft) watcherDocument = await api('/watchers', {cache: 'no-store'});
+  } catch (error) {
+    if (location.hash === '#/watchers') $main.innerHTML = `<h2>Watchers</h2><div class="err-banner" role="alert">${esc(error.message)}</div>`;
+    return;
+  }
+  if (location.hash !== '#/watchers') return;
+  $main.innerHTML = `<div class="topline"><div><h2>Watchers</h2>
+    <div class="page-sub">Configure command pollers. Saved changes require a server restart; this page does not show live status.</div></div>
+    <div><button id="watcher-reload" type="button" class="secondary">Reload</button>
+    <button id="watcher-new" type="button">New watcher</button></div></div>
+    <div id="watcher-error" class="err-banner settings-error" role="alert" hidden></div>
+    <div id="watcher-status" role="status" class="muted"></div>
+    <div id="watcher-list"></div><div id="watcher-editor"></div>`;
+  const errorBanner = document.getElementById('watcher-error');
+  const status = document.getElementById('watcher-status');
+  const list = document.getElementById('watcher-list');
+  const editor = document.getElementById('watcher-editor');
+  const showError = error => { errorBanner.textContent = error.message; errorBanner.hidden = false; };
+  const discard = () => !watcherDraft || confirm('Discard the unsaved watcher draft?');
+  const render = () => {
+    list.innerHTML = watcherDocument.watchers.length ? watcherDocument.watchers.map((w, i) => `
+      <div class="card"><div class="topline"><div><b>${esc(w.name)}</b>
+        <div class="muted">Pipeline: ${esc(w.pipeline)} · Interval: ${esc(w.interval)} · Timeout: ${w.timeout_seconds ? esc(w.timeout_seconds) + 's' : '2m (default)'}</div>
+        <div class="mono">${esc(w.command)} ${esc((w.args || []).map(arg => JSON.stringify(arg)).join(' '))}</div></div>
+        <div><button class="secondary sm" data-edit="${i}" type="button">Edit</button>
+        <button class="danger sm" data-delete="${i}" type="button">Delete</button></div></div></div>`).join('') :
+      '<div class="card muted">No watchers configured.</div>';
+    editor.innerHTML = watcherDraft ? `<form id="watcher-form" class="card">
+      <h3>${watcherDraftIndex < 0 ? 'New watcher' : 'Edit watcher'}</h3>
+      <label for="watcher-name">Name</label><input id="watcher-name" required>
+      <label for="watcher-command">Command</label><input id="watcher-command" required>
+      <label for="watcher-args">Arguments (JSON array of strings)</label><textarea id="watcher-args" spellcheck="false"></textarea>
+      <label for="watcher-interval">Interval (for example 30s or 5m)</label><input id="watcher-interval" required>
+      <label for="watcher-timeout">Timeout in seconds (0 uses the two-minute default)</label><input id="watcher-timeout" type="number" min="0" step="1" required>
+      <label for="watcher-pipeline">Pipeline name</label><input id="watcher-pipeline" required>
+      <div class="settings-toolbar"><button type="submit">Save watcher</button><button id="watcher-cancel" class="secondary" type="button">Cancel</button></div>
+      </form>` : '';
+    list.querySelectorAll('[data-edit]').forEach(button => button.addEventListener('click', () => {
+      if (!discard()) return;
+      watcherDraftIndex = Number(button.dataset.edit);
+      const w = watcherDocument.watchers[watcherDraftIndex];
+      watcherDraft = {...w, argsText: JSON.stringify(w.args || [], null, 2), timeoutText: String(w.timeout_seconds)};
+      errorBanner.hidden = true; render();
+    }));
+    list.querySelectorAll('[data-delete]').forEach(button => button.addEventListener('click', async () => {
+      if (!discard()) return;
+      const index = Number(button.dataset.delete);
+      if (!confirm(`Delete watcher "${watcherDocument.watchers[index].name}"?`)) return;
+      const watchers = watcherDocument.watchers.filter((_, i) => i !== index);
+      await saveWatchers(watchers);
+    }));
+    if (!watcherDraft) return;
+    const form = document.getElementById('watcher-form');
+    const fields = {name: 'watcher-name', command: 'watcher-command', argsText: 'watcher-args', interval: 'watcher-interval', timeoutText: 'watcher-timeout', pipeline: 'watcher-pipeline'};
+    Object.entries(fields).forEach(([name, id]) => {
+      const input = document.getElementById(id);
+      input.value = watcherDraft[name];
+      input.addEventListener('input', () => { watcherDraft[name] = input.value; });
+    });
+    document.getElementById('watcher-cancel').addEventListener('click', () => {
+      if (!discard()) return;
+      watcherDraft = null; errorBanner.hidden = true; render();
+    });
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      try {
+        const args = JSON.parse(watcherDraft.argsText);
+        if (!Array.isArray(args) || args.some(arg => typeof arg !== 'string')) throw new Error('Arguments must be a JSON array of strings.');
+        const timeout = Number(watcherDraft.timeoutText);
+        if (!Number.isSafeInteger(timeout) || timeout < 0) throw new Error('Timeout must be a non-negative integer.');
+        const {argsText, timeoutText, ...entry} = watcherDraft;
+        entry.args = args; entry.timeout_seconds = timeout;
+        const watchers = watcherDocument.watchers.slice();
+        if (watcherDraftIndex < 0) watchers.push(entry); else watchers[watcherDraftIndex] = entry;
+        await saveWatchers(watchers);
+      } catch (error) { showError(error); }
+    });
+  };
+  const saveWatchers = async watchers => {
+    errorBanner.hidden = true;
+    $main.querySelectorAll('button, input, textarea').forEach(el => { el.disabled = true; });
+    try {
+      watcherDocument = await api('/watchers', {
+        method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({version: watcherDocument.version, watchers}),
+      });
+      watcherDraft = null;
+      if (settingsDocument && settingsDraft === settingsDocument.content) { settingsDocument = null; settingsDraft = null; }
+      if (location.hash === '#/watchers') { render(); status.textContent = 'Saved. Restart the server to apply watcher changes.'; }
+    } catch (error) { if (location.hash === '#/watchers') showError(error); }
+    finally { if (location.hash === '#/watchers') $main.querySelectorAll('button, input, textarea').forEach(el => { el.disabled = false; }); }
+  };
+  document.getElementById('watcher-new').addEventListener('click', () => {
+    if (!discard()) return;
+    watcherDraftIndex = -1;
+    watcherDraft = {original_name: '', name: '', command: '', argsText: '[]', interval: '5m', timeoutText: '0', pipeline: ''};
+    errorBanner.hidden = true; render();
+  });
+  document.getElementById('watcher-reload').addEventListener('click', async () => {
+    if (!discard()) return;
+    try {
+      const document = await api('/watchers', {cache: 'no-store'});
+      watcherDraft = null;
+      watcherDocument = document;
+      if (location.hash === '#/watchers') { errorBanner.hidden = true; status.textContent = 'Reloaded from disk.'; render(); }
+    } catch (error) { if (location.hash === '#/watchers') showError(error); }
+  });
+  render();
 }
 
 async function showKnowledgeBases() {

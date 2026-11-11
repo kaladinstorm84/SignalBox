@@ -92,6 +92,36 @@ func TestModelArgAndMCPValidation(t *testing.T) {
 	}
 }
 
+func TestHTTPMCPServerValidation(t *testing.T) {
+	base := "version: 1\nruntimes:\n  mock: {type: mock}\nmcp:\n  enabled: true\n  servers:\n    remote:\n"
+	good := base + "      url: https://example.com/mcp?version=1\n      headers_from: {Authorization: MCP_AUTH}\n      tools: [search]\n"
+	cfg, err := Parse([]byte(good), ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := cfg.MCP.Servers["remote"]
+	if server.URL != "https://example.com/mcp?version=1" || server.HeadersFrom["Authorization"] != "MCP_AUTH" {
+		t.Fatalf("HTTP server = %+v", server)
+	}
+	for _, invalid := range []string{
+		"url: ftp://example.com/mcp",
+		"url: https://user:password@example.com/mcp",
+		"url: https://example.com/mcp#fragment",
+		"url: https:///mcp",
+		"url: https://example.com/mcp\n      command: server",
+		"url: https://example.com/mcp\n      args: [stdio]",
+		"url: https://example.com/mcp\n      env_from: {TOKEN: SECRET}",
+		"command: server\n      headers_from: {Authorization: SECRET}",
+		"url: https://example.com/mcp\n      headers_from: {'bad header': SECRET}",
+		"url: https://example.com/mcp\n      headers_from: {Authorization: 'bad variable'}",
+		"url: https://example.com/mcp\n      headers_from: {Authorization: FIRST, authorization: SECOND}",
+	} {
+		if _, err := Parse([]byte(base+"      "+invalid+"\n      tools: [search]\n"), "."); err == nil {
+			t.Errorf("accepted invalid HTTP MCP configuration: %s", invalid)
+		}
+	}
+}
+
 func TestUploadsDefaultsAndValidation(t *testing.T) {
 	base := "version: 1\nproject: test\nruntimes:\n  mock:\n    type: mock\n"
 	cfg, err := Parse([]byte(base), ".")

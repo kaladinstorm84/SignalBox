@@ -48,6 +48,11 @@
   comments and whitespace. Reload reads the current file from disk; a stale
   save is rejected rather than overwriting external edits. Restart the server
   after saving to apply runtime, concurrency, watcher, and server settings.
+- **Watchers** — view, add, edit, or delete configured command pollers.
+  Arguments are entered as a JSON array of strings. Changes are validated
+  against the project and pipeline definitions and reject stale saves. Reload
+  reads the current configuration from disk. Restart the server to apply changes;
+  this page shows configuration, not live poll status or activity.
 - New run, Pipelines, and execution details draw pipelines as track diagrams:
   agents that run one after
   another sit on a single line, while agents that run in parallel (orchestrator

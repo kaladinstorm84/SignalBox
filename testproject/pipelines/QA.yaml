@@ -5,49 +5,9 @@ description: >-
   for human approval with any unresolved disagreements explicitly identified.
 entry: requirements_loader
 
-templates:
-  - id: qa_agent
-    type: standard
-    runtime:
-      provider: codex
-      effort: medium
-      speed: fast
-    retry:
-      backoff: 2s
-      attempts:
-        - runtime: {effort: high, speed: standard}
-        - runtime: {effort: xhigh, speed: standard}
-
-  - id: test_plan_agent
-    extends: qa_agent
-    output:
-      schema: qa-test-plan
-      on_invalid: repair
-      max_repairs: 2
-
-  # Prompts are replaced, not appended, by extends. Each gate keeps its
-  # complete category-specific review criteria below.
-  - id: planner_gate
-    type: llm_gate
-    runtime:
-      provider: codex
-      effort: medium
-      speed: fast
-    retry:
-      backoff: 2s
-      attempts:
-        - runtime: {effort: high, speed: standard}
-        - runtime: {effort: xhigh, speed: standard}
-    additional-input: [requirements_loader]
-    max_reworks: 2
-
-  # Session retries belong to the session, not its participants.
-  - id: amigo
-    type: standard
-    runtime:
-      provider: codex
-      effort: medium
-      speed: fast
+imports:
+  - from: ../shared/qa-templates.yaml
+    agents: []
 
 agents:
   - id: requirements_loader
