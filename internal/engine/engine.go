@@ -113,6 +113,8 @@ type deliveredInput struct {
 	input string
 }
 
+// reworkState gives a rejection loop its own fan-in counts and buffers, so
+// repeated deliveries cannot consume inputs belonging to the original graph.
 type reworkState struct {
 	counts   map[string]int
 	joins    map[string][]deliveredInput
@@ -158,7 +160,8 @@ func NewWithLimit(pipelines map[string]*pipeline.Pipeline, registry *runtime.Reg
 	return eng, nil
 }
 
-// Pipelines returns the loaded pipelines.
+// Pipelines copies the definition map, not the definitions themselves.
+// Callers must treat the returned pipeline objects as immutable.
 func (eng *Engine) Pipelines() map[string]*pipeline.Pipeline {
 	eng.mu.Lock()
 	defer eng.mu.Unlock()
@@ -736,6 +739,8 @@ func (eng *Engine) deliverLocked(le *liveExec, nodeID, input, from string, octx 
 	eng.dispatchNodeLocked(le, node, input, from, octx, work)
 }
 
+// dispatchNodeLocked registers counters and the restart snapshot before
+// starting the goroutine, so completion cannot race ahead of bookkeeping.
 func (eng *Engine) dispatchNodeLocked(le *liveExec, node *pipeline.Node, input, from string, octx *stageState, rework ...*reworkState) {
 	run := &NodeRun{
 		ID:         newRunID(),
@@ -817,7 +822,7 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 		eng.finishRunErr(le, run, node, octx, err)
 		return
 	}
-	var invokeWith func(input string) (string, error)
+	var invokeWith func(input string, retry int) (string, error)
 	sch := le.p.SchemaFor(node.OutputSchema())
 	if node.Type == pipeline.TypeCode || node.Type == pipeline.TypeOpenSpec {
 		var rt runtime.Runtime
@@ -831,18 +836,13 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 			eng.finishRunErr(le, run, node, octx, err)
 			return
 		}
-		invokeWith = func(input string) (string, error) {
+		invokeWith = func(input string, _ int) (string, error) {
 			req := runtime.Request{Input: input}
 			delivery.apply(&req)
 			return rt.Invoke(le.ctx, req)
 		}
 	} else {
-		rt, err := eng.registry.Get(node.Runtime)
-		if err != nil {
-			eng.finishRunErr(le, run, node, octx, err)
-			return
-		}
-		invokeWith = func(input string) (string, error) {
+		invokeWith = func(input string, retry int) (string, error) {
 			knowledgeInput, err := eng.withKnowledge(input, node.KnowledgeBases)
 			if err != nil {
 				return "", err
@@ -850,11 +850,11 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 			req := agentRequest(run, node.Prompt, knowledgeInput)
 			req.Schema = sch
 			delivery.apply(&req)
-			return rt.Invoke(le.ctx, req)
+			return eng.invokeAgent(le, run, node, node.Retry, retry, req)
 		}
 	}
 	retrying := func(input string) (string, error) {
-		return eng.invokeRetrying(le, run, node.Retry, func() (string, error) { return invokeWith(input) })
+		return eng.invokeRetrying(le, run, node.Retry, func(retry int) (string, error) { return invokeWith(input, retry) })
 	}
 	fail := func(out string, err error) {
 		var outcome *runtime.CodeOutcomeError
@@ -931,11 +931,6 @@ type gateVerdict struct {
 }
 
 func (eng *Engine) runLLMGate(le *liveExec, run *NodeRun, node *pipeline.Node, octx *stageState) {
-	rt, err := eng.registry.Get(node.Runtime)
-	if err != nil {
-		eng.finishRunErr(le, run, node, octx, err)
-		return
-	}
 	sch := le.p.SchemaFor(node.OutputSchema())
 	delivery, err := eng.deliverFiles(le, run, node)
 	if err != nil {
@@ -949,7 +944,7 @@ func (eng *Engine) runLLMGate(le *liveExec, run *NodeRun, node *pipeline.Node, o
 			`decision must be "approve" or "reject".`
 	}
 	retrying := func(input string) (string, error) {
-		return eng.invokeRetrying(le, run, node.Retry, func() (string, error) {
+		return eng.invokeRetrying(le, run, node.Retry, func(retry int) (string, error) {
 			knowledgeInput, err := eng.withKnowledge(input, node.KnowledgeBases)
 			if err != nil {
 				return "", err
@@ -957,7 +952,7 @@ func (eng *Engine) runLLMGate(le *liveExec, run *NodeRun, node *pipeline.Node, o
 			req := agentRequest(run, prompt, knowledgeInput)
 			req.Schema = sch
 			delivery.apply(&req)
-			return rt.Invoke(le.ctx, req)
+			return eng.invokeAgent(le, run, node, node.Retry, retry, req)
 		})
 	}
 	verdictText, err := retrying(runtimeInput(run))
@@ -1137,6 +1132,9 @@ func (eng *Engine) finishRunRejected(le *liveExec, run *NodeRun, node *pipeline.
 	eng.mu.Unlock()
 }
 
+// reworkAfterRejectionLocked prefers an explicit target, then the last
+// approved checkpoint, then immediate upstream work. Historical inputs are
+// reused only within the rejecting run's stage and orchestrator instance.
 func (eng *Engine) reworkAfterRejectionLocked(le *liveExec, rejected *NodeRun, node *pipeline.Node, octx *stageState, note string, inherited ...*reworkState) bool {
 	runs := le.exec.Runs
 	inheritedWork := le.reworks[rejected.ID]
@@ -1380,6 +1378,8 @@ func renderHandoffTemplate(template, input, output, comment string, doc any) str
 	return rendered.String()
 }
 
+// deactivateHandoffsLocked removes unselected conditional edges from fan-in
+// expectations, allowing downstream joins to finish without skipped branches.
 func (eng *Engine) deactivateHandoffsLocked(le *liveExec, node *pipeline.Node, selected []pipeline.HandoffRule, octx *stageState, work *reworkState) {
 	selectedCount := make(map[string]int, len(selected))
 	for _, route := range selected {
@@ -1395,6 +1395,8 @@ func (eng *Engine) deactivateHandoffsLocked(le *liveExec, node *pipeline.Node, s
 	}
 }
 
+// deactivateTargetLocked propagates a skipped edge through now-unreachable
+// nodes, or dispatches a buffered join once all remaining inputs have arrived.
 func (eng *Engine) deactivateTargetLocked(le *liveExec, nodeID string, octx *stageState, work *reworkState) {
 	expected, joins := &le.joinExpected, &le.joins
 	if octx != nil {
@@ -1623,16 +1625,12 @@ func (eng *Engine) runOrchestrator(le *liveExec, oi *orchInstance) {
 }
 
 func (eng *Engine) invokeOrchPrompt(le *liveExec, run *NodeRun, node *pipeline.Node, prompt, input string) (string, error) {
-	rt, err := eng.registry.Get(node.Runtime)
-	if err != nil {
-		return "", err
-	}
-	return eng.invokeRetrying(le, run, node.Retry, func() (string, error) {
+	return eng.invokeRetrying(le, run, node.Retry, func(retry int) (string, error) {
 		knowledgeInput, err := eng.withKnowledge(input, node.KnowledgeBases)
 		if err != nil {
 			return "", err
 		}
-		return rt.Invoke(le.ctx, runtime.Request{SystemPrompt: prompt, Input: knowledgeInput, Model: node.Model})
+		return eng.invokeAgent(le, run, node, node.Retry, retry, runtime.Request{SystemPrompt: prompt, Input: knowledgeInput, Model: node.Model})
 	})
 }
 
@@ -1726,18 +1724,18 @@ func joinCountsFrom(p *pipeline.Pipeline, root string) map[string]int {
 // returned error means the failure was abandoned or the execution canceled.
 // The caller's stage and live-run counters stay held while parked, so
 // parallel branches continue but nothing downstream proceeds without it.
-func (eng *Engine) invokeRetrying(le *liveExec, run *NodeRun, policy *pipeline.RetryPolicy, invoke func() (string, error)) (string, error) {
+func (eng *Engine) invokeRetrying(le *liveExec, run *NodeRun, policy *pipeline.RetryPolicy, invoke func(int) (string, error)) (string, error) {
 	return eng.invokeWithRetries(le, run, policy, true, invoke)
 }
 
 // invokeWithRetries is invokeRetrying with control over the call slot.
 // Pipeline nodes do not take one: their child execution's own agent calls
 // need the slots, and holding one while waiting could deadlock.
-func (eng *Engine) invokeWithRetries(le *liveExec, run *NodeRun, policy *pipeline.RetryPolicy, useSlot bool, invoke func() (string, error)) (string, error) {
+func (eng *Engine) invokeWithRetries(le *liveExec, run *NodeRun, policy *pipeline.RetryPolicy, useSlot bool, invoke func(int) (string, error)) (string, error) {
 	var maxRetries int
 	var backoff time.Duration
 	if policy != nil {
-		maxRetries = policy.Count
+		maxRetries = policy.Limit()
 		var err error
 		backoff, err = policy.BackoffDuration()
 		if err != nil {
@@ -1765,7 +1763,7 @@ func (eng *Engine) invokeWithRetries(le *liveExec, run *NodeRun, policy *pipelin
 				return "", err
 			}
 		}
-		out, err := invoke()
+		out, err := invoke(automaticRetries)
 		if release != nil {
 			if releaseErr := release(); releaseErr != nil {
 				eng.mu.Lock()
@@ -1872,6 +1870,9 @@ func (eng *Engine) cancelOrchRun(le *liveExec, oi *orchInstance) {
 
 // --- helpers ---
 
+// persistLocked saves under eng.mu and evicts completed executions only after
+// a successful save. Owned-write failures fence the engine rather than letting
+// work proceed with state that its controlling process cannot observe.
 func (eng *Engine) persistLocked(le *liveExec) {
 	if eng.persistError != nil {
 		return

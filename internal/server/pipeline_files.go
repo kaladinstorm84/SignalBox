@@ -92,6 +92,9 @@ func (s *Server) handleGetPipelineFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, settingsDocument{Content: string(content), Version: settingsVersion(content)})
 }
 
+// handleSavePipelineFile checks the full definition and newly introduced
+// cross-pipeline errors before saving. Existing files require a matching
+// content version; creating a file requires an empty version.
 func (s *Server) handleSavePipelineFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if origin := r.Header.Get("Origin"); origin != "" {
@@ -218,6 +221,8 @@ func pipelineOptions(cfg *config.Config) pipeline.Options {
 	return pipeline.Options{Root: cfg.Root, AllowExternal: cfg.AllowExternalImports, SchemasDir: cfg.SchemasPath()}
 }
 
+// createPipelineFile uses exclusive creation so a concurrent creator is not
+// overwritten after the handler has observed a missing file.
 func createPipelineFile(path string, content []byte) error {
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {

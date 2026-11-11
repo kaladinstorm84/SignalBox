@@ -47,6 +47,8 @@ func (s *Server) readResource(ctx context.Context, req *mcp.ReadResourceRequest)
 	return s.readURI(ctx, req.Params.URI)
 }
 
+// readURI accepts only the adapter's resource namespace and validates decoded
+// path segments before mapping them to API requests.
 func (s *Server) readURI(ctx context.Context, uri string) (*mcp.ReadResourceResult, error) {
 	u, err := url.Parse(uri)
 	if err != nil || u.Scheme != "signalbox" || u.User != nil || u.Fragment != "" {

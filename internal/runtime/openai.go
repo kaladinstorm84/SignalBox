@@ -16,13 +16,12 @@ import (
 
 // openAI calls any OpenAI-compatible chat completions endpoint.
 type openAI struct {
+	options config.RuntimeConfig
 	name    string
 	model   string
 	baseURL string
 	keyEnv  string
 	client  *http.Client
-	effort  string
-	tier    string
 }
 
 func newOpenAI(name string, rc config.RuntimeConfig) (Runtime, error) {
@@ -41,20 +40,13 @@ func newOpenAI(name string, rc config.RuntimeConfig) (Runtime, error) {
 	if timeout == 0 {
 		timeout = 10 * time.Minute
 	}
-	tier := ""
-	if rc.Speed == "standard" {
-		tier = "default"
-	} else if rc.Speed == "fast" {
-		tier = "priority"
-	}
 	return &openAI{
+		options: rc,
 		name:    name,
 		model:   rc.Model,
 		baseURL: strings.TrimRight(baseURL, "/"),
 		keyEnv:  keyEnv,
 		client:  &http.Client{Timeout: timeout},
-		effort:  rc.ReasoningEffort,
-		tier:    tier,
 	}, nil
 }
 
@@ -94,6 +86,10 @@ type chatResponse struct {
 }
 
 func (o *openAI) Invoke(ctx context.Context, req Request) (string, error) {
+	options, err := requestOptions(o.options, req)
+	if err != nil {
+		return "", err
+	}
 	key := os.Getenv(o.keyEnv)
 	if key == "" {
 		return "", fmt.Errorf("environment variable %s is not set", o.keyEnv)
@@ -108,7 +104,13 @@ func (o *openAI) Invoke(ctx context.Context, req Request) (string, error) {
 	if req.Model != "" {
 		model = req.Model
 	}
-	body, err := json.Marshal(chatRequest{Model: model, Messages: messages, ResponseFormat: responseFormatFor(req), ReasoningEffort: o.effort, ServiceTier: o.tier})
+	tier := ""
+	if options.Speed == "fast" {
+		tier = "priority"
+	} else if options.Speed == "standard" {
+		tier = "default"
+	}
+	body, err := json.Marshal(chatRequest{Model: model, Messages: messages, ResponseFormat: responseFormatFor(req), ReasoningEffort: options.ReasoningEffort, ServiceTier: tier})
 	if err != nil {
 		return "", err
 	}

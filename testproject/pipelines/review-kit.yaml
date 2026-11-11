@@ -14,7 +14,11 @@ templates:
   # A local template layered on the imported one.
   - id: strict_reviewer
     extends: gate_reviewer
-    retry: { count: 2 }   # deep-merges: keeps the shared 2s backoff
+    # Replaces the shared attempt list, keeping its 2s backoff.
+    retry:
+      attempts:
+        - runtime: {effort: high, speed: standard}
+        - runtime: {effort: xhigh, speed: standard}
 
 entry: implementer
 

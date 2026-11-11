@@ -25,7 +25,7 @@ func (e *childRejectedError) Error() string {
 // node's retry policy, then parked in waiting_retry, where a retry starts a
 // fresh child. A rejected child rejects the node.
 func (eng *Engine) runPipelineNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx *stageState) {
-	out, err := eng.invokeWithRetries(le, run, node.Retry, false, func() (string, error) {
+	out, err := eng.invokeWithRetries(le, run, node.Retry, false, func(_ int) (string, error) {
 		return eng.runChild(le, run, node)
 	})
 	if err != nil {

@@ -12,6 +12,8 @@ type OpenSpecSpec struct {
 	Args    []string `yaml:"args" json:"args"`
 }
 
+// validateOpenSpec checks the command shape without launching the CLI.
+// Executable availability and OpenSpec's own argument semantics are runtime checks.
 func validateOpenSpec(n *Node) error {
 	if n.OpenSpec == nil || len(n.OpenSpec.Args) == 0 {
 		return fmt.Errorf("openspec agent %q requires openspec.args", n.ID)

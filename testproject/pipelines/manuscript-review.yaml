@@ -40,8 +40,15 @@ entry: manuscript_profile
 templates:
   - id: editor
     type: standard
-    runtime: codex
-    retry: {count: 2, backoff: 2s}
+    runtime:
+      provider: codex
+      effort: medium
+      speed: fast
+    retry:
+      backoff: 2s
+      attempts:
+        - runtime: {effort: high, speed: standard}
+        - runtime: {effort: xhigh, speed: standard}
 
   - id: specialist_editor
     extends: editor
@@ -242,8 +249,15 @@ agents:
 
   - id: letter_check
     type: llm_gate
-    runtime: codex
-    retry: {count: 2, backoff: 2s}
+    runtime:
+      provider: codex
+      effort: medium
+      speed: fast
+    retry:
+      backoff: 2s
+      attempts:
+        - runtime: {effort: high, speed: standard}
+        - runtime: {effort: xhigh, speed: standard}
     description: Checks the letter is evidenced, actionable and fair.
     files: path
     reject-to: editorial_letter

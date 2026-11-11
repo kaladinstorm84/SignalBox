@@ -33,6 +33,8 @@ type WorkerRequest struct {
 	Uploads  []string
 }
 
+// WorkerResponse carries a durable acknowledgement; Changed preserves the
+// structured restart conflict that callers need for a force confirmation.
 type WorkerResponse struct {
 	ID      string
 	Chunk   Chunk
@@ -45,6 +47,8 @@ func mustPayload(v any) []byte {
 	return b
 }
 
+// checkWriter fences execution writes by owner and lease within the same
+// transaction as the save. A heartbeat check outside that transaction is stale.
 func (s *Store) checkWriter(tx *sql.Tx, id string) error {
 	// Acquire the write lock before reading, avoiding deferred-transaction
 	// read-to-write upgrades (SQLITE_BUSY) across independent processes.
@@ -274,6 +278,8 @@ func (s *Store) openOwnerLock(token string) (*os.File, error) {
 	return os.OpenFile(filepath.Join(dir, token+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
 }
 
+// ownerAlive probes the OS-held lock, not the PID, which may have been reused.
+// Unreadable state is treated conservatively as a live owner.
 func (s *Store) ownerAlive(token string) bool {
 	if token == s.owner && s.ownerLock != nil {
 		return true
@@ -418,6 +424,8 @@ func (s *Store) PollWorker(eng *Engine) error {
 	return nil
 }
 
+// ExecuteWorkerRequest applies an already-claimed private control message.
+// The polling owner is responsible for lease checks and durable acknowledgement.
 func (eng *Engine) ExecuteWorkerRequest(req WorkerRequest) WorkerResponse {
 	var resp WorkerResponse
 	var err error

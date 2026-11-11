@@ -76,6 +76,7 @@ func TestManuscriptReviewPipeline(t *testing.T) {
 		t.Skip("Python is required for this integration test")
 	}
 	p, root := loadManuscriptPipeline(t)
+	clearSampleAIOptionsForMock(p)
 	manuscript, err := os.ReadFile(filepath.Join(root, "samples", "manuscript-sample.md"))
 	if err != nil {
 		t.Fatal(err)

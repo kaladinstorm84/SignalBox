@@ -105,6 +105,8 @@ func (s *Store) sweepUploads() {
 	}
 }
 
+// initialize enables WAL for concurrent processes and stores searchable
+// summary columns alongside the full execution payload.
 func (s *Store) initialize() error {
 	for _, statement := range []string{
 		"PRAGMA busy_timeout = 5000",
@@ -331,6 +333,8 @@ func (s *Store) loadExecutions(filter string) ([]*Execution, error) {
 	return out, nil
 }
 
+// importLegacy commits records before removing their JSON files, making a
+// retry after a crash safe without replacing records already in SQLite.
 func (s *Store) importLegacy() error {
 	dir := filepath.Join(s.stateDir, "executions")
 	entries, err := os.ReadDir(dir)

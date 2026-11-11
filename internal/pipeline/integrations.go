@@ -40,24 +40,44 @@ var (
 	MCPToolPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 )
 
+func validateCallSettings(model, effort, speed string) error {
+	for _, field := range []struct{ name, value string }{{"model", model}, {"reasoning_effort", effort}} {
+		literal := stripParamRefs(field.value)
+		if strings.HasPrefix(field.value, "-") || strings.ContainsAny(literal, " \t\r\n") {
+			return fmt.Errorf("%s must not start with '-' or contain whitespace", field.name)
+		}
+	}
+	if speed != "" && speed != "standard" && speed != "fast" && stripParamRefs(speed) != "" {
+		return fmt.Errorf("speed must be standard or fast")
+	}
+	return nil
+}
+
 // validateIntegrations checks the model override and MCP opt-in fields.
 // Whether the chosen runtime supports them is checked against the project
 // config by runtime.ValidatePipeline.
 func validateIntegrations(n *Node) error {
+	if n.ReasoningEffort != "" || n.Speed != "" {
+		switch n.Type {
+		case TypeStandard, TypeLLMGate, TypeOrchestrator:
+		default:
+			return fmt.Errorf("agent %q: reasoning_effort and speed require an AI runtime node", n.ID)
+		}
+	}
+	if err := validateCallSettings(n.Model, n.ReasoningEffort, n.Speed); err != nil {
+		return fmt.Errorf("agent %q: %w", n.ID, err)
+	}
 	if n.Model != "" {
 		switch n.Type {
 		case TypeStandard, TypeLLMGate, TypeOrchestrator:
 		default:
 			return fmt.Errorf("agent %q: model is only supported on standard, llm_gate, and orchestrator nodes", n.ID)
 		}
-		literal := stripParamRefs(n.Model)
-		if strings.HasPrefix(n.Model, "-") || strings.ContainsAny(literal, " \t\r\n") {
-			return fmt.Errorf("agent %q: model %q must not start with '-' or contain whitespace", n.ID, n.Model)
-		}
 	}
 	if len(n.MCP) == 0 {
 		return nil
 	}
+
 	if n.Type != TypeStandard && n.Type != TypeLLMGate {
 		return fmt.Errorf("agent %q: mcp is only supported on standard and llm_gate nodes", n.ID)
 	}

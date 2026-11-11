@@ -347,6 +347,8 @@ func (t *templateTable) get(id string, chain []string) (*yaml.Node, error) {
 	return node, nil
 }
 
+// importPath resolves relative to the importing file, but enforces the project
+// boundary unless external imports are explicitly enabled.
 func (r *resolver) importPath(from, baseDir string) (string, error) {
 	if strings.TrimSpace(from) == "" {
 		return "", fmt.Errorf("from is required")
@@ -429,6 +431,7 @@ func extendsList(node *yaml.Node) ([]string, error) {
 
 // mergeNodes deep-merges child over base: mappings merge key by key, and
 // any other value (including lists) in the child replaces the base value.
+// The result is cloned so extending one template cannot mutate another agent.
 func mergeNodes(base, child *yaml.Node) *yaml.Node {
 	if base == nil {
 		return cloneNode(child)

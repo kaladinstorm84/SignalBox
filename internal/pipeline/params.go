@@ -183,7 +183,19 @@ func (p *Pipeline) paramFields() []paramField {
 			paramField{where + " description", &n.Description},
 			paramField{where + " prompt", &n.Prompt},
 			paramField{where + " model", &n.Model},
+			paramField{where + " reasoning_effort", &n.ReasoningEffort},
+			paramField{where + " speed", &n.Speed},
 		)
+		if n.Retry != nil {
+			for j := range n.Retry.Attempts {
+				attempt := &n.Retry.Attempts[j]
+				fields = append(fields,
+					paramField{where + " retry model", &attempt.Model},
+					paramField{where + " retry reasoning_effort", &attempt.ReasoningEffort},
+					paramField{where + " retry speed", &attempt.Speed},
+				)
+			}
+		}
 		if n.OpenSpec != nil {
 			for j := range n.OpenSpec.Args {
 				fields = append(fields, paramField{where + " openspec.args", &n.OpenSpec.Args[j]})
@@ -303,6 +315,11 @@ func (p *Pipeline) clone() *Pipeline {
 	for i, n := range p.Nodes {
 		n.Handoff = append([]HandoffRule(nil), n.Handoff...)
 		n.Stages = append([]Stage(nil), n.Stages...)
+		if n.Retry != nil {
+			retry := *n.Retry
+			retry.Attempts = append([]RetryAttempt(nil), n.Retry.Attempts...)
+			n.Retry = &retry
+		}
 		if n.OpenSpec != nil {
 			spec := *n.OpenSpec
 			spec.Args = append([]string(nil), n.OpenSpec.Args...)

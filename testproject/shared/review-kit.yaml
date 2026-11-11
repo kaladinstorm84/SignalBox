@@ -8,8 +8,14 @@
 templates:
   # Common settings for every reviewer: runtime, retries, and context.
   - id: reviewer_base
-    runtime: codex
-    retry: { count: 1, backoff: 2s }
+    runtime:
+      provider: codex
+      effort: medium
+      speed: fast
+    retry:
+      backoff: 2s
+      attempts:
+        - runtime: {effort: high, speed: standard}
     context: { strategy: recent, window: 2 }
 
   # An automated reviewer gate. Pipelines extend it and add a focus and

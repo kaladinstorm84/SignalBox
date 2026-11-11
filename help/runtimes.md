@@ -28,8 +28,39 @@ runtimes:
 
 `model` is the default for all calls through that runtime, including session
 participants, orchestrator synthesis, and structured-output repair calls.
-An agent's `model` still takes precedence. Omitted settings preserve existing
-provider/CLI defaults. Restart the server after changing runtime settings.
+An agent's grouped `runtime.model`, `runtime.effort`, and `runtime.speed` take
+precedence over the selected runtime's defaults. If neither sets an option, the
+provider/CLI default is preserved. Restart the server after changing runtime settings.
+
+Choose the same options for the initial call in pipeline YAML:
+
+```yaml
+agents:
+  - id: researcher
+    runtime:
+      provider: codex
+      model: gpt-5.4
+      effort: high
+      speed: standard
+    prompt: Research the supplied task.
+```
+
+These per-node settings apply to standard agents, LLM gates and orchestrator
+synthesis calls. Session participants set their own initial options. They may
+use pipeline parameters, and are validated against the selected runtime.
+See [fallback retries](execution.md#runtime-retries) to change these settings
+automatically after failures.
+
+`runtime.provider` selects an entry in `signalbox.yaml`'s `runtimes` map, such as
+`codex`, `codex-fast`, or `company-openai`; it does not create a provider.
+The project-level runtime definitions above still use `type` and
+`reasoning_effort`. The grouped pipeline syntax uses the shorter `effort`.
+
+The original `runtime: codex` shorthand and top-level `model` remain supported;
+top-level `reasoning_effort` and `speed` are also accepted with scalar runtimes.
+Do not mix grouped runtime settings with top-level model/effort/speed settings:
+put all call settings inside the `runtime` mapping. Unknown grouped keys and
+invalid or unsupported settings fail validation.
 
 `speed` accepts `standard` or `fast`. Fast requests provider priority service,
 **not** less reasoning or a cheaper model; it may incur additional charges and
@@ -69,12 +100,14 @@ runtimes:
 
 Each configured flag receives its value as a separate process argument.
 
-`standard`, `llm_gate`, and `orchestrator` agents can set `model` (it may use
+`standard`, `llm_gate`, and `orchestrator` agents can set `runtime.model` (it may use
 a param). The `codex`, `claude`, and `copilot` runtimes pass it as
 `--model`, `openai` uses it instead of the runtime's `model`, and `mock`
 ignores it. A `cli` runtime needs `model_arg` (for example `model_arg:
---model`) or validation fails. Session participants use their own `model`.
-The model is shown on each run card.
+--model`) or validation fails. Session participants use their own settings.
+The execution's **Runtime calls** section shows the effective provider, model,
+effort, speed and errors for each call and retry. The HTTP API preserves its
+flat `runtime`/`model` fields, with `reasoning_effort` and `speed` alongside them.
 
 ### MCP servers
 

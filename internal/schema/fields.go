@@ -123,7 +123,8 @@ func isContainer(v any) bool {
 	return false
 }
 
-// Eval tests the condition against a decoded document.
+// Eval tests the condition against a decoded document. Missing fields compare
+// as null, so a missing path and an explicit JSON null have the same semantics.
 func (c *Condition) Eval(doc any) bool {
 	actual, found := Lookup(doc, c.Path)
 	if !found {
@@ -136,6 +137,8 @@ func (c *Condition) Eval(doc any) bool {
 	return equal
 }
 
+// valuesEqual compares JSON numbers by value, not decoder representation,
+// without treating numeric strings as numbers.
 func valuesEqual(a, b any) bool {
 	ra, aNum := toRat(a)
 	rb, bNum := toRat(b)

@@ -3,11 +3,56 @@ package engine
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/kaladinstorm84/SignalBox/internal/pipeline"
 	"github.com/kaladinstorm84/SignalBox/internal/runtime"
 )
 
+func (eng *Engine) invokeAgent(le *liveExec, run *NodeRun, agent *pipeline.Node, policy *pipeline.RetryPolicy, retry int, req runtime.Request) (string, error) {
+	name := agent.Runtime
+	req.ReasoningEffort, req.Speed = agent.ReasoningEffort, agent.Speed
+	if policy != nil && retry > 0 && len(policy.Attempts) > 0 {
+		choice := policy.Attempts[retry-1]
+		if choice.Runtime != "" {
+			name = choice.Runtime
+		}
+		if choice.Model != "" {
+			req.Model = choice.Model
+		}
+		if choice.ReasoningEffort != "" {
+			req.ReasoningEffort = choice.ReasoningEffort
+		}
+		if choice.Speed != "" {
+			req.Speed = choice.Speed
+		}
+	}
+	rt, req, err := eng.registry.Resolve(name, req)
+	if err != nil {
+		return "", err
+	}
+	eng.mu.Lock()
+	index := len(run.CallAttempts)
+	run.CallAttempts = append(run.CallAttempts, CallAttempt{
+		Agent: agent.ID, Retry: retry, Runtime: name, Model: req.Model,
+		ReasoningEffort: req.ReasoningEffort, Speed: req.Speed, StartedAt: time.Now().UTC(),
+	})
+	eng.persistLocked(le)
+	eng.mu.Unlock()
+	out, err := rt.Invoke(le.ctx, req)
+	eng.mu.Lock()
+	now := time.Now().UTC()
+	run.CallAttempts[index].FinishedAt = &now
+	if err != nil {
+		run.CallAttempts[index].Error = err.Error()
+	}
+	eng.persistLocked(le)
+	eng.mu.Unlock()
+	return out, err
+}
+
+// withKnowledge reads current documents for a call without rewriting the
+// persisted handoff payload. Reference text is appended only to runtime input.
 func (eng *Engine) withKnowledge(input string, names []string) (string, error) {
 	if len(names) == 0 {
 		return input, nil

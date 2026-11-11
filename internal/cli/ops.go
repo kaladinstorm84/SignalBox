@@ -405,8 +405,9 @@ func opsShow(execURL string, asJSON bool, out io.Writer) error {
 	return w.Flush()
 }
 
-// pickWaitingRun returns the explicit run ID, or the only run of the
-// execution in the wanted state.
+// pickWaitingRun returns the explicit run ID, or the only matching wait among
+// this execution and its surfaced descendants. Explicit IDs are validated by
+// the server when the command is submitted.
 func pickWaitingRun(execURL, runID string, want engine.Status) (string, error) {
 	if runID != "" {
 		return runID, nil

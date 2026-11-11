@@ -11,6 +11,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// cmdMCP serves a stdio adapter to an existing HTTP server, not another engine.
+// Stdout belongs to the MCP transport rather than human-readable command output.
 func cmdMCP(args []string) error {
 	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
 	target := fs.String("url", "", "running SignalBox server origin (default: server in signalbox.yaml)")

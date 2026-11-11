@@ -100,7 +100,7 @@ func testQAPipelineReview(t *testing.T, rounds int, consensus bool) {
 		strings.Join(session.Participants, ",") != "business_amigo,developer_amigo,qa_amigo" ||
 		session.Consensus.Require != pipeline.ConsensusRequireAll ||
 		session.Consensus.Method != pipeline.ConsensusVote || session.SummaryAgent != "qa_amigo" ||
-		session.Retry == nil || session.Retry.Count != 2 {
+		session.Retry == nil || session.Retry.Limit() != 2 {
 		t.Fatalf("Three Amigos session contract = %+v", session)
 	}
 	planners, gates, judges := 0, 0, 0
@@ -129,7 +129,7 @@ func testQAPipelineReview(t *testing.T, rounds int, consensus bool) {
 			if node.Runtime != "codex" || node.Retry != nil {
 				t.Fatalf("participant must use the session retry policy: %+v", node)
 			}
-		} else if node.Runtime != "codex" || node.Retry == nil || node.Retry.Count != 2 || node.Retry.Backoff != "2s" {
+		} else if node.Runtime != "codex" || node.Retry == nil || node.Retry.Limit() != 2 || node.Retry.Backoff != "2s" {
 			t.Fatalf("shared runtime/retry settings = %+v", node)
 		}
 		id := node.ID
@@ -200,6 +200,7 @@ func testQAPipelineReview(t *testing.T, rounds int, consensus bool) {
 			}
 		}
 	}
+	clearSampleAIOptionsForMock(p)
 	registry.Register(&runtime.Mock{RuntimeName: "codex", Handler: func(ctx context.Context, req runtime.Request) (string, error) {
 		for _, node := range p.Nodes {
 			if node.Prompt != "" && strings.HasPrefix(req.SystemPrompt, node.Prompt) {

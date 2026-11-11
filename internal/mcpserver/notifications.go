@@ -78,6 +78,8 @@ func (s *Server) unsubscribe(_ context.Context, req *mcp.UnsubscribeRequest) err
 	return nil
 }
 
+// poll fetches each subscribed URI once, then compares per-session baselines.
+// Errors are fingerprinted too, so both failure and recovery prompt a reread.
 func (s *Server) poll(ctx context.Context) error {
 	var errs []error
 	if err := s.refreshPipelines(ctx); err != nil {

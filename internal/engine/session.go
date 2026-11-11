@@ -111,10 +111,6 @@ func (eng *Engine) sessionTurn(le *liveExec, run *NodeRun, node *pipeline.Node, 
 	if participant == nil {
 		return fmt.Errorf("session %q: participant %q is no longer in the pipeline", node.ID, participantID)
 	}
-	rt, err := eng.registry.Get(participant.Runtime)
-	if err != nil {
-		return err
-	}
 	eng.mu.Lock()
 	turnInput := sessionTurnInput(runtimeInput(run), run.Session, le.exec.Chunks, node.ChunksEnabled())
 	eng.mu.Unlock()
@@ -137,8 +133,8 @@ func (eng *Engine) sessionTurn(le *liveExec, run *NodeRun, node *pipeline.Node, 
 	eng.persistLocked(le)
 	eng.mu.Unlock()
 
-	out, err := eng.invokeRetrying(le, run, node.Retry, func() (string, error) {
-		return rt.Invoke(le.ctx, req)
+	out, err := eng.invokeRetrying(le, run, node.Retry, func(retry int) (string, error) {
+		return eng.invokeAgent(le, run, participant, node.Retry, retry, req)
 	})
 	if err != nil {
 		return err

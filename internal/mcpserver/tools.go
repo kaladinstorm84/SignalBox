@@ -80,6 +80,8 @@ func tool(name, description string, destructive bool) *mcp.Tool {
 	}
 }
 
+// addTools omits review mutations entirely unless explicitly enabled;
+// descriptive tool annotations alone do not enforce that boundary.
 func (s *Server) addTools(allowReview bool) {
 	mcp.AddTool(s.server, tool("start_execution", "Start a pipeline asynchronously. Read its pipeline resource first. Returns an execution handle, not completed results. Repeated calls create separate executions; do not automatically retry an ambiguous timeout.", true),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in startInput) (*mcp.CallToolResult, commandOutput, error) {

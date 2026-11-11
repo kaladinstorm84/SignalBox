@@ -102,6 +102,8 @@ func validateKnowledgeDocument(rel string, data []byte) error {
 	return nil
 }
 
+// validateKnowledgePackage confines a standalone knowledge package to its own
+// base and rejects case-only duplicates that would collide on Windows.
 func validateKnowledgePackage(m *Manifest, contents map[string][]byte) error {
 	dir := path.Join("knowledge-bases", m.Name)
 	seen := map[string]bool{}
@@ -121,6 +123,8 @@ func validateKnowledgePackage(m *Manifest, contents map[string][]byte) error {
 	return nil
 }
 
+// checkKnowledgeTarget checks existing path components, not just the leaf,
+// before installation can create missing directories or replace a document.
 func checkKnowledgeTarget(root, rel string) error {
 	current := root
 	for _, part := range strings.Split(rel, "/") {

@@ -19,7 +19,9 @@ type Request struct {
 	// Input is the handoff payload (initial input or upstream output).
 	Input string
 	// Model overrides the runtime's default model when set.
-	Model string
+	Model           string
+	ReasoningEffort string
+	Speed           string
 	// MCP lists the MCP servers and tools granted to this call.
 	MCP []MCPGrant
 	// Schema, when set, is the JSON Schema the response must conform to.
@@ -83,6 +85,8 @@ func (r *Registry) GrantMCP(agent string, uses []pipeline.MCPUse) ([]MCPGrant, e
 	return grantMCP(r.mcp, agent, uses)
 }
 
+// grantMCP narrows a server's configured allowlist. An omitted per-agent tool
+// list inherits that allowlist; it does not mean unrestricted server access.
 func grantMCP(mcp config.MCPConfig, agent string, uses []pipeline.MCPUse) ([]MCPGrant, error) {
 	if len(uses) == 0 {
 		return nil, nil
@@ -139,6 +143,44 @@ func (r *Registry) Get(name string) (Runtime, error) {
 		return nil, fmt.Errorf("runtime %q is not defined in %s", name, config.FileName)
 	}
 	return rt, nil
+}
+
+// Resolve fills call defaults without mutating a shared runtime.
+func (r *Registry) Resolve(name string, req Request) (Runtime, Request, error) {
+	rt, err := r.Get(name)
+	if err != nil {
+		return nil, req, err
+	}
+	var options config.RuntimeConfig
+	switch typed := rt.(type) {
+	case *cliRuntime:
+		options = typed.options
+	case *openAI:
+		options = typed.options
+	case *Mock:
+		options.Type = "mock"
+	default:
+		return nil, req, fmt.Errorf("runtime %q does not expose call settings", name)
+	}
+	options, err = requestOptions(options, req)
+	if err != nil {
+		return nil, req, fmt.Errorf("runtime %q: %w", name, err)
+	}
+	req.Model, req.ReasoningEffort, req.Speed = options.Model, options.ReasoningEffort, options.Speed
+	return rt, req, nil
+}
+
+func requestOptions(options config.RuntimeConfig, req Request) (config.RuntimeConfig, error) {
+	if req.Model != "" {
+		options.Model = req.Model
+	}
+	if req.ReasoningEffort != "" {
+		options.ReasoningEffort = req.ReasoningEffort
+	}
+	if req.Speed != "" {
+		options.Speed = req.Speed
+	}
+	return options, config.ValidateRuntimeOptions(options)
 }
 
 // Register overrides or adds a runtime (used by tests).

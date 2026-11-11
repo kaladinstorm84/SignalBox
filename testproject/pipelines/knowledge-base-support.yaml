@@ -2,7 +2,7 @@
 # From testproject:
 #   go run ..\cmd\signalbox run knowledge-base-support --input "Can a team on Starter export its data, and how long is an export available?"
 # Uses the existing codex runtime: one LLM call on a successful first attempt.
-# For a no-cost wiring demo, change the assistant template runtime to mock.
+# For a no-cost wiring demo, use runtime: mock and retry: {count: 2, backoff: 2s}.
 name: knowledge-base-support
 description: >-
   Answers customer questions using the fictional Northstar product handbook
@@ -11,8 +11,15 @@ description: >-
 entry: support_assistant
 templates:
   - id: assistant
-    runtime: codex
-    retry: {count: 2, backoff: 2s}
+    runtime:
+      provider: codex
+      effort: medium
+      speed: fast
+    retry:
+      backoff: 2s
+      attempts:
+        - runtime: {effort: high, speed: standard}
+        - runtime: {effort: xhigh, speed: standard}
 
 agents:
   - id: support_assistant

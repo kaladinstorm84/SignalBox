@@ -21,6 +21,66 @@ remains available to retry the call manually or cancel the execution. Runtime
 errors are separate from quality-gate rejection and code-node rejection
 outcomes; automatic retries do not treat those decisions as transient failures.
 
+To change the AI settings on successive retries, replace `count` with an ordered
+`attempts` list:
+
+```yaml
+- id: researcher
+  runtime:
+    provider: codex
+    model: gpt-5.4
+    effort: medium
+    speed: standard
+  retry:
+    backoff: 500ms
+    attempts:
+      - runtime:
+          effort: high
+          speed: fast
+      - runtime:
+          provider: claude
+          model: opus
+          effort: high
+          speed: standard
+```
+
+The initial call uses the node's `runtime.provider`, `runtime.model`,
+`runtime.effort`, and `runtime.speed`. `provider` selects a named runtime from
+`signalbox.yaml`; it is not an arbitrary provider type.
+Each entry is one extra call after a runtime error, in order (at most
+10 entries). Do not combine a nonzero `count` with `attempts`. An empty entry
+(`{}`) retries the initial settings.
+An entry can also use the existing shorthand, such as `runtime: claude`.
+
+Each entry independently overrides the node settings; it does **not** inherit
+the previous entry. Omitted node settings use the selected runtime's defaults
+from `signalbox.yaml`. If switching providers, explicitly choose a compatible
+model and effort level: a node-level model/effort override still applies unless
+replaced. Speed `fast` requests priority service and may cost more.
+
+Fallbacks support standard agents, LLM gates, orchestrator synthesis calls and
+session calls. Set initial options on each session participant; the session's
+retry policy applies independently to each participant/summary turn.
+Code, OpenSpec and child-pipeline nodes retain `count` retries, not AI fallback
+settings. Runtime validation checks every fallback, including model support,
+MCP grants and local-file delivery compatibility.
+
+Each new synthesis call, session turn or schema-repair call begins with the
+initial settings and a fresh retry budget. After all fallback entries fail,
+the run enters `waiting_retry`; a manual retry repeats the last fallback
+settings without replaying the automatic list. Existing fixed-count policies
+also retain their exhausted budget during manual retry.
+
+Execution details expose `call_attempts` with runtime, model, effort, speed,
+timestamps and errors. The web UI shows these under **Runtime calls**.
+
+The test project's AI examples with retry policies start at medium effort and
+fast speed. The first retry uses high effort and standard speed; examples with
+two retries escalate the second to xhigh effort, also at standard speed.
+This changes priority service, not a guaranteed wall-clock duration. Providers
+must support the selected effort levels and fast service. Code outcomes and
+child-pipeline retry policies are unchanged.
+
 The test project's `discovery` pipeline demonstrates conditional handoffs,
 payload templates, an `llm_gate` with bounded rework, and runtime retries. The
 `Full Pipeline QA` pipeline puts an `llm_gate` after each of ten specialist

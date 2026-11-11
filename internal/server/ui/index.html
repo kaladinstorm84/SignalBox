@@ -776,6 +776,7 @@ function renderRun(x, r) {
     </div>
     ${integrationsLabel(r.model, r.mcp, r.node_id) ? `<div class="muted integrations">${integrationsLabel(r.model, r.mcp, r.node_id)}</div>` : ''}
     ${runFilesNote(x, r)}
+    ${renderCallAttempts(r)}
     ${(r.child_executions || []).length ? `<div class="child-links"><span class="muted">${r.child_executions.length === 1 ? 'Linked execution' : 'Linked executions'}:</span>${r.child_executions.map((c, i) => `<a class="mono" href="#/exec/${encodeURIComponent(c)}">${esc(c)}</a>${i < r.child_executions.length - 1 ? '<span class="muted">(earlier attempt)</span>' : ''}`).join('')}</div>` : ''}
     ${r.error ? `<div class="err-banner" style="margin:8px 0 0">${esc(r.error)}</div>` : ''}
     ${retryable ? `
@@ -823,7 +824,10 @@ function renderRun(x, r) {
 function applyParams(p, params) {
   if (!params) return p;
   const sub = s => s && s.replace(/\$\{\{\s*params\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g, (m, k) => k in params ? params[k] : m);
-  return {...p, description: sub(p.description), nodes: p.nodes.map(n => ({...n, description: sub(n.description), model: sub(n.model)}))};
+  return {...p, description: sub(p.description), nodes: p.nodes.map(n => ({
+    ...n, description: sub(n.description), model: sub(n.model), reasoning_effort: sub(n.reasoning_effort), speed: sub(n.speed),
+    retry: n.retry ? {...n.retry, attempts: (n.retry.attempts || []).map(a => ({...a, model: sub(a.model), reasoning_effort: sub(a.reasoning_effort), speed: sub(a.speed)}))} : n.retry
+  }))};
 }
 
 // outputLabel describes a node's structured-output contract.
@@ -864,14 +868,25 @@ function schemaBadge(r) {
 
 // integrationsLabel describes a model override and MCP servers/tools. Session
 // runs record grants per participant, so grants for another agent are prefixed.
-function integrationsLabel(model, mcp, nodeId) {
+function integrationsLabel(model, mcp, nodeId, effort, speed) {
   const parts = [];
   if (model) parts.push(`model <span class="mono">${esc(model)}</span>`);
+  if (effort) parts.push(`reasoning ${esc(effort)}`);
+  if (speed) parts.push(`speed ${esc(speed)}`);
   (mcp || []).forEach(m => {
     const tools = m.tools && m.tools.length ? m.tools.map(esc).join(', ') : 'all allowed tools';
     parts.push(`MCP ${m.agent && nodeId && m.agent !== nodeId ? esc(m.agent) + ' → ' : ''}<span class="mono">${esc(m.server)}</span>: ${tools}`);
   });
   return parts.join(' · ');
+}
+
+function renderCallAttempts(r) {
+  const attempts = r.call_attempts || [];
+  if (!attempts.length) return '';
+  return `<details data-key="${esc(r.id)}:calls"><summary>Runtime calls (${attempts.length})</summary>
+    ${attempts.map((a, i) => `<div class="stage"><div class="mono">${i + 1}. ${esc(a.agent)} · ${esc(a.runtime)} · ${a.retry ? `retry ${a.retry}` : 'initial call'}</div>
+      <div class="muted">${integrationsLabel(a.model, [], null, a.reasoning_effort, a.speed)}</div>
+      ${a.error ? `<pre class="out">${esc(a.error)}</pre>` : `<span class="muted">${a.finished_at ? 'Completed' : 'In progress'}</span>`}</div>`).join('')}</details>`;
 }
 
 function paramField(p) {
@@ -2052,7 +2067,9 @@ async function showPipelines(selected) {
         <tbody>${p.nodes.map(n => `
           <tr>
             <td><b>${esc(n.id)}</b>${n.id === p.entry ? ' <span class="muted">(entry)</span>' : ''}
-            ${n.description ? `<div class="muted">${esc(n.description)}</div>` : ''}</td>
+            ${n.description ? `<div class="muted">${esc(n.description)}</div>` : ''}
+            ${n.reasoning_effort || n.speed ? `<div class="muted">${integrationsLabel('', [], null, n.reasoning_effort, n.speed)}</div>` : ''}
+            ${n.retry?.attempts?.length ? `<details><summary>${n.retry.attempts.length} fallback ${n.retry.attempts.length === 1 ? 'retry' : 'retries'}</summary>${n.retry.attempts.map((a, i) => `<div class="muted">${i + 1}. ${esc(a.runtime || n.runtime || 'participant runtime')} · ${integrationsLabel(a.model || n.model, [], null, a.reasoning_effort || n.reasoning_effort, a.speed || n.speed) || 'runtime defaults'}</div>`).join('')}</details>` : ''}</td>
             <td><span class="type ${esc(n.type)}">${esc(n.type)}</span></td>
             <td class="mono">${n.type === 'openspec' ? `${esc(n.openspec?.command || 'openspec')}<div class="muted">${esc((n.openspec?.args || []).map(arg => JSON.stringify(arg)).join(' '))}</div>` : n.type === 'code' ? `${esc(n.language)}<div class="muted">${esc(n.code_source)}</div>` : n.type === 'session' ? `<div class="muted">${(n.participants || []).map(esc).join(', ')}</div><div class="muted">${n.max_rounds} rounds · ${esc(n.consensus ? n.consensus.method : '')}${n.chunks && n.chunks.enabled ? ' · chunks' : ''}</div>` : n.type === 'pipeline' ? `→ ${esc(n.pipeline)}${n.from || n.until ? `<div class="muted">${esc(n.from || 'entry')} … ${esc(n.until || 'end')}</div>` : ''}${n.params && Object.keys(n.params).length ? `<div class="muted">params: ${Object.keys(n.params).sort().map(esc).join(', ')}</div>` : ''}` : esc(n.runtime || '—')}${contextLabel(n.context) ? `<div class="muted">${esc(contextLabel(n.context))}</div>` : ''}${integrationsLabel(n.model, n.mcp) ? `<div class="muted">${integrationsLabel(n.model, n.mcp)}</div>` : ''}${n.knowledge_bases && n.knowledge_bases.length ? `<div class="muted">Knowledge: ${n.knowledge_bases.map(esc).join(', ')}</div>` : ''}${n.output ? `<div class="muted">${esc(outputLabel(n.output))}</div>` : ''}${nodeFilesLabel(n) ? `<div class="muted">${esc(nodeFilesLabel(n))}</div>` : ''}</td>
             <td>${n.stages ? n.stages.map(s => `<div class="muted">stage <b>${esc(s.id)}</b> → ${s.agents.map(esc).join(', ')}</div>`).join('') : ''}

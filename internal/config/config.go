@@ -205,6 +205,8 @@ func Parse(data []byte, dir string) (*Config, error) {
 	return &c, nil
 }
 
+// applyDefaults runs before validation. A nil retention selects the default;
+// an explicit zero must survive because it means retain history indefinitely.
 func (c *Config) applyDefaults() {
 	if c.Project == "" {
 		c.Project = filepath.Base(c.Root)

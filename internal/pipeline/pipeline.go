@@ -108,11 +108,29 @@ func (h *HandoffRule) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
-// RetryPolicy controls automatic retries for runtime errors. Count is the
-// number of retries after the initial call; Backoff is a Go duration string.
+// RetryPolicy controls automatic retries for runtime errors using either a
+// fixed Count or ordered Attempts. Backoff is a Go duration string.
 type RetryPolicy struct {
-	Count   int    `yaml:"count" json:"count"`
-	Backoff string `yaml:"backoff,omitempty" json:"backoff,omitempty"`
+	Count    int            `yaml:"count" json:"count"`
+	Backoff  string         `yaml:"backoff,omitempty" json:"backoff,omitempty"`
+	Attempts []RetryAttempt `yaml:"attempts,omitempty" json:"attempts,omitempty"`
+}
+
+// RetryAttempt overrides one automatic retry relative to the node's initial
+// settings, never relative to the previous retry.
+type RetryAttempt struct {
+	Runtime         string `yaml:"runtime,omitempty" json:"runtime,omitempty"`
+	Model           string `yaml:"model,omitempty" json:"model,omitempty"`
+	ReasoningEffort string `yaml:"reasoning_effort,omitempty" json:"reasoning_effort,omitempty"`
+	Speed           string `yaml:"speed,omitempty" json:"speed,omitempty"`
+}
+
+// Limit counts retries after the initial call.
+func (r RetryPolicy) Limit() int {
+	if len(r.Attempts) > 0 {
+		return len(r.Attempts)
+	}
+	return r.Count
 }
 
 // BackoffDuration parses the configured fixed delay between automatic retries.
@@ -153,7 +171,9 @@ type Node struct {
 	Prompt string `yaml:"prompt,omitempty"`
 
 	// Model overrides the runtime's default model for this agent's calls.
-	Model string `yaml:"model,omitempty"`
+	Model           string `yaml:"model,omitempty"`
+	ReasoningEffort string `yaml:"reasoning_effort,omitempty" json:",omitempty"`
+	Speed           string `yaml:"speed,omitempty" json:",omitempty"`
 	// MCP opts this agent in to MCP servers registered in signalbox.yaml.
 	MCP []MCPUse `yaml:"mcp,omitempty"`
 	// KnowledgeBases appends the contents of these project knowledge bases
@@ -439,6 +459,9 @@ func Names(m map[string]*Pipeline) []string {
 	return names
 }
 
+// validate normalizes defaults and builds lookup/join indexes in place.
+// Validate node references before traversing the graph so graph checks can
+// assume every edge resolves to a defined node.
 func (p *Pipeline) validate() error {
 	if p.Name == "" {
 		return fmt.Errorf("pipeline is missing a name")
@@ -781,6 +804,27 @@ func (p *Pipeline) validateNode(n *Node) error {
 		}
 		if n.Retry.Count < 0 || n.Retry.Count > 10 {
 			return fmt.Errorf("agent %q: retry.count must be between 0 and 10", n.ID)
+		}
+		if len(n.Retry.Attempts) > 10 {
+			return fmt.Errorf("agent %q: retry.attempts may contain at most 10 entries", n.ID)
+		}
+		if len(n.Retry.Attempts) > 0 {
+			if n.Retry.Count != 0 {
+				return fmt.Errorf("agent %q: retry.count and retry.attempts cannot be combined", n.ID)
+			}
+			switch n.Type {
+			case TypeStandard, TypeLLMGate, TypeOrchestrator, TypeSession:
+			default:
+				return fmt.Errorf("agent %q: retry.attempts requires an AI runtime node", n.ID)
+			}
+			if n.Type == TypeOrchestrator && n.Runtime == "" {
+				return fmt.Errorf("agent %q: retry.attempts requires an orchestrator runtime", n.ID)
+			}
+			for i, attempt := range n.Retry.Attempts {
+				if err := validateCallSettings(attempt.Model, attempt.ReasoningEffort, attempt.Speed); err != nil {
+					return fmt.Errorf("agent %q: retry.attempts[%d]: %w", n.ID, i, err)
+				}
+			}
 		}
 		backoff, err := n.Retry.BackoffDuration()
 		if err != nil || backoff < 0 || backoff > 5*time.Minute {

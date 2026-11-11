@@ -91,6 +91,8 @@ func Main(args []string) int {
 
 // --- init ---
 
+// cmdInit writes only missing scaffold files unless --force is supplied;
+// existing project state is not part of the scaffold.
 func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	force := fs.Bool("force", false, "overwrite existing files")
@@ -144,6 +146,8 @@ func rel(base, path string) string {
 
 // --- validate ---
 
+// cmdValidate checks the project and runtime configuration without invoking
+// agents, and also reports invalid schemas not referenced by any pipeline.
 func cmdValidate(args []string) error {
 	cfg, pipelines, err := loadProject()
 	if err != nil {
@@ -173,6 +177,8 @@ func cmdValidate(args []string) error {
 
 // --- serve ---
 
+// cmdServe hosts the UI and routes execution launches to detached workers.
+// Closing the server's store does not cancel those workers.
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "", "listen address (overrides signalbox.yaml)")
@@ -209,6 +215,9 @@ func cmdServe(args []string) error {
 
 // --- run ---
 
+// cmdRun owns a foreground execution and resolves its human waits on stdin.
+// It still claims a worker token so server commands and the shared runtime
+// limit apply to foreground work as well as detached executions.
 func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	input := fs.String("input", "", "input handed to the entry agent (reads stdin if omitted)")
@@ -375,6 +384,8 @@ func cmdRun(args []string) error {
 	}
 }
 
+// readManualEdit accepts a dot-terminated payload, preserving its whitespace.
+// EOF also accepts a non-empty payload for piped input.
 func readManualEdit(reader *bufio.Reader) (string, error) {
 	var output strings.Builder
 	for {
@@ -415,6 +426,8 @@ func printProgress(eng *engine.Engine, execID string, seen map[string]engine.Sta
 	}
 }
 
+// printResult treats persistence failure as a command failure even if the
+// execution itself completed, so callers do not mistake unsaved work for success.
 func printResult(eng *engine.Engine, execID string) error {
 	exec, err := eng.Get(execID)
 	if err != nil {
@@ -454,6 +467,8 @@ func loadProject() (*config.Config, map[string]*pipeline.Pipeline, error) {
 	return cfg, pipelines, nil
 }
 
+// loadProjectPipelines validates the whole graph and its runtime references
+// before exposing any definitions; a partial reload must not replace good state.
 func loadProjectPipelines(cfg *config.Config) (map[string]*pipeline.Pipeline, error) {
 	pipelines, errs := pipeline.LoadDir(cfg.PipelinesPath(), pipeline.Options{Root: cfg.Root, AllowExternal: cfg.AllowExternalImports, SchemasDir: cfg.SchemasPath()})
 	if len(errs) > 0 {

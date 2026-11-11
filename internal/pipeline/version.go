@@ -77,7 +77,8 @@ func comparePrerelease(a, b string) int {
 	return 0
 }
 
-// NextPatch returns v with its patch number incremented (prerelease dropped).
+// NextPatch increments a stable release, promotes a prerelease to its base
+// release, or returns 0.1.0 when no valid prior version is supplied.
 func NextPatch(v string) string {
 	m := versionPattern.FindStringSubmatch(v)
 	if m == nil {

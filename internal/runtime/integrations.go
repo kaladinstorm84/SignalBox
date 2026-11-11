@@ -31,6 +31,10 @@ func (c *cliRuntime) baseArgs(extra []string) []string {
 // temporary MCP configuration file.
 func (c *cliRuntime) integrationArgs(req Request) (args, env []string, cleanup func(), err error) {
 	cleanup = func() {}
+	options, err := requestOptions(c.options, req)
+	if err != nil {
+		return nil, nil, cleanup, err
+	}
 	if req.Model == "" {
 		req.Model = c.model
 	}
@@ -43,7 +47,7 @@ func (c *cliRuntime) integrationArgs(req Request) (args, env []string, cleanup f
 		}
 		args = append(args, c.modelArg, req.Model)
 	}
-	if effort := c.options.ReasoningEffort; effort != "" {
+	if effort := options.ReasoningEffort; effort != "" {
 		switch c.kind {
 		case "codex":
 			args = append(args, "-c", "model_reasoning_effort="+tomlValue(effort))
@@ -53,7 +57,7 @@ func (c *cliRuntime) integrationArgs(req Request) (args, env []string, cleanup f
 			args = append(args, c.options.ReasoningEffortArg, effort)
 		}
 	}
-	if speed := c.options.Speed; speed != "" {
+	if speed := options.Speed; speed != "" {
 		switch c.kind {
 		case "codex":
 			tier := "default"
@@ -235,22 +239,67 @@ func ValidatePipeline(cfg *config.Config, p *pipeline.Pipeline) error {
 				return err
 			}
 		}
+		if n.Type == pipeline.TypeSession && n.Retry != nil {
+			for _, id := range n.Participants {
+				participant := *p.Node(id)
+				participant.Retry = n.Retry
+				if err := validateRetryRuntimes(cfg, p, &participant); err != nil {
+					return fmt.Errorf("session %q: %w", n.ID, err)
+				}
+			}
+		}
 		if n.Runtime == "" {
 			continue
 		}
-		rc, ok := cfg.Runtimes[n.Runtime]
-		if !ok {
-			return fmt.Errorf("pipeline %q: agent %q references runtime %q which is not defined in %s", p.Name, n.ID, n.Runtime, config.FileName)
+		if err := validateRetryRuntimes(cfg, p, n); err != nil {
+			return err
 		}
-		if n.Model != "" && !SupportsModel(rc) {
-			return fmt.Errorf("pipeline %q: agent %q sets model but runtime %q (type cli) has no model_arg", p.Name, n.ID, n.Runtime)
+	}
+	return nil
+}
+
+func validateRetryRuntimes(cfg *config.Config, p *pipeline.Pipeline, n *pipeline.Node) error {
+	choices := []pipeline.RetryAttempt{{}}
+	if n.Retry != nil {
+		choices = append(choices, n.Retry.Attempts...)
+	}
+	for i, choice := range choices {
+		name, model, effort, speed := n.Runtime, n.Model, n.ReasoningEffort, n.Speed
+		if choice.Runtime != "" {
+			name = choice.Runtime
+		}
+		if choice.Model != "" {
+			model = choice.Model
+		}
+		if choice.ReasoningEffort != "" {
+			effort = choice.ReasoningEffort
+		}
+		if choice.Speed != "" {
+			speed = choice.Speed
+		}
+		rc, ok := cfg.Runtimes[name]
+		if !ok {
+			return fmt.Errorf("pipeline %q: agent %q references runtime %q which is not defined in %s", p.Name, n.ID, name, config.FileName)
+		}
+		if model != "" && !SupportsModel(rc) {
+			return fmt.Errorf("pipeline %q: agent %q sets model but runtime %q (type cli) has no model_arg", p.Name, n.ID, name)
+		}
+		// Parameterized values are checked again after substitution at invocation.
+		literal := func(value string) string {
+			if strings.Contains(value, "${{") {
+				return ""
+			}
+			return value
+		}
+		if _, err := requestOptions(rc, Request{Model: literal(model), ReasoningEffort: literal(effort), Speed: literal(speed)}); err != nil {
+			return fmt.Errorf("pipeline %q: agent %q call choice %d runtime %q: %w", p.Name, n.ID, i, name, err)
 		}
 		if n.FilesMode() == pipeline.FilesPath && rc.Type == "openai" {
-			return fmt.Errorf("pipeline %q: agent %q uses files: path but runtime %q is type openai, which cannot read local files; use files: inline or a CLI runtime", p.Name, n.ID, n.Runtime)
+			return fmt.Errorf("pipeline %q: agent %q uses files: path but runtime %q is type openai, which cannot read local files; use files: inline or a CLI runtime", p.Name, n.ID, name)
 		}
 		if len(n.MCP) > 0 {
 			if !mcpRuntimes[rc.Type] {
-				return fmt.Errorf("pipeline %q: agent %q uses mcp but runtime %q is type %s; MCP needs a codex, claude, or copilot runtime", p.Name, n.ID, n.Runtime, rc.Type)
+				return fmt.Errorf("pipeline %q: agent %q uses mcp but runtime %q is type %s; MCP needs a codex, claude, or copilot runtime", p.Name, n.ID, name, rc.Type)
 			}
 			if _, err := grantMCP(cfg.MCP, n.ID, n.MCP); err != nil {
 				return fmt.Errorf("pipeline %q: %w", p.Name, err)

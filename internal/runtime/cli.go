@@ -68,6 +68,8 @@ func (c *cliRuntime) filesArgs(req Request) (args, env []string) {
 // and quoting.
 const maxArgPrompt = 24000
 
+// ProcessExitError retains both output streams for code-node exit mappings.
+// Start failures and cancellation are not normal script outcomes.
 type ProcessExitError struct {
 	ExitCode int
 	Stdout   string
@@ -169,6 +171,7 @@ func (c *cliRuntime) Invoke(ctx context.Context, req Request) (string, error) {
 	var stdin *bytes.Reader
 	switch {
 	case c.commandOnly:
+		// CLI operations take only explicit args; handoff text is not a command.
 	case c.promptMode == "stdin":
 		stdin = bytes.NewReader([]byte(prompt))
 	case argLength(prompt) <= maxArgPrompt:

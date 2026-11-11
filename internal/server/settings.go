@@ -14,6 +14,8 @@ import (
 	"github.com/kaladinstorm84/SignalBox/internal/runtime"
 )
 
+// settingsDocument carries raw YAML and a content hash for optimistic
+// concurrency. Version refers to the bytes read, not a parsed configuration.
 type settingsDocument struct {
 	Content string `json:"content"`
 	Version string `json:"version"`
@@ -37,6 +39,8 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, settingsDocument{Content: string(content), Version: settingsVersion(content)})
 }
 
+// handleSaveSettings validates the proposed project's runtime and pipeline
+// configuration before writing. The saved settings take effect on restart.
 func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if origin := r.Header.Get("Origin"); origin != "" {
@@ -98,6 +102,8 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, settingsDocument{Content: proposed.Content, Version: settingsVersion([]byte(proposed.Content))})
 }
 
+// replaceSettings writes a sibling temporary file and preserves permissions
+// before renaming it over the original; it never truncates the original first.
 func replaceSettings(path string, content []byte) error {
 	info, err := os.Stat(path)
 	if err != nil {

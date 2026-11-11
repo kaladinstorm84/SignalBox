@@ -900,7 +900,14 @@ agents:
         input: "{{ output }}"
   - id: quality
     type: llm_gate
-    runtime: mock
+    runtime:
+      provider: codex
+      model: initial-model
+      effort: medium
+      speed: standard
+    retry:
+      attempts:
+        - runtime: {provider: claude, model: opus, effort: high, speed: fast}
     prompt: "Check quality."
     reject-to: source
     max_reworks: 1
@@ -935,6 +942,10 @@ agents:
 			} `json:"handoff"`
 			Retry      *pipeline.RetryPolicy `json:"retry"`
 			MaxReworks int                   `json:"max_reworks"`
+			Runtime    string                `json:"runtime"`
+			Model      string                `json:"model"`
+			Effort     string                `json:"reasoning_effort"`
+			Speed      string                `json:"speed"`
 		} `json:"nodes"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
@@ -950,6 +961,14 @@ agents:
 	}
 	if gate.Type != string(pipeline.TypeLLMGate) || gate.MaxReworks != 1 {
 		t.Fatalf("gate view = %+v", gate)
+	}
+	if gate.Runtime != "codex" || gate.Model != "initial-model" || gate.Effort != "medium" || gate.Speed != "standard" ||
+		gate.Retry == nil || len(gate.Retry.Attempts) != 1 {
+		t.Fatalf("grouped runtime view = %+v", gate)
+	}
+	choice := gate.Retry.Attempts[0]
+	if choice.Runtime != "claude" || choice.Model != "opus" || choice.ReasoningEffort != "high" || choice.Speed != "fast" {
+		t.Fatalf("fallback API view = %+v", choice)
 	}
 }
 

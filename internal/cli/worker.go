@@ -18,6 +18,8 @@ import (
 const workerTokenEnv = "SIGNALBOX_INTERNAL_WORKER_TOKEN"
 const workerStateEnv = "SIGNALBOX_INTERNAL_WORKER_STATE"
 
+// launchWorker stages a one-shot launch capability and waits for a durable
+// execution ID. Starting a process alone is not acknowledgement of a launch.
 func launchWorker(cfg *config.Config, store *engine.Store, req engine.WorkerRequest) (string, error) {
 	token, err := store.PrepareWorker()
 	if err != nil {
@@ -193,6 +195,8 @@ func recoverWorkers(ctx context.Context, store *engine.Store) {
 	}
 }
 
+// renewForeground keeps terminal-owned executions reachable through shared
+// control state and aborts their calls if ownership can no longer be maintained.
 func renewForeground(ctx context.Context, eng *engine.Engine) {
 	failures, done := maintainOwner(ctx, eng.Store())
 	defer func() { <-done }()
@@ -216,6 +220,8 @@ func renewForeground(ctx context.Context, eng *engine.Engine) {
 	}
 }
 
+// maintainOwner reports the first lease-renewal failure and then stops.
+// Callers cancel ctx and wait on done before closing the shared store.
 func maintainOwner(ctx context.Context, store *engine.Store) (<-chan error, <-chan struct{}) {
 	failures := make(chan error, 1)
 	done := make(chan struct{})

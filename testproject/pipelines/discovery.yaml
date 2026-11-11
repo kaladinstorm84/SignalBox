@@ -7,7 +7,10 @@ entry: researcher
 agents:
   - id: researcher
     type: standard
-    runtime: codex
+    runtime:
+      provider: codex
+      effort: medium
+      speed: fast
     description: Investigates the question and records findings with sources.
     prompt: |
       Investigate the user's discovery question.
@@ -17,13 +20,18 @@ agents:
       3. Important uncertainties and what remains unknown.
       Do not invent sources or claim certainty beyond the evidence.
     retry:
-      count: 2
       backoff: 1s
+      attempts:
+        - runtime: {effort: high, speed: standard}
+        - runtime: {effort: xhigh, speed: standard}
     handoff: [quality_gate]
 
   - id: quality_gate
     type: llm_gate
-    runtime: codex
+    runtime:
+      provider: codex
+      effort: medium
+      speed: fast
     description: Checks that findings are supported, clear, and appropriately qualified.
     prompt: |
       Review the discovery findings for:
@@ -34,8 +42,9 @@ agents:
       Reject findings that lack meaningful evidence or overstate certainty.
       In feedback, say exactly what the researcher should improve.
     retry:
-      count: 1
       backoff: 1s
+      attempts:
+        - runtime: {effort: high, speed: standard}
     max_reworks: 2
     reject-to: researcher
     handoff: [human_review]

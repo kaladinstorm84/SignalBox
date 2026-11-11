@@ -5,10 +5,11 @@ import (
 	"strings"
 )
 
-// Sample builds a document that conforms to the schema, for the mock
-// runtime and demos. It honours const, enum, examples, default, type,
-// required/properties, items, minItems, numeric minimums, string lengths,
-// local $refs and the first branch of oneOf/anyOf/allOf.
+// Sample builds a best-effort example for the mock runtime and demos, not a
+// general schema solver. It uses const, enum, examples, default, type,
+// properties, items, size and numeric bounds, and local $refs. Alternatives
+// choose the first branch; allOf combines object samples where possible.
+// Callers still validate the result against the complete schema.
 func (s *Schema) Sample() string {
 	v := sampleValue(s.Doc, s.Doc, 0)
 	encoded, err := json.MarshalIndent(v, "", "  ")

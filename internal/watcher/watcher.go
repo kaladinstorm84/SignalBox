@@ -1,3 +1,5 @@
+// Package watcher turns changed command output into pipeline launches and
+// persists output hashes to avoid replaying the same poll after a restart.
 package watcher
 
 import (
@@ -17,9 +19,11 @@ import (
 	"github.com/kaladinstorm84/SignalBox/internal/config"
 )
 
+// StartPipeline returns the execution ID only after a launch is accepted.
 type StartPipeline func(name, input string) (string, error)
 type pollFunc func(context.Context, config.WatcherConfig) (string, error)
 
+// Runner shares launch and polling dependencies; each Run owns one poll loop.
 type Runner struct {
 	stateDir string
 	start    StartPipeline
@@ -58,6 +62,8 @@ func (r *Runner) Run(ctx context.Context, cfg config.WatcherConfig) {
 	}
 }
 
+// pollOnce saves the new hash only after any required launch succeeds.
+// Empty output updates the hash too, allowing a later non-empty repeat to fire.
 func (r *Runner) pollOnce(ctx context.Context, cfg config.WatcherConfig) error {
 	output, err := r.poll(ctx, cfg)
 	if err != nil {

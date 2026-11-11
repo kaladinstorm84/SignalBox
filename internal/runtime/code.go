@@ -12,6 +12,8 @@ import (
 	"github.com/kaladinstorm84/SignalBox/internal/pipeline"
 )
 
+// CodeOutcomeError translates a configured script exit into engine routing:
+// fail is terminal, while retry requests rework of upstream execution steps.
 type CodeOutcomeError struct {
 	Outcome  string
 	ExitCode int
@@ -56,6 +58,9 @@ func (c *codeRuntime) Invoke(ctx context.Context, req Request) (string, error) {
 	return "", err
 }
 
+// NewCode resolves a script relative to the project, delivers raw input on
+// stdin, and optionally maps exits to outcomes. Scripts run as the host user,
+// not in a sandbox; construction checks the file but does not execute it.
 func NewCode(node *pipeline.Node, projectRoot string) (Runtime, error) {
 	root, err := filepath.Abs(projectRoot)
 	if err != nil {

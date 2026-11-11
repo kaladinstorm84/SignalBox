@@ -88,7 +88,8 @@ type NodeRun struct {
 	AdditionalInputResolved bool              `json:"additional_input_resolved,omitempty"`
 	Error                   string            `json:"error,omitempty"`
 	// Retries counts how many times a failed agent call was retried.
-	Retries int `json:"retries,omitempty"`
+	Retries      int           `json:"retries,omitempty"`
+	CallAttempts []CallAttempt `json:"call_attempts,omitempty"`
 
 	// FromNodeID names the node that handed off to this run ("" for entry);
 	// for a join it lists every source, comma-separated.
@@ -149,6 +150,20 @@ type NodeRun struct {
 
 	StartedAt  *time.Time `json:"started_at,omitempty"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
+}
+
+// CallAttempt records the settings actually used for an AI call, including
+// initial calls, automatic/manual retries, repairs and session turns.
+type CallAttempt struct {
+	Agent           string     `json:"agent"`
+	Retry           int        `json:"retry"`
+	Runtime         string     `json:"runtime"`
+	Model           string     `json:"model,omitempty"`
+	ReasoningEffort string     `json:"reasoning_effort,omitempty"`
+	Speed           string     `json:"speed,omitempty"`
+	Error           string     `json:"error,omitempty"`
+	StartedAt       time.Time  `json:"started_at"`
+	FinishedAt      *time.Time `json:"finished_at,omitempty"`
 }
 
 // ContextSelection is the persisted result of applying a context strategy.

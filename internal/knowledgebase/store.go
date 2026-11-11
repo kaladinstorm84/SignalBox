@@ -1,3 +1,5 @@
+// Package knowledgebase stores project-local UTF-8 documents and assembles
+// their complete contents as reference text for runtime calls.
 package knowledgebase
 
 import (
@@ -11,8 +13,10 @@ import (
 )
 
 const (
+	// MaxDocumentBytes limits editor saves and registry knowledge documents.
 	MaxDocumentBytes = 1 << 20
-	MaxContextBytes  = 5 << 20
+	// MaxContextBytes includes document headers in the assembled call input.
+	MaxContextBytes = 5 << 20
 )
 
 var (
@@ -23,15 +27,18 @@ var (
 	}
 )
 
+// Store addresses knowledge-bases under one project; it does not cache content.
 type Store struct {
 	root string
 }
 
+// Base lists a knowledge base's documents without loading their text.
 type Base struct {
 	Name      string     `json:"name"`
 	Documents []Document `json:"documents"`
 }
 
+// Document is listing metadata; Size is the file size in bytes.
 type Document struct {
 	Name string `json:"name"`
 	Size int    `json:"size"`
@@ -108,6 +115,8 @@ func (s *Store) Delete(name string) error {
 	return os.RemoveAll(dir)
 }
 
+// SaveDocument creates or replaces text in an existing base. Directory and
+// file checks reject symlinks rather than intentionally following them.
 func (s *Store) SaveDocument(base, name string, content []byte) error {
 	path, err := s.documentPath(base, name)
 	if err != nil {
@@ -172,6 +181,8 @@ func (s *Store) DeleteDocument(base, name string) error {
 	return os.Remove(path)
 }
 
+// Content rereads each base in caller order and its documents in name order.
+// Oversized aggregate input is an error, not a silently truncated reference.
 func (s *Store) Content(names []string) (string, error) {
 	var content strings.Builder
 	for _, name := range names {

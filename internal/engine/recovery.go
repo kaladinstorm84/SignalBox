@@ -73,6 +73,8 @@ func (e *DefinitionChangedError) Error() string {
 		e.Pipeline, e.Execution, strings.Join(e.Changes, "; "))
 }
 
+// fingerprint sorts node IDs so YAML ordering alone does not invalidate a
+// restart; hashes still include each node's complete resolved definition.
 func fingerprint(p *pipeline.Pipeline) *Definition {
 	def := &Definition{Entry: p.Entry, Nodes: make(map[string]string, len(p.Nodes))}
 	ids := make([]string, 0, len(p.Nodes))

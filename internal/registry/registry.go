@@ -397,6 +397,13 @@ func (r *Registry) Publish(cfg *config.Config, name string, opts PublishOptions)
 		if n.Runtime != "" {
 			runtimes[n.Runtime] = true
 		}
+		if n.Retry != nil {
+			for _, attempt := range n.Retry.Attempts {
+				if attempt.Runtime != "" {
+					runtimes[attempt.Runtime] = true
+				}
+			}
+		}
 		if n.Type == pipeline.TypeCode {
 			abs := n.CodeSource
 			if !filepath.IsAbs(abs) {
@@ -463,6 +470,8 @@ func (r *Registry) Publish(cfg *config.Config, name string, opts PublishOptions)
 	return r.publishContents(m, contents)
 }
 
+// publishContents builds a complete version in a temporary sibling directory,
+// then renames it into place so incomplete packages are not advertised.
 func (r *Registry) publishContents(m *Manifest, contents map[string][]byte) (*Manifest, error) {
 	name, version := m.Name, m.Version
 	pkgDir := filepath.Join(r.Dir, name)
@@ -520,6 +529,8 @@ type InstallResult struct {
 
 // Install verifies a package and copies it into the project. Pipelines must
 // validate against the project's runtimes; all packages protect local edits.
+// Validation and conflict checks precede writes, but the per-file replacement
+// phase is not a transaction across the entire project.
 func (r *Registry) Install(cfg *config.Config, ref string, opts InstallOptions) (*InstallResult, error) {
 	name, version, err := r.Resolve(ref)
 	if err != nil {

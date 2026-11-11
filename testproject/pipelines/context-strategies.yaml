@@ -19,7 +19,10 @@ agents:
 
   - id: researcher
     type: standard
-    runtime: codex
+    runtime:
+      provider: codex
+      effort: medium
+      speed: fast
     description: Researches from the brief alone (explicit strategy none).
     context:
       strategy: none
@@ -27,8 +30,9 @@ agents:
       Research the brief. List the key facts, each with a source or a note
       that it is unverified. Do not write the article.
     retry:
-      count: 1
       backoff: 1s
+      attempts:
+        - runtime: {effort: high, speed: standard}
     handoff: [analyst]
 
   - id: analyst

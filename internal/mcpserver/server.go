@@ -22,12 +22,16 @@ const (
 	maxResourceBytes = 1 << 20
 )
 
+// Options selects the existing HTTP server and the adapter's exposed tools.
 type Options struct {
-	URL         string
-	Version     string
+	URL     string
+	Version string
+	// AllowReview exposes approval and manual-edit controls; reading pending
+	// reviews never requires this opt-in.
 	AllowReview bool
 }
 
+// Server translates MCP operations to the HTTP API rather than owning runs.
 type Server struct {
 	server *mcp.Server
 	base   string
@@ -38,6 +42,8 @@ type Server struct {
 	pipelines     map[string]string
 }
 
+// New validates an origin-only endpoint and checks its pipeline catalog.
+// Redirects are rejected so API requests cannot silently change destinations.
 func New(ctx context.Context, opts Options) (*Server, error) {
 	u, err := url.Parse(opts.URL)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") ||
@@ -117,6 +123,8 @@ func (s *Server) request(ctx context.Context, method, path string, body any) ([]
 	return s.requestBody(ctx, method, path, reader, "application/json")
 }
 
+// requestBody bounds responses and preserves HTTP errors. Mutations are never
+// automatically retried: a timeout can leave their outcome unknown.
 func (s *Server) requestBody(ctx context.Context, method, path string, body io.Reader, contentType string) ([]byte, string, error) {
 	req, err := http.NewRequestWithContext(ctx, method, s.base+"/api"+path, body)
 	if err != nil {

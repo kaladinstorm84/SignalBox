@@ -8,8 +8,15 @@ entry: requirements_loader
 templates:
   - id: qa_agent
     type: standard
-    runtime: codex
-    retry: {count: 2, backoff: 2s}
+    runtime:
+      provider: codex
+      effort: medium
+      speed: fast
+    retry:
+      backoff: 2s
+      attempts:
+        - runtime: {effort: high, speed: standard}
+        - runtime: {effort: xhigh, speed: standard}
 
   - id: test_plan_agent
     extends: qa_agent
@@ -22,15 +29,25 @@ templates:
   # complete category-specific review criteria below.
   - id: planner_gate
     type: llm_gate
-    runtime: codex
-    retry: {count: 2, backoff: 2s}
+    runtime:
+      provider: codex
+      effort: medium
+      speed: fast
+    retry:
+      backoff: 2s
+      attempts:
+        - runtime: {effort: high, speed: standard}
+        - runtime: {effort: xhigh, speed: standard}
     additional-input: [requirements_loader]
     max_reworks: 2
 
   # Session retries belong to the session, not its participants.
   - id: amigo
     type: standard
-    runtime: codex
+    runtime:
+      provider: codex
+      effort: medium
+      speed: fast
 
 agents:
   - id: requirements_loader
@@ -422,7 +439,11 @@ agents:
     type: session
     description: Business, Developer and QA review the draft in up to two rounds.
     additional-input: [requirements_loader]
-    retry: {count: 2, backoff: 2s}
+    retry:
+      backoff: 2s
+      attempts:
+        - runtime: {effort: high, speed: standard}
+        - runtime: {effort: xhigh, speed: standard}
     participants: [business_amigo, developer_amigo, qa_amigo]
     turn_order: round_robin
     max_rounds: 2

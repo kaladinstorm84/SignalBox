@@ -14,6 +14,8 @@ type registrySource struct {
 	Version string `json:"version"`
 }
 
+// registrySources projects installation history from the lock file. These
+// badges identify package origins, not whether local files remain unmodified.
 func (s *Server) registrySources() (map[string][]registrySource, map[string][]registrySource, error) {
 	pipelines := map[string][]registrySource{}
 	knowledge := map[string][]registrySource{}

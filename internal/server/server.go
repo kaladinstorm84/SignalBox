@@ -52,6 +52,8 @@ func New(eng *engine.Engine, project string, loadPipelines func() (map[string]*p
 	return s
 }
 
+// refreshPipelines replaces definitions only after the loader accepts the
+// project. Existing executions keep the definitions they started with.
 func (s *Server) refreshPipelines() error {
 	pipelines, err := s.loadPipelines()
 	if err != nil {
@@ -198,38 +200,40 @@ type paramView struct {
 }
 
 type nodeView struct {
-	ID             string                  `json:"id"`
-	Type           string                  `json:"type"`
-	Description    string                  `json:"description,omitempty"`
-	Runtime        string                  `json:"runtime,omitempty"`
-	Language       string                  `json:"language,omitempty"`
-	CodeSource     string                  `json:"code_source,omitempty"`
-	OpenSpec       *pipeline.OpenSpecSpec  `json:"openspec,omitempty"`
-	TimeoutSeconds int                     `json:"timeout_seconds,omitempty"`
-	Codes          map[string]int          `json:"codes,omitempty"`
-	Handoff        []handoffView           `json:"handoff,omitempty"`
-	RejectTo       string                  `json:"reject_to,omitempty"`
-	Retry          *pipeline.RetryPolicy   `json:"retry,omitempty"`
-	MaxReworks     int                     `json:"max_reworks,omitempty"`
-	Stages         []stageView             `json:"stages,omitempty"`
-	Participants   []string                `json:"participants,omitempty"`
-	TurnOrder      string                  `json:"turn_order,omitempty"`
-	Moderator      string                  `json:"moderator,omitempty"`
-	MaxRounds      int                     `json:"max_rounds,omitempty"`
-	Consensus      *pipeline.Consensus     `json:"consensus,omitempty"`
-	SummaryAgent   string                  `json:"summary_agent,omitempty"`
-	Chunks         *pipeline.ChunkConfig   `json:"chunks,omitempty"`
-	Context        *pipeline.ContextConfig `json:"context,omitempty"`
-	Model          string                  `json:"model,omitempty"`
-	MCP            []pipeline.MCPUse       `json:"mcp,omitempty"`
-	KnowledgeBases []string                `json:"knowledge_bases,omitempty"`
-	Pipeline       string                  `json:"pipeline,omitempty"`
-	From           string                  `json:"from,omitempty"`
-	Until          string                  `json:"until,omitempty"`
-	Params         map[string]string       `json:"params,omitempty"`
-	Output         *outputView             `json:"output,omitempty"`
-	Files          string                  `json:"files,omitempty"`
-	FilesBudget    int                     `json:"files_budget,omitempty"`
+	ID              string                  `json:"id"`
+	Type            string                  `json:"type"`
+	Description     string                  `json:"description,omitempty"`
+	Runtime         string                  `json:"runtime,omitempty"`
+	Language        string                  `json:"language,omitempty"`
+	CodeSource      string                  `json:"code_source,omitempty"`
+	OpenSpec        *pipeline.OpenSpecSpec  `json:"openspec,omitempty"`
+	TimeoutSeconds  int                     `json:"timeout_seconds,omitempty"`
+	Codes           map[string]int          `json:"codes,omitempty"`
+	Handoff         []handoffView           `json:"handoff,omitempty"`
+	RejectTo        string                  `json:"reject_to,omitempty"`
+	Retry           *pipeline.RetryPolicy   `json:"retry,omitempty"`
+	MaxReworks      int                     `json:"max_reworks,omitempty"`
+	Stages          []stageView             `json:"stages,omitempty"`
+	Participants    []string                `json:"participants,omitempty"`
+	TurnOrder       string                  `json:"turn_order,omitempty"`
+	Moderator       string                  `json:"moderator,omitempty"`
+	MaxRounds       int                     `json:"max_rounds,omitempty"`
+	Consensus       *pipeline.Consensus     `json:"consensus,omitempty"`
+	SummaryAgent    string                  `json:"summary_agent,omitempty"`
+	Chunks          *pipeline.ChunkConfig   `json:"chunks,omitempty"`
+	Context         *pipeline.ContextConfig `json:"context,omitempty"`
+	Model           string                  `json:"model,omitempty"`
+	ReasoningEffort string                  `json:"reasoning_effort,omitempty"`
+	Speed           string                  `json:"speed,omitempty"`
+	MCP             []pipeline.MCPUse       `json:"mcp,omitempty"`
+	KnowledgeBases  []string                `json:"knowledge_bases,omitempty"`
+	Pipeline        string                  `json:"pipeline,omitempty"`
+	From            string                  `json:"from,omitempty"`
+	Until           string                  `json:"until,omitempty"`
+	Params          map[string]string       `json:"params,omitempty"`
+	Output          *outputView             `json:"output,omitempty"`
+	Files           string                  `json:"files,omitempty"`
+	FilesBudget     int                     `json:"files_budget,omitempty"`
 }
 
 // outputView is a node's structured-output contract with defaults applied.
@@ -271,35 +275,37 @@ func (s *Server) handlePipelines(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, n := range p.Nodes {
 			nv := nodeView{
-				ID:             n.ID,
-				Type:           string(n.Type),
-				Description:    n.Description,
-				Runtime:        n.Runtime,
-				Language:       n.Language,
-				CodeSource:     n.CodeSource,
-				OpenSpec:       n.OpenSpec,
-				TimeoutSeconds: n.TimeoutSeconds,
-				Codes:          n.Codes,
-				RejectTo:       n.RejectTo,
-				Retry:          n.Retry,
-				MaxReworks:     n.MaxReworks,
-				Participants:   n.Participants,
-				TurnOrder:      n.TurnOrder,
-				Moderator:      n.Moderator,
-				MaxRounds:      n.MaxRounds,
-				Consensus:      n.Consensus,
-				SummaryAgent:   n.SummaryAgent,
-				Chunks:         n.Chunks,
-				Context:        n.Context,
-				Model:          n.Model,
-				MCP:            n.MCP,
-				KnowledgeBases: n.KnowledgeBases,
-				Pipeline:       n.Pipeline,
-				From:           n.From,
-				Until:          n.Until,
-				Params:         n.Params,
-				Files:          n.Files,
-				FilesBudget:    n.FilesBudget,
+				ID:              n.ID,
+				Type:            string(n.Type),
+				Description:     n.Description,
+				Runtime:         n.Runtime,
+				Language:        n.Language,
+				CodeSource:      n.CodeSource,
+				OpenSpec:        n.OpenSpec,
+				TimeoutSeconds:  n.TimeoutSeconds,
+				Codes:           n.Codes,
+				RejectTo:        n.RejectTo,
+				Retry:           n.Retry,
+				MaxReworks:      n.MaxReworks,
+				Participants:    n.Participants,
+				TurnOrder:       n.TurnOrder,
+				Moderator:       n.Moderator,
+				MaxRounds:       n.MaxRounds,
+				Consensus:       n.Consensus,
+				SummaryAgent:    n.SummaryAgent,
+				Chunks:          n.Chunks,
+				Context:         n.Context,
+				Model:           n.Model,
+				ReasoningEffort: n.ReasoningEffort,
+				Speed:           n.Speed,
+				MCP:             n.MCP,
+				KnowledgeBases:  n.KnowledgeBases,
+				Pipeline:        n.Pipeline,
+				From:            n.From,
+				Until:           n.Until,
+				Params:          n.Params,
+				Files:           n.Files,
+				FilesBudget:     n.FilesBudget,
 			}
 			if n.Output != nil {
 				nv.Output = &outputView{Schema: n.Output.Schema, OnInvalid: n.InvalidPolicy(), MaxRepairs: n.RepairLimit()}

@@ -69,6 +69,35 @@ func newRegistry(t *testing.T) *Registry {
 	return r
 }
 
+func TestPublishGroupedRuntimeIncludesFallbackDependencies(t *testing.T) {
+	cfg := project(t, "version: 1\nruntimes:\n  first: {type: mock}\n  backup: {type: mock}\n", map[string]string{
+		"pipelines/flow.yaml": `name: flow
+agents:
+  - id: a
+    runtime: {provider: first}
+    retry:
+      attempts:
+        - runtime: {provider: backup}
+`,
+	})
+	r := newRegistry(t)
+	m, err := r.Publish(cfg, "flow", PublishOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(m.Runtimes, ",") != "backup,first" {
+		t.Fatalf("runtime dependencies = %v", m.Runtimes)
+	}
+	missing := project(t, "version: 1\nruntimes:\n  first: {type: mock}\n", nil)
+	if _, err := r.Install(missing, "flow", InstallOptions{}); err == nil || !strings.Contains(err.Error(), "backup") {
+		t.Fatalf("missing fallback runtime was accepted: %v", err)
+	}
+	consumer := project(t, "version: 1\nruntimes:\n  first: {type: mock}\n  backup: {type: mock}\n", nil)
+	if _, err := r.Install(consumer, "flow", InstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPublishPackagesImportsAndCodeAndVersions(t *testing.T) {
 	r := newRegistry(t)
 	cfg := publisher(t)

@@ -13,6 +13,8 @@ import (
 )
 
 // NewOpenSpec runs a configured CLI operation in the SignalBox project root.
+// Arguments are passed individually; incoming handoff text is neither appended
+// to them nor sent on stdin.
 func NewOpenSpec(node *pipeline.Node, projectRoot string) (Runtime, error) {
 	if node.OpenSpec == nil || len(node.OpenSpec.Args) == 0 {
 		return nil, fmt.Errorf("openspec agent %q requires openspec.args", node.ID)
