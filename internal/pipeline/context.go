@@ -40,7 +40,7 @@ func validateContext(n *Node) error {
 	if c == nil {
 		return nil
 	}
-	switch n.Type {
+	switch n.Type.BaseType() {
 	case TypeStandard, TypeCode, TypeLLMGate, TypeSession:
 	default:
 		return fmt.Errorf("agent %q: context is only supported on standard, code, llm_gate, and session nodes", n.ID)

@@ -1,0 +1,4 @@
+description: Counts lines, words and characters in the handoff input.
+language: python
+entry: main.py
+timeout_seconds: 30

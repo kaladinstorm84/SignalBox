@@ -1,0 +1,7 @@
+name: plugin-text-stats
+description: Runs the reusable text-stats plugin with no AI calls.
+entry: count
+agents:
+  - id: count
+    type: plugin:text-stats
+    retry: {count: 1, backoff: 500ms}

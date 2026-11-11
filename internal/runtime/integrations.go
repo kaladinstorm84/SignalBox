@@ -229,7 +229,7 @@ func SupportsModel(rc config.RuntimeConfig) bool {
 func ValidatePipeline(cfg *config.Config, p *pipeline.Pipeline) error {
 	for i := range p.Nodes {
 		n := &p.Nodes[i]
-		if n.Type == pipeline.TypeCode {
+		if n.Type.BaseType() == pipeline.TypeCode {
 			if _, err := NewCode(n, cfg.Root); err != nil {
 				return err
 			}

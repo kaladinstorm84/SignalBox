@@ -29,7 +29,7 @@ func (r *Registry) PublishKnowledge(cfg *config.Config, name, description string
 			return nil, err
 		}
 		if previous.PackageKind() != KindKnowledge {
-			return nil, fmt.Errorf("package %q is already used by a pipeline; choose a different name", name)
+			return nil, fmt.Errorf("package %q is already used by a %s; choose a different name", name, kindLabel(previous.PackageKind()))
 		}
 	}
 	version := opts.Version

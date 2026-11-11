@@ -79,6 +79,9 @@ func parse(data []byte, path string, opts Options) (*Pipeline, error) {
 		}
 		p.Sources = r.sources
 	}
+	if err := p.resolvePlugins(opts.Root); err != nil {
+		return nil, err
+	}
 	if err := p.validate(); err != nil {
 		return nil, err
 	}

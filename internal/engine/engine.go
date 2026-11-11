@@ -824,7 +824,7 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 	}
 	var invokeWith func(input string, retry int) (string, error)
 	sch := le.p.SchemaFor(node.OutputSchema())
-	if node.Type == pipeline.TypeCode || node.Type == pipeline.TypeOpenSpec {
+	if node.Type.BaseType() == pipeline.TypeCode || node.Type == pipeline.TypeOpenSpec {
 		var rt runtime.Runtime
 		var err error
 		if node.Type == pipeline.TypeOpenSpec {
@@ -1066,7 +1066,7 @@ func (eng *Engine) finishRunRejected(le *liveExec, run *NodeRun, node *pipeline.
 	run.FinishedAt = &finished
 	run.Comment = note
 	run.Output = output
-	if node.Type == pipeline.TypeCode || node.Type == pipeline.TypePipeline {
+	if node.Type.BaseType() == pipeline.TypeCode || node.Type == pipeline.TypePipeline {
 		run.Error = note
 	}
 	work := le.reworks[run.ID]

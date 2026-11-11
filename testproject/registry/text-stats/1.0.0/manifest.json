@@ -1,0 +1,29 @@
+{
+  "kind": "plugin",
+  "name": "text-stats",
+  "version": "1.0.0",
+  "description": "Counts lines, words and characters in the handoff input.",
+  "schema_version": 1,
+  "published_at": "2026-11-11T10:51:49Z",
+  "published_by": "web-ui",
+  "entry": "plugins/text-stats/plugin.yaml",
+  "pipelines_dir": "",
+  "files": [
+    {
+      "path": "plugins/text-stats/main.py",
+      "sha256": "8cb94746f4c1c2f64580b0cb1f027c70a8a8dcd0304ab28f63e452720a6c2f05",
+      "size": 133
+    },
+    {
+      "path": "plugins/text-stats/plugin.yaml",
+      "sha256": "cca258ec00378bf3dd5a43fc06c0e85cf9c54a054225d6a4b40b516d9e31c8f5",
+      "size": 126
+    },
+    {
+      "path": "plugins/text-stats/text_tools.py",
+      "sha256": "583a56a3d71c1192c0d9ad0381aa24657e821f828df4ba8528a8d648d64a2493",
+      "size": 156
+    }
+  ],
+  "digest": "sha256:0f4c352ef724d79fa7f83127c7da412e1e8780bd9b1988823ce6bb8c536dddc4"
+}

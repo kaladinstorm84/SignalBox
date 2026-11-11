@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaladinstorm84/SignalBox/internal/plugin"
 	"github.com/kaladinstorm84/SignalBox/internal/schema"
 	"gopkg.in/yaml.v3"
 )
@@ -157,9 +158,10 @@ type Stage struct {
 // Node is a single agent, orchestrator, approval gate, or manual edit step
 // in a pipeline.
 type Node struct {
-	ID          string   `yaml:"id"`
-	Type        NodeType `yaml:"type"`
-	Description string   `yaml:"description,omitempty"`
+	Plugin      *plugin.Definition `yaml:"-" json:",omitempty"`
+	ID          string             `yaml:"id"`
+	Type        NodeType           `yaml:"type"`
+	Description string             `yaml:"description,omitempty"`
 
 	// Runtime names an entry in signalbox.yaml's runtimes map. Required for
 	// standard agents; optional for orchestrators (only needed when a stage
@@ -496,10 +498,10 @@ func (p *Pipeline) validate() error {
 		if n.Type == "" {
 			n.Type = TypeStandard
 		}
-		switch n.Type {
+		switch n.Type.BaseType() {
 		case TypeStandard, TypeOrchestrator, TypeApproval, TypeLLMGate, TypeManualEdit, TypeCode, TypeOpenSpec, TypeSession, TypePipeline:
 		default:
-			return fmt.Errorf("pipeline %q: agent %q has unknown type %q (want standard, orchestrator, approval, llm_gate, manual_edit, code, openspec, session, or pipeline)", p.Name, n.ID, n.Type)
+			return fmt.Errorf("pipeline %q: agent %q has unknown type %q (want standard, orchestrator, approval, llm_gate, manual_edit, code, plugin:<name>, openspec, session, or pipeline)", p.Name, n.ID, n.Type)
 		}
 		p.byID[n.ID] = n
 	}
@@ -709,10 +711,10 @@ func (p *Pipeline) validateNode(n *Node) error {
 			return fmt.Errorf("gate %q: reject-to must reference another non-orchestrator node", n.ID)
 		}
 	}
-	if n.Type != TypeCode && (n.Language != "" || n.CodeSource != "" || n.Codes != nil) {
+	if n.Type.BaseType() != TypeCode && (n.Language != "" || n.CodeSource != "" || n.Codes != nil) {
 		return fmt.Errorf("agent %q: language, code-source, and codes are only supported on code nodes", n.ID)
 	}
-	if n.TimeoutSeconds != 0 && n.Type != TypeCode && n.Type != TypeOpenSpec {
+	if n.TimeoutSeconds != 0 && n.Type.BaseType() != TypeCode && n.Type != TypeOpenSpec {
 		return fmt.Errorf("agent %q: timeout_seconds is only supported on code and openspec nodes", n.ID)
 	}
 	if n.OpenSpec != nil && n.Type != TypeOpenSpec {
@@ -797,7 +799,7 @@ func (p *Pipeline) validateNode(n *Node) error {
 		return fmt.Errorf("agent %q hands off to an orchestrator alongside other targets; an orchestrator handoff must be the sole target", n.ID)
 	}
 	if n.Retry != nil {
-		switch n.Type {
+		switch n.Type.BaseType() {
 		case TypeStandard, TypeCode, TypeOpenSpec, TypeLLMGate, TypeOrchestrator, TypeSession, TypePipeline:
 		default:
 			return fmt.Errorf("agent %q: retry is only supported on callable nodes", n.ID)
@@ -812,7 +814,7 @@ func (p *Pipeline) validateNode(n *Node) error {
 			if n.Retry.Count != 0 {
 				return fmt.Errorf("agent %q: retry.count and retry.attempts cannot be combined", n.ID)
 			}
-			switch n.Type {
+			switch n.Type.BaseType() {
 			case TypeStandard, TypeLLMGate, TypeOrchestrator, TypeSession:
 			default:
 				return fmt.Errorf("agent %q: retry.attempts requires an AI runtime node", n.ID)
@@ -851,7 +853,7 @@ func (p *Pipeline) validateNode(n *Node) error {
 		return fmt.Errorf("agent %q: pipeline, from, until, and params are only supported on pipeline nodes", n.ID)
 	}
 
-	switch n.Type {
+	switch n.Type.BaseType() {
 	case TypeOpenSpec:
 		return validateOpenSpec(n)
 	case TypePipeline:
@@ -869,21 +871,8 @@ func (p *Pipeline) validateNode(n *Node) error {
 	case TypeSession:
 		return p.validateSession(n)
 	case TypeCode:
-		if n.Codes != nil {
-			if len(n.Codes) != 3 {
-				return fmt.Errorf("code agent %q: codes must define success, fail, and retry", n.ID)
-			}
-			seenCodes := map[int]bool{}
-			for _, outcome := range []string{"success", "fail", "retry"} {
-				code, ok := n.Codes[outcome]
-				if !ok || code < 0 {
-					return fmt.Errorf("code agent %q: codes.%s must be a non-negative exit code", n.ID, outcome)
-				}
-				if seenCodes[code] {
-					return fmt.Errorf("code agent %q: exit codes must be distinct", n.ID)
-				}
-				seenCodes[code] = true
-			}
+		if err := plugin.ValidateCodes(n.Codes); err != nil {
+			return fmt.Errorf("code agent %q: %w", n.ID, err)
 		}
 		if n.CodeSource == "" {
 			return fmt.Errorf("code agent %q is missing code-source", n.ID)

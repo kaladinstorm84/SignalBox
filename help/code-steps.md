@@ -2,6 +2,9 @@
 
 [Back to SignalBox](../README.md)
 
+To package scripts and helper files as reusable `type: plugin:<name>` nodes,
+see [Script plugins](plugins.md).
+
 ### Code Steps
 
 ```yaml

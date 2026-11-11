@@ -33,8 +33,15 @@
 | `POST /api/executions/{id}/chunks` | Add a chunk: `{"title": "...", "by": "..."}`; returns the chunk (409 once the execution has finished) |
 | `POST /api/executions/{id}/chunks/{chunk}/done` | Mark a chunk done: optional `{"by": "..."}` |
 | `DELETE /api/executions/{id}/chunks/{chunk}` | Remove a chunk (its ID is not reused) |
-| `GET /api/registry?q=...` | Registry status: `configured`, `path`, matching `packages` (with `kind`), `installed` (lock entries), `publishable` pipeline names, and `publishable_knowledge` base names |
+| `GET /api/registry?q=...` | Registry status: `configured`, `path`, matching `packages` (with `kind`), `installed` (lock entries), `publishable` pipeline names, `publishable_plugins` folder names, and `publishable_knowledge` base names |
 | `GET /api/registry/{name}` | Latest version of a package: `manifest`, `versions`, file contents, and `verify_error` if integrity fails |
 | `GET /api/registry/{name}/{version}` | A specific version (`latest` allowed) |
 | `POST /api/registry/install` | Install: `{"ref": "name@1.2.0", "digest": "sha256:...", "force": false}` (409 on conflicts or validation errors) |
-| `POST /api/registry/publish` | Publish: `{"pipeline": "name", "version": "", "by": "..."}` or `{"knowledge_base": "name", "description": "...", "version": "", "by": "..."}` (exactly one type); returns 201 with the manifest |
+| `POST /api/registry/publish` | Publish: `{"pipeline": "name", "version": "", "by": "..."}`, `{"plugin": "name", "version": "", "by": "..."}` or `{"knowledge_base": "name", "description": "...", "version": "", "by": "..."}` (exactly one type); returns 201 with the manifest |
+
+Plugin nodes retain their `type: plugin:<name>` in definitions and execution
+history. Pipeline node views include `plugin` metadata (name, description,
+language, entry, timeout, exit codes and folder digest), alongside the effective
+code fields. Registry inspection replaces binary/large file contents with
+preview notices; verification still covers all bytes. Install results may
+include `removed`, listing obsolete tracked plugin files deleted on upgrade.

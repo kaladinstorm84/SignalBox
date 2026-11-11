@@ -26,6 +26,8 @@ func TestRegistryCommands(t *testing.T) {
 	write(publisher, "signalbox.yaml", cfg)
 	write(publisher, "pipelines/notes.yaml", "name: notes\ndescription: Release notes\nentry: a\nagents:\n  - id: a\n    runtime: mock\n")
 	write(publisher, "knowledge-bases/handbook/guide.md", "Shared reference text")
+	write(publisher, "plugins/example/plugin.yaml", "language: python\nentry: main.py\n")
+	write(publisher, "plugins/example/main.py", "print('ok')\n")
 	write(consumer, "signalbox.yaml", "version: 1\nruntimes:\n  mock: {type: mock}\n")
 
 	run := func(args ...string) string {
@@ -65,6 +67,12 @@ func TestRegistryCommands(t *testing.T) {
 	if out := run("show", "handbook"); !strings.Contains(out, "Kind: knowledge") || !strings.Contains(out, "guide.md") {
 		t.Fatalf("show knowledge: %s", out)
 	}
+	if out := run("publish-plugin", "example"); !strings.Contains(out, "published example@0.1.0") {
+		t.Fatalf("publish plugin: %s", out)
+	}
+	if out := run("show", "example"); !strings.Contains(out, "Kind: plugin") || !strings.Contains(out, "plugin.yaml") {
+		t.Fatalf("show plugin: %s", out)
+	}
 
 	// The consumer has no registry configured, so it passes --registry.
 	t.Chdir(consumer)
@@ -86,5 +94,8 @@ func TestRegistryCommands(t *testing.T) {
 	}
 	if data, err := os.ReadFile(filepath.Join(consumer, "knowledge-bases", "handbook", "guide.md")); err != nil || string(data) != "Shared reference text" {
 		t.Fatalf("installed knowledge = %q, %v", data, err)
+	}
+	if out := run("install", "example", "--registry", registryDir); !strings.Contains(out, "plugins/example/main.py") {
+		t.Fatalf("install plugin: %s", out)
 	}
 }

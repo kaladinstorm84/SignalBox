@@ -1,12 +1,15 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"unicode/utf8"
 
 	"github.com/kaladinstorm84/SignalBox/internal/config"
+	"github.com/kaladinstorm84/SignalBox/internal/plugin"
 	"github.com/kaladinstorm84/SignalBox/internal/registry"
 )
 
@@ -42,12 +45,18 @@ func (s *Server) handleRegistry(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("listing publishable knowledge bases: %w", err))
 		return
 	}
+	plugins, err := plugin.List(cfg.Root)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("listing publishable plugins: %w", err))
+		return
+	}
 	resp := map[string]any{
 		"configured":            cfg.Registry.Path != "",
 		"path":                  cfg.RegistryPath(),
 		"installed":             lock.Packages,
 		"publishable":           publishable,
 		"publishable_knowledge": knowledge,
+		"publishable_plugins":   plugins,
 		"packages":              []registry.Summary{},
 	}
 	if publishErr != nil {
@@ -98,7 +107,13 @@ func (s *Server) handleRegistryPackage(w http.ResponseWriter, r *http.Request) {
 			verifyErr = err.Error()
 			continue
 		}
-		files[f.Path] = string(data)
+		if !utf8.Valid(data) || bytes.ContainsRune(data, '\x00') {
+			files[f.Path] = fmt.Sprintf("[Binary file: %d bytes; included in package and integrity verification]", len(data))
+		} else if len(data) > 256<<10 {
+			files[f.Path] = fmt.Sprintf("[File too large to preview: %d bytes; included in package and integrity verification]", len(data))
+		} else {
+			files[f.Path] = string(data)
+		}
 	}
 	if verifyErr == "" {
 		if _, err := reg.Verify(m); err != nil {
@@ -139,7 +154,7 @@ func (s *Server) handleRegistryInstall(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, err)
 		return
 	}
-	if result.Manifest.PackageKind() == registry.KindPipeline {
+	if result.Manifest.PackageKind() == registry.KindPipeline || result.Manifest.PackageKind() == registry.KindPlugin {
 		if err := s.refreshPipelines(); err != nil {
 			writeErr(w, http.StatusInternalServerError, fmt.Errorf("installed, but reloading pipelines failed: %w", err))
 			return
@@ -157,13 +172,24 @@ func (s *Server) handleRegistryPublish(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Pipeline      string `json:"pipeline"`
 		KnowledgeBase string `json:"knowledge_base"`
+		Plugin        string `json:"plugin"`
 		Description   string `json:"description"`
 		Version       string `json:"version"`
 		By            string `json:"by"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || (req.Pipeline == "") == (req.KnowledgeBase == "") {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("exactly one of pipeline or knowledge_base is required"))
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid publish request: %w", err))
+		return
+	}
+	selections := 0
+	for _, name := range []string{req.Pipeline, req.KnowledgeBase, req.Plugin} {
+		if name != "" {
+			selections++
+		}
+	}
+	if selections != 1 {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("exactly one of pipeline, knowledge_base or plugin is required"))
 		return
 	}
 	s.settingsMu.Lock()
@@ -175,7 +201,9 @@ func (s *Server) handleRegistryPublish(w http.ResponseWriter, r *http.Request) {
 	}
 	opts := registry.PublishOptions{Version: req.Version, By: req.By}
 	var m *registry.Manifest
-	if req.KnowledgeBase != "" {
+	if req.Plugin != "" {
+		m, err = reg.PublishPlugin(cfg, req.Plugin, opts)
+	} else if req.KnowledgeBase != "" {
 		m, err = reg.PublishKnowledge(cfg, req.KnowledgeBase, req.Description, opts)
 	} else {
 		m, err = reg.Publish(cfg, req.Pipeline, opts)

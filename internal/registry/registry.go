@@ -24,6 +24,7 @@ import (
 
 	"github.com/kaladinstorm84/SignalBox/internal/config"
 	"github.com/kaladinstorm84/SignalBox/internal/pipeline"
+	"github.com/kaladinstorm84/SignalBox/internal/plugin"
 	"github.com/kaladinstorm84/SignalBox/internal/runtime"
 )
 
@@ -36,6 +37,7 @@ const LockFile = "signalbox.lock.json"
 const (
 	KindPipeline  = "pipeline"
 	KindKnowledge = "knowledge"
+	KindPlugin    = "plugin"
 )
 
 // Package names are directory names on whatever file share hosts the
@@ -242,7 +244,20 @@ func (r *Registry) ReadFile(m *Manifest, rel string) ([]byte, error) {
 		if err := safeRel(rel); err != nil {
 			return nil, fmt.Errorf("package %s@%s: %w", m.Name, m.Version, err)
 		}
-		data, err := os.ReadFile(filepath.Join(r.Dir, m.Name, m.Version, "files", filepath.FromSlash(rel)))
+		file := filepath.Join(r.Dir, m.Name, m.Version, "files", filepath.FromSlash(rel))
+		if strings.HasPrefix(rel, "plugins/") {
+			if err := plugin.CheckTarget(filepath.Join(r.Dir, m.Name, m.Version, "files"), rel); err != nil {
+				return nil, err
+			}
+			info, err := os.Stat(file)
+			if err != nil {
+				return nil, err
+			}
+			if !info.Mode().IsRegular() || info.Size() > plugin.MaxFileBytes {
+				return nil, fmt.Errorf("plugin file %q must be a regular file of at most %d bytes", rel, plugin.MaxFileBytes)
+			}
+		}
+		data, err := os.ReadFile(file)
 		if err != nil {
 			return nil, err
 		}
@@ -257,7 +272,10 @@ func (r *Registry) ReadFile(m *Manifest, rel string) ([]byte, error) {
 // Verify checks the schema, every file hash, and the digest, returning the
 // file contents by path.
 func (r *Registry) Verify(m *Manifest) (map[string][]byte, error) {
-	if m.PackageKind() != KindPipeline && m.PackageKind() != KindKnowledge {
+	if !ValidName(m.Name) || !pipeline.ValidVersion(m.Version) {
+		return nil, fmt.Errorf("invalid package reference %s@%s", m.Name, m.Version)
+	}
+	if m.PackageKind() != KindPipeline && m.PackageKind() != KindKnowledge && m.PackageKind() != KindPlugin {
 		return nil, fmt.Errorf("package %s@%s: unknown kind %q", m.Name, m.Version, m.Kind)
 	}
 	if m.SchemaVersion > pipeline.SchemaVersion {
@@ -267,11 +285,40 @@ func (r *Registry) Verify(m *Manifest) (map[string][]byte, error) {
 		return nil, fmt.Errorf("package %s@%s: manifest digest %s does not match its files (%s)", m.Name, m.Version, m.Digest, got)
 	}
 	contents := map[string][]byte{}
+	pluginCounts, pluginBytes := map[string]int{}, map[string]int{}
 	hasEntry := false
 	for _, f := range m.Files {
+		if _, duplicate := contents[f.Path]; duplicate {
+			return nil, fmt.Errorf("package %s@%s repeats file %q", m.Name, m.Version, f.Path)
+		}
+		isPluginFile := strings.HasPrefix(strings.ToLower(f.Path), "plugins/")
+		pluginName := ""
+		if isPluginFile {
+			parts := strings.SplitN(f.Path, "/", 3)
+			if len(parts) != 3 || parts[0] != "plugins" || !plugin.ValidName(parts[1]) || !plugin.ValidPath(parts[2]) {
+				return nil, fmt.Errorf("invalid plugin package path %q", f.Path)
+			}
+			pluginName = parts[1]
+			pluginCounts[pluginName]++
+			if pluginCounts[pluginName] > plugin.MaxFiles {
+				return nil, fmt.Errorf("plugin %q exceeds file count limit", pluginName)
+			}
+		}
+		if m.PackageKind() == KindPlugin && (!isPluginFile || pluginName != m.Name) {
+			return nil, fmt.Errorf("plugin package may only contain files in plugins/%s/", m.Name)
+		}
 		data, err := r.ReadFile(m, f.Path)
 		if err != nil {
 			return nil, err
+		}
+		if isPluginFile {
+			pluginBytes[pluginName] += len(data)
+			if pluginBytes[pluginName] > plugin.MaxPackageBytes {
+				return nil, fmt.Errorf("plugin %q exceeds package size limit", pluginName)
+			}
+			if int64(len(data)) != f.Size {
+				return nil, fmt.Errorf("plugin file %q size does not match manifest", f.Path)
+			}
 		}
 		contents[f.Path] = data
 		hasEntry = hasEntry || f.Path == m.Entry
@@ -283,6 +330,9 @@ func (r *Registry) Verify(m *Manifest) (map[string][]byte, error) {
 		if err := validateKnowledgePackage(m, contents); err != nil {
 			return nil, err
 		}
+	}
+	if err := validatePluginFolders(m, contents); err != nil {
+		return nil, err
 	}
 	return contents, nil
 }
@@ -352,7 +402,7 @@ func (r *Registry) Publish(cfg *config.Config, name string, opts PublishOptions)
 			return nil, err
 		}
 		if previous.PackageKind() != KindPipeline {
-			return nil, fmt.Errorf("package %q is already used by a knowledge base; choose a different name", name)
+			return nil, fmt.Errorf("package %q is already used by a %s; choose a different name", name, kindLabel(previous.PackageKind()))
 		}
 	}
 	if version == "" {
@@ -411,6 +461,15 @@ func (r *Registry) Publish(cfg *config.Config, name string, opts PublishOptions)
 			}
 			if err := add(abs, "code-source"); err != nil {
 				return nil, err
+			}
+		}
+		if n.Type.IsPlugin() {
+			_, files, err := plugin.Load(cfg.Root, n.Type.PluginName())
+			if err != nil {
+				return nil, err
+			}
+			for rel := range files {
+				rels[path.Join("plugins", n.Type.PluginName(), rel)] = true
 			}
 		}
 		for _, base := range n.KnowledgeBases {
@@ -525,6 +584,7 @@ type InstallResult struct {
 	Written  []string  `json:"written"`
 	Skipped  []string  `json:"unchanged"`
 	Replaced []string  `json:"replaced,omitempty"`
+	Removed  []string  `json:"removed,omitempty"`
 }
 
 // Install verifies a package and copies it into the project. Pipelines must
@@ -575,6 +635,11 @@ func (r *Registry) Install(cfg *config.Config, ref string, opts InstallOptions) 
 		}
 		if strings.HasPrefix(target, "knowledge-bases/") {
 			if err := checkKnowledgeTarget(root, target); err != nil {
+				return nil, err
+			}
+		}
+		if strings.HasPrefix(target, "plugins/") {
+			if err := plugin.CheckTarget(root, target); err != nil {
 				return nil, err
 			}
 		}
@@ -630,7 +695,11 @@ func (r *Registry) Install(cfg *config.Config, ref string, opts InstallOptions) 
 			installed[f.Path] = f.SHA256
 		}
 	}
-	result := &InstallResult{Manifest: m, Written: []string{}, Skipped: []string{}}
+	removed, err := pluginRemovals(root, name, targets, installed, lock, opts.Force)
+	if err != nil {
+		return nil, err
+	}
+	result := &InstallResult{Manifest: m, Written: []string{}, Skipped: []string{}, Removed: removed}
 	var conflicts []string
 	for _, rel := range sortedKeys(targets) {
 		target := targets[rel]
@@ -653,8 +722,21 @@ func (r *Registry) Install(cfg *config.Config, ref string, opts InstallOptions) 
 		return nil, fmt.Errorf("these files exist and differ from %s@%s: %s (pass --force to overwrite)", name, version, strings.Join(conflicts, ", "))
 	}
 	var lockFiles []File
+	for _, target := range removed {
+		if err := plugin.CheckTarget(root, target); err != nil {
+			return nil, err
+		}
+		if err := os.Remove(filepath.Join(root, filepath.FromSlash(target))); err != nil {
+			return nil, err
+		}
+	}
 	for _, rel := range sortedKeys(targets) {
 		target := targets[rel]
+		if strings.HasPrefix(target, "plugins/") {
+			if err := plugin.CheckTarget(root, target); err != nil {
+				return nil, err
+			}
+		}
 		dst := filepath.Join(root, filepath.FromSlash(target))
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return nil, err

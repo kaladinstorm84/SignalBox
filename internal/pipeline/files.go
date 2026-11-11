@@ -105,7 +105,7 @@ func validateNodeFiles(n *Node) error {
 	if n.Files == "" && n.FilesBudget == 0 {
 		return nil
 	}
-	switch n.Type {
+	switch n.Type.BaseType() {
 	case TypeStandard, TypeCode, TypeLLMGate:
 		switch n.Files {
 		case "", FilesNone, FilesInline, FilesPath:

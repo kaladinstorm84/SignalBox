@@ -51,7 +51,7 @@ func (n *Node) InvalidPolicy() string {
 	if n.Output.OnInvalid != "" {
 		return n.Output.OnInvalid
 	}
-	if n.Type == TypeCode {
+	if n.Type.BaseType() == TypeCode {
 		return OnInvalidFail
 	}
 	return OnInvalidRepair
@@ -121,7 +121,7 @@ func validateOutputSpec(n *Node) error {
 	if n.Output == nil {
 		return nil
 	}
-	switch n.Type {
+	switch n.Type.BaseType() {
 	case TypeStandard, TypeCode, TypeLLMGate:
 	default:
 		return fmt.Errorf("agent %q: output.schema is only supported on standard, code, and llm_gate nodes", n.ID)

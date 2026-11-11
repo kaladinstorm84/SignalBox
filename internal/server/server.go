@@ -23,6 +23,7 @@ import (
 	"github.com/kaladinstorm84/SignalBox/internal/config"
 	"github.com/kaladinstorm84/SignalBox/internal/engine"
 	"github.com/kaladinstorm84/SignalBox/internal/pipeline"
+	"github.com/kaladinstorm84/SignalBox/internal/plugin"
 	"github.com/kaladinstorm84/SignalBox/internal/watcher"
 	"github.com/yuin/goldmark"
 )
@@ -200,6 +201,7 @@ type paramView struct {
 }
 
 type nodeView struct {
+	Plugin          *plugin.Definition      `json:"plugin,omitempty"`
 	ID              string                  `json:"id"`
 	Type            string                  `json:"type"`
 	Description     string                  `json:"description,omitempty"`
@@ -275,6 +277,7 @@ func (s *Server) handlePipelines(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, n := range p.Nodes {
 			nv := nodeView{
+				Plugin:          n.Plugin,
 				ID:              n.ID,
 				Type:            string(n.Type),
 				Description:     n.Description,

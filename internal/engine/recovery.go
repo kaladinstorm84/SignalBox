@@ -196,7 +196,7 @@ func (eng *Engine) RestartFromInterrupted(execID, runID string) (string, error) 
 // restartableType reports whether interrupted runs of a node type can be
 // resumed in place by RestartFromInterrupted.
 func restartableType(t pipeline.NodeType) bool {
-	switch t {
+	switch t.BaseType() {
 	case pipeline.TypeStandard, pipeline.TypeCode, pipeline.TypeOpenSpec, pipeline.TypeLLMGate, pipeline.TypeSession, pipeline.TypePipeline:
 		return true
 	}

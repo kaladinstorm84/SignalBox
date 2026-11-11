@@ -13,7 +13,7 @@ import (
 // output worth offering as context. Approval and llm_gate runs pass their
 // input through unchanged, so they would only duplicate other entries.
 func contextSourceType(t pipeline.NodeType) bool {
-	switch t {
+	switch t.BaseType() {
 	case pipeline.TypeStandard, pipeline.TypeCode, pipeline.TypeOpenSpec, pipeline.TypeSession, pipeline.TypeOrchestrator, pipeline.TypeManualEdit:
 		return true
 	}

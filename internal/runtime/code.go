@@ -10,6 +10,7 @@ import (
 
 	"github.com/kaladinstorm84/SignalBox/internal/config"
 	"github.com/kaladinstorm84/SignalBox/internal/pipeline"
+	"github.com/kaladinstorm84/SignalBox/internal/plugin"
 )
 
 // CodeOutcomeError translates a configured script exit into engine routing:
@@ -62,6 +63,15 @@ func (c *codeRuntime) Invoke(ctx context.Context, req Request) (string, error) {
 // stdin, and optionally maps exits to outcomes. Scripts run as the host user,
 // not in a sandbox; construction checks the file but does not execute it.
 func NewCode(node *pipeline.Node, projectRoot string) (Runtime, error) {
+	if node.Type.IsPlugin() {
+		current, _, err := plugin.Load(projectRoot, node.Type.PluginName())
+		if err != nil {
+			return nil, err
+		}
+		if node.Plugin == nil || node.Plugin.Digest != current.Digest {
+			return nil, fmt.Errorf("plugin %q changed since the pipeline was loaded; reload before running", current.Name)
+		}
+	}
 	root, err := filepath.Abs(projectRoot)
 	if err != nil {
 		return nil, err
@@ -83,6 +93,10 @@ func NewCode(node *pipeline.Node, projectRoot string) (Runtime, error) {
 	case "python":
 		command = "python"
 		args = []string{"-X", "utf8", source}
+		if node.Type.IsPlugin() {
+			// Keep interpreter caches out of the versioned plugin folder.
+			args = []string{"-B", "-X", "utf8", source}
+		}
 	case "javascript":
 		command = "node"
 	case "powershell":

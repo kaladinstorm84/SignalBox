@@ -43,6 +43,7 @@ on your PATH, or to install without Go.
 | [File uploads](help/files.md) | Attachments, delivery modes and limits |
 | [Sessions and chunks](help/sessions.md) | Multi-agent discussion and consensus |
 | [Code steps](help/code-steps.md) | Deterministic local scripts |
+| [Script plugins](help/plugins.md) | Reusable script node types, packaged and shared through the registry |
 | [OpenSpec integration](help/openspec.md) | Specification-driven command nodes and approval-gated example |
 
 ### Run and manage
@@ -54,7 +55,7 @@ on your PATH, or to install without Go.
 | [Command line](help/command-line.md) | Launch, approve, reject and manage executions |
 | [Retries, context and recovery](help/execution.md) | Failure handling, context strategies and restart |
 | [Project configuration and watchers](help/configuration.md) | Project settings and automatic triggers |
-| [Pipeline and knowledge registry](help/registry.md) | Publish, install and track versioned packages |
+| [Pipeline, plugin and knowledge registry](help/registry.md) | Publish, install and track versioned packages |
 
 ### Integrate and develop
 

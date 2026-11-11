@@ -14,6 +14,7 @@
 | `llm_gate` | An automated quality gate. It evaluates its input with the configured runtime and records an approve/reject decision and feedback separately from human approvals. Rejected work can be sent to `reject-to` for a bounded number of reworks. |
 | `manual_edit` | Pauses for a person to edit the incoming payload in the web UI or terminal, then hands the edited text downstream. |
 | `code` | Executes a local script with its input on stdin, then hands stdout to downstream nodes. No AI runtime is required. |
+| `plugin:<name>` | Runs a reusable folder-backed script with code-node semantics. Share it through the registry; see [Script plugins](plugins.md). |
 | `openspec` | Runs an OpenSpec CLI command in the project directory and hands stdout downstream. No AI runtime is required. See [OpenSpec integration](openspec.md#openspec-integration). |
 | `session` | A multi-round discussion between participant agents. Participants take turns, each seeing the transcript, until they reach consensus or the round limit. See [Sessions and chunks](sessions.md#sessions-and-chunks). |
 | `pipeline` | Runs another pipeline (or a section of it) by name as a linked child execution and hands off its final output. See [Pipeline chaining](pipeline-chaining.md#pipeline-chaining). |

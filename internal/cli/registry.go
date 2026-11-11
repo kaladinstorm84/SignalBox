@@ -18,13 +18,14 @@ const registryUsage = `Usage:
   signalbox registry show <name[@version]> [--file path]
   signalbox registry publish <pipeline> [--version x.y.z] [--by name]
   signalbox registry publish-knowledge <base> [--version x.y.z] [--description text] [--by name]
+  signalbox registry publish-plugin <name> [--version x.y.z] [--by name]
   signalbox registry install <name[@version]> [--digest sha256:...] [--force]
   signalbox registry installed
 
 Flags:
   --registry path    Registry directory (default: registry.path in signalbox.yaml)
 
-The registry shares pipeline and knowledge-base packages through a directory
+The registry shares pipeline, plugin and knowledge-base packages through a directory
 or file share. Published versions are immutable; installs verify every file's
 sha256 and the package digest, validate pipelines against this project's
 runtimes, and record the result in
@@ -139,7 +140,7 @@ func cmdRegistry(args []string, out io.Writer) error {
 		for _, f := range m.Files {
 			fmt.Fprintf(out, "  %s  %6d  %s\n", f.SHA256[:12], f.Size, f.Path)
 		}
-	case "publish", "publish-knowledge":
+	case "publish", "publish-knowledge", "publish-plugin":
 		if err := need(1, sub+" <name> [--version x.y.z]"); err != nil {
 			return err
 		}
@@ -149,7 +150,9 @@ func cmdRegistry(args []string, out io.Writer) error {
 		}
 		opts := registry.PublishOptions{Version: a.value("version"), By: by}
 		var m *registry.Manifest
-		if sub == "publish-knowledge" {
+		if sub == "publish-plugin" {
+			m, err = reg.PublishPlugin(cfg, rest[0], opts)
+		} else if sub == "publish-knowledge" {
 			m, err = reg.PublishKnowledge(cfg, rest[0], a.value("description"), opts)
 		} else {
 			m, err = reg.Publish(cfg, rest[0], opts)
@@ -173,6 +176,9 @@ func cmdRegistry(args []string, out io.Writer) error {
 		}
 		for _, f := range result.Replaced {
 			fmt.Fprintf(out, "  replaced  %s\n", f)
+		}
+		for _, f := range result.Removed {
+			fmt.Fprintf(out, "  removed   %s\n", f)
 		}
 		for _, f := range result.Skipped {
 			fmt.Fprintf(out, "  unchanged %s\n", f)
