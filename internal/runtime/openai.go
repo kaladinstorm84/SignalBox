@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -21,6 +22,7 @@ type openAI struct {
 	model   string
 	baseURL string
 	keyEnv  string
+	timeout time.Duration
 	client  *http.Client
 }
 
@@ -46,7 +48,8 @@ func newOpenAI(name string, rc config.RuntimeConfig) (Runtime, error) {
 		model:   rc.Model,
 		baseURL: strings.TrimRight(baseURL, "/"),
 		keyEnv:  keyEnv,
-		client:  &http.Client{Timeout: timeout},
+		timeout: timeout,
+		client:  &http.Client{},
 	}, nil
 }
 
@@ -58,6 +61,7 @@ type chatRequest struct {
 	ResponseFormat  *responseFormat `json:"response_format,omitempty"`
 	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
 	ServiceTier     string          `json:"service_tier,omitempty"`
+	Stream          bool            `json:"stream,omitempty"`
 }
 
 type responseFormat struct {
@@ -86,6 +90,14 @@ type chatResponse struct {
 }
 
 func (o *openAI) Invoke(ctx context.Context, req Request) (string, error) {
+	return o.invoke(ctx, req, nil, false)
+}
+
+func (o *openAI) InvokeStream(ctx context.Context, req Request, onOutput func(string)) (string, error) {
+	return o.invoke(ctx, req, onOutput, true)
+}
+
+func (o *openAI) invoke(ctx context.Context, req Request, onOutput func(string), stream bool) (string, error) {
 	options, err := requestOptions(o.options, req)
 	if err != nil {
 		return "", err
@@ -110,7 +122,14 @@ func (o *openAI) Invoke(ctx context.Context, req Request) (string, error) {
 	} else if options.Speed == "standard" {
 		tier = "default"
 	}
-	body, err := json.Marshal(chatRequest{Model: model, Messages: messages, ResponseFormat: responseFormatFor(req), ReasoningEffort: options.ReasoningEffort, ServiceTier: tier})
+	timeout, err := invocationTimeout(o.timeout, req.TimeoutSeconds)
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	body, err := json.Marshal(chatRequest{Model: model, Messages: messages, ResponseFormat: responseFormatFor(req), ReasoningEffort: options.ReasoningEffort, ServiceTier: tier, Stream: stream})
 	if err != nil {
 		return "", err
 	}
@@ -126,25 +145,127 @@ func (o *openAI) Invoke(ctx context.Context, req Request) (string, error) {
 		return "", fmt.Errorf("request to %s failed: %w", o.baseURL, err)
 	}
 	defer resp.Body.Close()
+	if stream {
+		if resp.StatusCode != http.StatusOK {
+			respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+			if readErr != nil {
+				return "", readErr
+			}
+			return "", fmt.Errorf("API returned HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 500))
+		}
+		if !strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+			respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+			if readErr != nil {
+				return "", readErr
+			}
+			return parseChatResponse(respBody, onOutput, resp.StatusCode)
+		}
+		return readChatStream(resp.Body, onOutput)
+	}
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
 		return "", err
 	}
 
-	var parsed chatResponse
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return "", fmt.Errorf("unexpected response (HTTP %d): %s", resp.StatusCode, truncate(string(respBody), 500))
-	}
-	if parsed.Error != nil {
-		return "", fmt.Errorf("API error (HTTP %d): %s", resp.StatusCode, parsed.Error.Message)
-	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("API returned HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 500))
+	}
+	return parseChatResponse(respBody, nil, resp.StatusCode)
+}
+
+func parseChatResponse(body []byte, onOutput func(string), statusCode int) (string, error) {
+	var parsed chatResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", fmt.Errorf("unexpected response (HTTP %d): %s", statusCode, truncate(string(body), 500))
+	}
+	if parsed.Error != nil {
+		return "", fmt.Errorf("API error (HTTP %d): %s", statusCode, parsed.Error.Message)
+	}
+	if statusCode != http.StatusOK {
+		return "", fmt.Errorf("API returned HTTP %d: %s", statusCode, truncate(string(body), 500))
 	}
 	if len(parsed.Choices) == 0 {
 		return "", fmt.Errorf("API returned no choices")
 	}
-	return strings.TrimSpace(parsed.Choices[0].Message.Content), nil
+	output := strings.TrimSpace(parsed.Choices[0].Message.Content)
+	if output != "" && onOutput != nil {
+		onOutput(output)
+	}
+	return output, nil
+}
+
+type chatStreamResponse struct {
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+	} `json:"choices"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+func readChatStream(body io.Reader, onOutput func(string)) (string, error) {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 64*1024), 10<<20)
+	var output strings.Builder
+	var data strings.Builder
+	flush := func() (bool, error) {
+		payload := strings.TrimSpace(data.String())
+		data.Reset()
+		if payload == "" {
+			return false, nil
+		}
+		if payload == "[DONE]" {
+			return true, nil
+		}
+		var event chatStreamResponse
+		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+			return false, fmt.Errorf("invalid streamed API response: %w", err)
+		}
+		if event.Error != nil {
+			return false, fmt.Errorf("API stream error: %s", event.Error.Message)
+		}
+		for _, choice := range event.Choices {
+			if choice.Delta.Content == "" {
+				continue
+			}
+			output.WriteString(choice.Delta.Content)
+			if onOutput != nil {
+				onOutput(choice.Delta.Content)
+			}
+		}
+		return false, nil
+	}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			done, err := flush()
+			if err != nil {
+				return "", err
+			}
+			if done {
+				break
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "data:") {
+			if data.Len() > 0 {
+				data.WriteByte('\n')
+			}
+			data.WriteString(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("reading streamed API response: %w", err)
+	}
+	if data.Len() > 0 {
+		if _, err := flush(); err != nil {
+			return "", err
+		}
+	}
+	return strings.TrimSpace(output.String()), nil
 }
 
 // responseFormatFor requests native structured output. Strict mode is off

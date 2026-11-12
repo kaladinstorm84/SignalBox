@@ -173,6 +173,45 @@ agents:
 	}
 }
 
+func TestPerAgentTimeoutValidation(t *testing.T) {
+	valid := "name: p\nagents:\n  - id: worker\n    runtime: mock\n    timeout_seconds: 30\n"
+	p, err := Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Node("worker").TimeoutSeconds != 30 {
+		t.Fatalf("timeout_seconds = %d, want 30", p.Node("worker").TimeoutSeconds)
+	}
+
+	for _, test := range []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "negative",
+			yaml: strings.Replace(valid, "timeout_seconds: 30", "timeout_seconds: -1", 1),
+			want: "must not be negative",
+		},
+		{
+			name: "too large",
+			yaml: strings.Replace(valid, "timeout_seconds: 30", "timeout_seconds: 9223372037", 1),
+			want: "too large",
+		},
+		{
+			name: "approval",
+			yaml: "name: p\nagents:\n  - id: review\n    type: approval\n    timeout_seconds: 30\n",
+			want: "only supported on",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := Parse([]byte(test.yaml)); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestParseValidPipeline(t *testing.T) {
 	p, err := Parse([]byte(`
 name: demo

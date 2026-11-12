@@ -55,6 +55,76 @@ func waitDone(t *testing.T, eng *Engine, id string) *Execution {
 	return exec
 }
 
+func TestStageStoresStreamedOutputAndAgentTimeout(t *testing.T) {
+	definition := `
+name: p
+entry: intake
+agents:
+  - id: intake
+    runtime: stream
+    handoff: [coordinator]
+  - id: coordinator
+    type: orchestrator
+    stages:
+      - id: draft
+        agents: [writer]
+  - id: writer
+    runtime: stream
+    timeout_seconds: 17
+    prompt: Write the article.
+`
+	p, err := pipeline.Parse([]byte(definition))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := runtime.NewRegistry(map[string]config.RuntimeConfig{"stream": {Type: "mock"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var timeoutSeconds int
+	registry.Register(&runtime.Mock{
+		RuntimeName: "stream",
+		Handler: func(_ context.Context, req runtime.Request) (string, error) {
+			timeoutSeconds = req.TimeoutSeconds
+			return "article text", nil
+		},
+	})
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	eng, err := NewWithLimit(map[string]*pipeline.Pipeline{"p": p}, registry, store, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := eng.Start("p", "write a technical article")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	waitDone(t, eng, id)
+	execution, err := store.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intake := findRun(t, execution, "intake")
+	if len(intake.Logs) != 1 || intake.Logs[0].Text != "article text" {
+		t.Fatalf("run logs = %+v", intake.Logs)
+	}
+	coordinator := findRun(t, execution, "coordinator")
+	if len(coordinator.Stages) != 1 || len(coordinator.Stages[0].Logs) != 1 {
+		t.Fatalf("stage logs = %+v", coordinator.Stages)
+	}
+	log := coordinator.Stages[0].Logs[0]
+	if log.NodeID != "writer" || log.Text != "article text" || log.Attempt != 1 {
+		t.Fatalf("stage log = %+v", log)
+	}
+	if timeoutSeconds != 17 {
+		t.Fatalf("timeout_seconds = %d, want 17", timeoutSeconds)
+	}
+}
+
 func TestCodeStepReceivesDataRetriesAndHandsOffInsideStage(t *testing.T) {
 	if _, err := exec.LookPath("python"); err != nil {
 		t.Skip("Python is required for this integration test")

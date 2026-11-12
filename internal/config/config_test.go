@@ -34,6 +34,8 @@ func TestRuntimeCallOptions(t *testing.T) {
 		"type: cli\n    command: bot\n    speed_arg: '--speed extra'",
 		"type: codex\n    reasoning_effort_arg: --effort",
 		"type: codex\n    model: '--bad flag'",
+		"type: codex\n    timeout_seconds: -1",
+		"type: codex\n    timeout_seconds: 9223372037",
 	} {
 		if _, err := Parse([]byte("version: 1\nruntimes:\n  ai:\n    "+settings+"\n"), "."); err == nil {
 			t.Fatalf("accepted invalid settings: %s", settings)

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/kaladinstorm84/SignalBox/internal/config"
 	"github.com/kaladinstorm84/SignalBox/internal/schema"
@@ -98,5 +100,61 @@ func TestOpenAIRuntimeCallOptions(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestOpenAIStreamsOutput(t *testing.T) {
+	t.Setenv("SB_TEST_KEY", "k")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if body["stream"] != true {
+			t.Errorf("stream = %v, want true", body["stream"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		for _, data := range []string{
+			`{"choices":[{"delta":{"content":"Hello "}}]}`,
+			`{"choices":[{"delta":{"content":"world"}}]}`,
+			"[DONE]",
+		} {
+			_, _ = w.Write([]byte("data: " + data + "\n\n"))
+			flusher.Flush()
+		}
+	}))
+	defer srv.Close()
+
+	rt, err := newOpenAI("o", config.RuntimeConfig{Model: "m", BaseURL: srv.URL, APIKeyEnv: "SB_TEST_KEY"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var chunks strings.Builder
+	out, err := rt.(StreamingRuntime).InvokeStream(context.Background(), Request{Input: "x"}, func(chunk string) {
+		chunks.WriteString(chunk)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "Hello world" || chunks.String() != out {
+		t.Fatalf("output = %q, streamed = %q", out, chunks.String())
+	}
+}
+
+func TestOpenAIPerRequestTimeout(t *testing.T) {
+	t.Setenv("SB_TEST_KEY", "k")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(1500 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"late"}}]}`))
+	}))
+	defer srv.Close()
+	rt, err := newOpenAI("o", config.RuntimeConfig{Model: "m", BaseURL: srv.URL, APIKeyEnv: "SB_TEST_KEY"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = rt.Invoke(context.Background(), Request{Input: "x", TimeoutSeconds: 1})
+	if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("error = %v, want request timeout", err)
 	}
 }

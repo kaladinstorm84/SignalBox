@@ -6,6 +6,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/kaladinstorm84/SignalBox/internal/config"
 	"github.com/kaladinstorm84/SignalBox/internal/pipeline"
@@ -18,6 +19,8 @@ type Request struct {
 	SystemPrompt string
 	// Input is the handoff payload (initial input or upstream output).
 	Input string
+	// TimeoutSeconds overrides the runtime's configured timeout when positive.
+	TimeoutSeconds int
 	// Model overrides the runtime's default model when set.
 	Model           string
 	ReasoningEffort string
@@ -51,6 +54,25 @@ type MCPGrant struct {
 type Runtime interface {
 	Name() string
 	Invoke(ctx context.Context, req Request) (string, error)
+}
+
+// StreamingRuntime optionally emits visible generated output as it arrives.
+// Implementations must not expose private reasoning or chain-of-thought.
+type StreamingRuntime interface {
+	InvokeStream(ctx context.Context, req Request, onOutput func(string)) (string, error)
+}
+
+func invocationTimeout(defaultTimeout time.Duration, overrideSeconds int) (time.Duration, error) {
+	if overrideSeconds < 0 {
+		return 0, fmt.Errorf("timeout_seconds must not be negative")
+	}
+	if overrideSeconds == 0 {
+		return defaultTimeout, nil
+	}
+	if int64(overrideSeconds) > int64((1<<63-1)/int64(time.Second)) {
+		return 0, fmt.Errorf("timeout_seconds is too large")
+	}
+	return time.Duration(overrideSeconds) * time.Second, nil
 }
 
 // Registry maps runtime names from signalbox.yaml to implementations.

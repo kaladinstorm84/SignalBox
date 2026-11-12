@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -144,6 +145,14 @@ func newCLI(name string, rc config.RuntimeConfig) (Runtime, error) {
 func (c *cliRuntime) Name() string { return c.name }
 
 func (c *cliRuntime) Invoke(ctx context.Context, req Request) (string, error) {
+	return c.invoke(ctx, req, nil)
+}
+
+func (c *cliRuntime) InvokeStream(ctx context.Context, req Request, onOutput func(string)) (string, error) {
+	return c.invoke(ctx, req, onOutput)
+}
+
+func (c *cliRuntime) invoke(ctx context.Context, req Request, onOutput func(string)) (string, error) {
 	prompt := req.Input
 	if req.SystemPrompt != "" {
 		prompt = req.SystemPrompt + "\n\n---\n\n" + req.Input
@@ -164,10 +173,27 @@ func (c *cliRuntime) Invoke(ctx context.Context, req Request) (string, error) {
 	extra = append(extra, filesExtra...)
 	env = append(env, filesEnv...)
 
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	timeout, err := invocationTimeout(c.timeout, req.TimeoutSeconds)
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	args := c.baseArgs(extra)
+	codexStream := c.kind == "codex" && onOutput != nil
+	if codexStream {
+		hasJSON := false
+		for _, arg := range args {
+			if arg == "--json" {
+				hasJSON = true
+				break
+			}
+		}
+		if !hasJSON {
+			args = append(args, "--json")
+		}
+	}
 	var stdin *bytes.Reader
 	switch {
 	case c.commandOnly:
@@ -200,12 +226,25 @@ func (c *cliRuntime) Invoke(ctx context.Context, req Request) (string, error) {
 		cmd.Stdin = stdin
 	}
 	var stdout, stderr bytes.Buffer
+	var events *codexOutputWriter
 	cmd.Stdout = &stdout
+	if codexStream {
+		events = newCodexOutputWriter(onOutput)
+		cmd.Stdout = events
+	} else if onOutput != nil {
+		cmd.Stdout = io.MultiWriter(&stdout, outputWriter{write: onOutput})
+	}
 	cmd.Stderr = &stderr
 
-	if err := cmd.Run(); err != nil {
+	runErr := cmd.Run()
+	if events != nil {
+		if err := events.finish(); err != nil && ctx.Err() == nil {
+			return "", fmt.Errorf("reading Codex events: %w", err)
+		}
+	}
+	if err := runErr; err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("%s timed out after %s", c.command, c.timeout)
+			return "", fmt.Errorf("%s timed out after %s", c.command, timeout)
 		}
 		detail := strings.TrimSpace(stderr.String())
 		if detail == "" {
@@ -221,7 +260,19 @@ func (c *cliRuntime) Invoke(ctx context.Context, req Request) (string, error) {
 		}
 		return "", failure
 	}
+	if events != nil {
+		return strings.TrimSpace(events.output), nil
+	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+type outputWriter struct {
+	write func(string)
+}
+
+func (w outputWriter) Write(p []byte) (int, error) {
+	w.write(string(p))
+	return len(p), nil
 }
 
 // argLength estimates the command-line length of an argument, counting the

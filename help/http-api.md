@@ -10,6 +10,7 @@
 | `GET /api/dashboard?range=7d&pipeline=default` | Global live counts and recent history, plus filtered `analytics`; `range` is `24h`, `7d` (default), `30d`, or `all`; omit `pipeline` for all pipelines. Invalid ranges return 400. Responses are not cached. |
 | `GET /api/dashboard/active` | Unfiltered `in_progress` count and up to eight newest active top-level executions in `active`. Avoids loading retained history and analytics. Responses are not cached. |
 | `GET /api/pipelines` | Loaded pipeline definitions, including `params`, imported `sources`, optional `registry_sources` (package, kind, installed version), `input_schema`, `files` (the upload declaration), and each agent's `model`, `mcp`, `knowledge_bases`, `output` contract (`schema`, `on_invalid`, `max_repairs`) and `files`/`files_budget` |
+| `GET /api/pipelines/{name}/export?format=python` | Download a standalone Python runner for the saved pipeline; defaults to Python. Returns an attachment, 404 for unknown pipelines, or 400 for unsupported workflow features/formats. See [Python export](command-line.md#export-a-standalone-python-runner) for supported semantics and prerequisites. |
 | `GET /api/schemas` | Project schema files: `dir`, `schemas` (`name`, `file`, `schema`, `used_by`), and load `errors` |
 | `GET /api/knowledge-bases` | Project knowledge base names, document names/sizes, and optional `registry_sources` (package, kind, installed version), including sources bundled with pipelines |
 | `POST /api/knowledge-bases` | Create a base: `{"name": "product-handbook"}` |

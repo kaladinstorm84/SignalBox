@@ -714,8 +714,20 @@ func (p *Pipeline) validateNode(n *Node) error {
 	if n.Type.BaseType() != TypeCode && (n.Language != "" || n.CodeSource != "" || n.Codes != nil) {
 		return fmt.Errorf("agent %q: language, code-source, and codes are only supported on code nodes", n.ID)
 	}
-	if n.TimeoutSeconds != 0 && n.Type.BaseType() != TypeCode && n.Type != TypeOpenSpec {
-		return fmt.Errorf("agent %q: timeout_seconds is only supported on code and openspec nodes", n.ID)
+	if n.TimeoutSeconds < 0 {
+		return fmt.Errorf("agent %q: timeout_seconds must not be negative", n.ID)
+	}
+	if int64(n.TimeoutSeconds) > int64((1<<63-1)/int64(time.Second)) {
+		return fmt.Errorf("agent %q: timeout_seconds is too large", n.ID)
+	}
+	if n.TimeoutSeconds > 0 {
+		switch n.Type.BaseType() {
+		case TypeStandard, TypeLLMGate, TypeOrchestrator, TypeCode:
+		default:
+			if n.Type != TypeOpenSpec {
+				return fmt.Errorf("agent %q: timeout_seconds is only supported on standard, llm_gate, orchestrator, code, and openspec nodes", n.ID)
+			}
+		}
 	}
 	if n.OpenSpec != nil && n.Type != TypeOpenSpec {
 		return fmt.Errorf("agent %q: openspec is only supported on openspec nodes", n.ID)

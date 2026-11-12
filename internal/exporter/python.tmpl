@@ -1,0 +1,539 @@
+#!/usr/bin/env python3
+"""Standalone SignalBox pipeline snapshot. Requires Python 3.10+ and its agent CLIs."""
+
+import argparse
+import base64
+import codecs
+import contextlib
+import hashlib
+import json
+import os
+from pathlib import Path
+import queue
+import re
+import signal
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+
+SPEC_JSON = base64.b64decode("__SIGNALBOX_SPEC__")
+SPEC = json.loads(SPEC_JSON)
+FINGERPRINT = hashlib.sha256(SPEC_JSON).hexdigest()
+PARAM_REF = re.compile(r"\$\{\{\s*params\.([^}\s]*)\s*\}\}")
+GATE_INSTRUCTIONS = (
+    "\n\nReturn only one JSON object with exactly two string fields, decision and feedback. "
+    'decision must be "approve" or "reject". Example: {"decision":"approve","feedback":"..."}.'
+)
+
+
+def resolve_params(supplied):
+    declarations = SPEC["params"] or {}
+    values = {}
+    for pair in supplied:
+        name, separator, value = pair.partition("=")
+        if not separator or not name:
+            raise ValueError("--param requires name=value")
+        if name not in declarations:
+            raise ValueError(f"unknown parameter {name!r}")
+        if name in values:
+            raise ValueError(f"parameter {name!r} supplied more than once")
+        values[name] = value
+    for name, declaration in declarations.items():
+        value = values.get(name, declaration.get("default", ""))
+        if declaration.get("required") and not value.strip():
+            raise ValueError(f"missing required parameter {name!r}")
+        if len(value.encode("utf-8")) > 10000:
+            raise ValueError(f"parameter {name!r} exceeds 10000 bytes")
+        kind = declaration["type"]
+        if value:
+            if kind == "integer":
+                if not re.fullmatch(r"[+-]?[0-9]+", value.strip()):
+                    raise ValueError(f"parameter {name!r} must be an integer")
+                if not -(2**63) <= int(value) < 2**63:
+                    raise ValueError(f"parameter {name!r} is outside the 64-bit integer range")
+            elif kind == "number":
+                try:
+                    float(value.strip())
+                except ValueError as error:
+                    raise ValueError(f"parameter {name!r} must be a number") from error
+            elif kind == "boolean" and value not in ("true", "false"):
+                raise ValueError(f"parameter {name!r} must be true or false")
+            if declaration.get("values") and value not in declaration["values"]:
+                raise ValueError(f"parameter {name!r} must be one of {declaration['values']}")
+        values[name] = value
+    return values
+
+
+def substitute(text, params):
+    return PARAM_REF.sub(lambda match: params[match.group(1)], text)
+
+
+def save_checkpoint(path, state):
+    fd, temporary = tempfile.mkstemp(prefix=".checkpoint-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as output:
+            json.dump(state, output, ensure_ascii=False, indent=2)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        for attempt in range(6):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError as error:
+                # Windows scanners/readers can briefly block replacement.
+                if os.name != "nt" or error.winerror not in (5, 32, 33) or attempt == 5:
+                    raise
+                if attempt == 0:
+                    print("warning: checkpoint replacement is temporarily blocked; retrying", file=sys.stderr)
+                time.sleep(0.05 * 2**attempt)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+@contextlib.contextmanager
+def run_lock(directory):
+    with (directory / "run.lock").open("a+b") as lock:
+        lock.seek(0, os.SEEK_END)
+        if lock.tell() == 0:
+            lock.write(b"\0")
+            lock.flush()
+        lock.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            raise RuntimeError(f"cannot lock {directory}; another runner may be active: {error}") from error
+        yield
+
+
+class CodexEvents:
+    def __init__(self, emit):
+        self.emit = emit
+        self.pending = ""
+        self.messages = {}
+        self.output = None
+        self.completed = False
+
+    def write(self, text):
+        self.pending += text
+        while "\n" in self.pending:
+            line, self.pending = self.pending.split("\n", 1)
+            self.consume(line)
+
+    def consume(self, line):
+        if not line.strip():
+            return
+        try:
+            event = json.loads(line)
+        except ValueError as error:
+            raise RuntimeError(f"invalid Codex JSON event: {error}") from error
+        if not isinstance(event, dict):
+            raise RuntimeError("Codex event must be a JSON object")
+        kind = event.get("type")
+        if kind == "thread.started":
+            self.emit("[Codex session started]\n")
+        elif kind == "turn.started":
+            self.emit("[Codex working]\n")
+        elif kind == "turn.completed":
+            self.completed = True
+            self.emit("[Codex turn completed]\n")
+        elif kind == "turn.failed":
+            raise RuntimeError(f"Codex turn failed: {event.get('error', {}).get('message', '')}")
+        elif kind == "error":
+            self.emit(f"[Codex error: {event.get('message', '')}]\n")
+        elif kind in ("item.started", "item.updated", "item.completed"):
+            item = event.get("item", {})
+            item_type = item.get("type")
+            if item_type == "agent_message":
+                text = item.get("text", "")
+                previous = self.messages.get(item.get("id"), "")
+                if text.startswith(previous):
+                    self.emit(text[len(previous):])
+                elif text != previous:
+                    self.emit("\n" + text)
+                self.messages[item.get("id")] = text
+                if kind == "item.completed":
+                    self.output = text
+                    self.emit("\n")
+            elif item_type in ("command_execution", "mcp_tool_call", "web_search", "file_change", "todo_list"):
+                if kind == "item.updated":
+                    return
+                label = item_type.replace("_", " ")
+                if item_type == "mcp_tool_call":
+                    label += f": {item.get('server', '')}.{item.get('tool', '')}"
+                status = (item.get("status") or "completed") if kind == "item.completed" else "started"
+                self.emit(f"[{label} {status}]\n")
+            elif item_type == "error":
+                self.emit(f"[Codex tool error: {item.get('message', '')}]\n")
+            # Reasoning items, tool arguments and command output are not logged.
+
+    def finish(self):
+        self.consume(self.pending)
+        if not self.completed or self.output is None:
+            raise RuntimeError("Codex stream ended without a completed turn and agent message")
+        return self.output.strip()
+
+
+def stop_process(process):
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        stopped = subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5,
+        )
+        if stopped.returncode and process.poll() is None:
+            process.kill()
+            print("warning: could not stop the entire CLI process tree", file=sys.stderr)
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    process.wait(timeout=5)
+
+
+def invoke(command, prompt, payload, workdir, emit):
+    combined = prompt + "\n\n---\n\n" + payload if prompt else payload
+    args = [command["command"]] + (command["args"] or [])
+    stdin_text = None
+    if command["prompt_mode"] == "stdin":
+        stdin_text = combined
+    elif len(combined.encode("utf-8")) + combined.count('"') + combined.count("\\") + 2 <= command["arg_limit"]:
+        args.append(combined)
+    elif command["stdin_args"] is not None:
+        args.extend(command["stdin_args"])
+        stdin_text = combined
+    else:
+        raise RuntimeError("prompt is too long for CLI arguments; configure prompt_mode: stdin before exporting")
+    options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
+    process = subprocess.Popen(
+        args, stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=workdir, bufsize=0, **options,
+    )
+    chunks = queue.Queue()
+
+    def read_stream(stream, name):
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        try:
+            while True:
+                data = stream.read(4096)
+                if not data:
+                    break
+                chunks.put((name, decoder.decode(data)))
+            chunks.put((name, decoder.decode(b"", final=True)))
+        except OSError as error:
+            chunks.put(("failure", f"reading CLI {name}: {error}"))
+        finally:
+            chunks.put((name, None))
+
+    def feed_input():
+        try:
+            data = stdin_text.encode("utf-8")
+            while data:
+                written = process.stdin.write(data)
+                if not written:
+                    raise OSError("CLI stdin closed before accepting the prompt")
+                data = data[written:]
+        except OSError as error:
+            chunks.put(("failure", f"writing CLI stdin: {error}"))
+        finally:
+            process.stdin.close()
+
+    readers = []
+    for stream, name in ((process.stdout, "stdout"), (process.stderr, "stderr")):
+        reader = threading.Thread(target=read_stream, args=(stream, name), daemon=True)
+        reader.start()
+        readers.append(reader)
+    feeder = None
+    if stdin_text is not None:
+        feeder = threading.Thread(target=feed_input, daemon=True)
+        feeder.start()
+    deadline = time.monotonic() + command["timeout_seconds"]
+    stdout, stderr = [], []
+    codex = CodexEvents(emit) if command["type"] == "codex" else None
+    open_streams = 2
+    try:
+        while open_streams or process.poll() is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(f"{command['command']} timed out after {command['timeout_seconds']:g}s")
+            try:
+                name, text = chunks.get(timeout=min(0.1, remaining))
+            except queue.Empty:
+                continue
+            if name == "failure":
+                raise RuntimeError(text)
+            if text is None:
+                open_streams -= 1
+            elif name == "stderr":
+                stderr.append(text)
+                if not codex:
+                    emit(text)
+            elif codex:
+                codex.write(text)
+            else:
+                stdout.append(text)
+                emit(text)
+        if feeder is not None:
+            feeder.join(timeout=max(0, deadline - time.monotonic()))
+            if feeder.is_alive():
+                raise RuntimeError("CLI did not consume its prompt before the timeout")
+        while not chunks.empty():
+            name, text = chunks.get_nowait()
+            if name == "failure":
+                raise RuntimeError(text)
+        if process.returncode:
+            detail = "".join(stderr).strip() or "".join(stdout).strip()
+            raise RuntimeError(f"{command['command']} exited with code {process.returncode}: {detail[:800]}")
+        return codex.finish() if codex else "".join(stdout).strip()
+    finally:
+        stop_process(process)
+        for stream in (process.stdout, process.stderr):
+            stream.close()
+        for reader in readers:
+            reader.join(timeout=1)
+
+
+def additional_input(node, payload, history):
+    for source in node["additional_input"] or []:
+        marker = f"--- additional input from {source} ---"
+        if marker in payload:
+            continue
+        prior = next((run for run in reversed(history) if run["node"] == source and run["status"] == "completed"), None)
+        if prior is None:
+            raise RuntimeError(f"missing additional input from {source!r}")
+        payload += ("\n\n" if payload else "") + marker + "\n" + prior["output"]
+    return payload
+
+
+def runtime_input(node, payload, history):
+    context = node["context"]
+    if not context or context["strategy"] == "none":
+        return payload
+    strategy = context["strategy"]
+    candidates = [
+        run for run in history
+        if run["status"] == "completed" and run["type"] == "standard" and run["output"]
+        and (strategy != "own" or run["node"] == node["id"])
+        and run["output"] not in payload
+    ]
+    available = len(candidates)
+    if context.get("window", 0):
+        candidates = candidates[-context["window"]:]
+    selected = []
+    remaining = context.get("max_chars", 0)
+    for run in reversed(candidates):
+        if context.get("max_chars", 0) and remaining <= 0:
+            break
+        text = run["output"]
+        if context.get("max_chars", 0):
+            text = text[:remaining]
+            remaining -= len(text)
+        label = f"--- context from {run['node']}"
+        if len(text) < len(run["output"]):
+            label += f" (truncated to {len(text)} of {len(run['output'])} characters)"
+            text += f"\n[... {len(run['output']) - len(text)} characters truncated]"
+        selected.append(label + " ---\n" + text)
+    if not selected:
+        return payload
+    text = f"--- context ({strategy}): {len(selected)} of {available} earlier outputs ---"
+    text += "\n\n" + "\n\n".join(reversed(selected))
+    return payload + ("\n\n" if payload else "") + text
+
+
+def read_answer(prompt):
+    sys.stderr.write(prompt)
+    sys.stderr.flush()
+    answer = sys.stdin.readline()
+    if not answer:
+        raise EOFError("approval requires terminal input; use --yes only to explicitly auto-approve")
+    return answer.strip()
+
+
+def approve(node, payload, auto_approve):
+    if auto_approve:
+        return "approve", ""
+    print(f"\n--- review for {node['id']} ---\n{payload}", file=sys.stderr)
+    while True:
+        answer = read_answer(f"Approve {node['id']}? [y/n]: ").lower()
+        if answer in ("y", "yes", "approve"):
+            return "approve", ""
+        if answer in ("n", "no", "reject"):
+            return "reject", read_answer("Rejection notes (may be empty): ")
+        print("Enter y or n.", file=sys.stderr)
+
+
+def rejection_note(payload, node_id, feedback):
+    if not feedback.strip():
+        return payload
+    return payload + ("\n\n" if payload else "") + f"--- rejection notes from {node_id} ---\n" + feedback.strip()
+
+
+def rework_target(node, history, nodes):
+    positions = {step["id"]: index for index, step in enumerate(nodes)}
+    if node["reject_to"]:
+        previous = next(
+            run for run in reversed(history)
+            if run["node"] == node["reject_to"] and run["status"] == "completed"
+        )
+        return positions[previous["node"]], previous["input"]
+    checkpoint = next(
+        (run for run in reversed(history) if run["type"] == "approval" and run["status"] == "completed"),
+        None,
+    )
+    if checkpoint is not None:
+        return positions[checkpoint["node"]] + 1, checkpoint["output"]
+    previous = next((run for run in reversed(history) if run["status"] == "completed"), None)
+    if previous is not None:
+        return positions[previous["node"]], previous["input"]
+    return None, ""
+
+
+def execute(state, directory, checkpoint, auto_approve):
+    nodes = SPEC["nodes"]
+    while state["next"] < len(nodes):
+        index = state["next"]
+        node = nodes[index]
+        payload = additional_input(node, state["input"], state["history"])
+        state["attempts"] += 1
+        state["status"] = "waiting_approval" if node["type"] == "approval" else "running"
+        state["error"] = ""
+        save_checkpoint(checkpoint, state)
+        stem = f"{state['attempts']:04d}"
+        print(f"\n[{node['id']}]", file=sys.stderr, flush=True)
+        try:
+            with (directory / (stem + ".log")).open("w", encoding="utf-8", newline="\n") as log:
+                def emit(text):
+                    log.write(text)
+                    log.flush()
+                    sys.stderr.write(text)
+                    sys.stderr.flush()
+
+                prompt = substitute(node["prompt"], state["params"])
+                decision, feedback = "approve", ""
+                output = payload
+                if node["type"] == "approval":
+                    decision, feedback = approve(node, payload, auto_approve)
+                    emit(f"[Human decision: {decision}]\n{feedback}\n")
+                else:
+                    if node["type"] == "llm_gate":
+                        prompt += GATE_INSTRUCTIONS
+                    response = invoke(node["command"], prompt, runtime_input(node, payload, state["history"]), state["workdir"], emit)
+                    if node["type"] == "llm_gate":
+                        verdict = json.loads(response)
+                        if (
+                            not isinstance(verdict, dict) or set(verdict) != {"decision", "feedback"}
+                            or verdict["decision"] not in ("approve", "reject")
+                            or not isinstance(verdict["feedback"], str)
+                        ):
+                            raise ValueError(f"llm_gate {node['id']!r} returned an invalid verdict")
+                        decision, feedback = verdict["decision"], verdict["feedback"]
+                    else:
+                        output = response
+                if decision == "reject":
+                    prior_reworks = state["reworks"].get(node["id"], 0)
+                    if node["type"] == "llm_gate" and (not node["reject_to"] or prior_reworks >= node["max_reworks"]):
+                        target, next_input = None, ""
+                    else:
+                        target, next_input = rework_target(node, state["history"], nodes)
+                    if target is None:
+                        state["status"] = "rejected"
+                        state["error"] = f"{node['id']} rejected the result"
+                        if node["type"] == "llm_gate" and node["reject_to"]:
+                            state["error"] += f" after reaching its rework limit ({node['max_reworks']})"
+                    else:
+                        state["next"] = target
+                        state["input"] = rejection_note(next_input, node["id"], feedback)
+                        if node["type"] == "llm_gate":
+                            state["reworks"][node["id"]] = prior_reworks + 1
+                else:
+                    (directory / (stem + ".txt")).write_text(output, encoding="utf-8")
+                    state["next"] = index + 1
+                    state["input"] = output
+                state["history"].append({
+                    "node": node["id"], "type": node["type"], "input": payload, "output": output,
+                    "status": "completed" if decision == "approve" else "rejected",
+                    "decision": decision if node["type"] != "standard" else "",
+                    "feedback": feedback, "log": stem + ".log",
+                })
+                if state["status"] == "rejected":
+                    save_checkpoint(checkpoint, state)
+                    raise RuntimeError(state["error"])
+                state["status"] = "pending"
+                save_checkpoint(checkpoint, state)
+        except (OSError, ValueError, RuntimeError, EOFError, KeyboardInterrupt, subprocess.TimeoutExpired) as error:
+            if state["status"] != "rejected":
+                state["status"] = "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
+                state["error"] = str(error) or "interrupted"
+            save_checkpoint(checkpoint, state)
+            with (directory / (stem + ".log")).open("a", encoding="utf-8", newline="\n") as log:
+                log.write(f"\n[ERROR: {state['error']}]\n")
+            raise
+    (directory / "result.txt").write_text(state["input"], encoding="utf-8")
+    state["status"] = "completed"
+    save_checkpoint(checkpoint, state)
+    return state["input"]
+
+
+def main(argv=None):
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+    parser = argparse.ArgumentParser(description=f"Standalone SignalBox pipeline: {SPEC['name']}")
+    parser.add_argument("--param", action="append", default=[], metavar="NAME=VALUE", help="pipeline parameter (repeatable)")
+    parser.add_argument("--input", help="initial input (default: empty)")
+    parser.add_argument("--output-dir", type=Path, default=Path(__file__).with_suffix(".run"), help="logs, outputs and checkpoint directory")
+    parser.add_argument("--workdir", type=Path, help="agent working directory (default: current directory)")
+    parser.add_argument("--resume", action="store_true", help="continue saved work; the unfinished step may run again")
+    parser.add_argument("--yes", action="store_true", help="explicitly auto-approve all human gates")
+    args = parser.parse_args(argv)
+    try:
+        directory = args.output_dir.resolve()
+        directory.mkdir(parents=True, exist_ok=True)
+        checkpoint = directory / "checkpoint.json"
+        with run_lock(directory):
+            if args.resume:
+                if args.param or args.input is not None:
+                    raise ValueError("cannot change parameters or input when resuming")
+                state = json.loads(checkpoint.read_text(encoding="utf-8"))
+                if state["fingerprint"] != FINGERPRINT:
+                    raise ValueError("checkpoint belongs to a different pipeline snapshot")
+                if args.workdir is not None and str(args.workdir.resolve()) != state["workdir"]:
+                    raise ValueError("cannot change working directory when resuming")
+                if state["status"] == "rejected":
+                    raise RuntimeError("this run was rejected; start a new run with a different --output-dir")
+                print("Resuming saved work; an unfinished CLI call may be replayed.", file=sys.stderr)
+            else:
+                if checkpoint.exists():
+                    raise ValueError("checkpoint already exists; use --resume or a new --output-dir")
+                workdir = (args.workdir or Path.cwd()).resolve()
+                if not workdir.is_dir():
+                    raise ValueError(f"working directory does not exist: {workdir}")
+                state = {
+                    "fingerprint": FINGERPRINT, "params": resolve_params(args.param),
+                    "workdir": str(workdir), "next": 0, "input": args.input or "",
+                    "history": [], "reworks": {}, "attempts": 0, "status": "pending", "error": "",
+                }
+                save_checkpoint(checkpoint, state)
+            result = execute(state, directory, checkpoint, args.yes)
+            sys.stdout.write(result + "\n")
+        return 0
+    except KeyboardInterrupt:
+        print("error: interrupted; use --resume to retry the unfinished step", file=sys.stderr)
+        return 130
+    except (OSError, ValueError, RuntimeError, EOFError, subprocess.TimeoutExpired) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

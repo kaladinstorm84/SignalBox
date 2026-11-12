@@ -46,11 +46,21 @@ type StageOutput struct {
 	Output    string `json:"output"`
 }
 
+// StageLog records visible generated output received while a stage is running.
+type StageLog struct {
+	RunID     string    `json:"run_id"`
+	NodeID    string    `json:"node_id"`
+	Attempt   int       `json:"attempt"`
+	Text      string    `json:"text"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // StageRun is the recorded execution of one orchestrator stage.
 type StageRun struct {
 	StageID string        `json:"stage_id"`
 	Status  Status        `json:"status"`
 	Outputs []StageOutput `json:"outputs,omitempty"`
+	Logs    []StageLog    `json:"logs,omitempty"`
 	// Context is the synthesised result carried into the next stage.
 	Context string `json:"context,omitempty"`
 	// Snapshot is the execution state captured as the stage began, used
@@ -102,6 +112,9 @@ type NodeRun struct {
 
 	// Stages is populated for orchestrator runs.
 	Stages []*StageRun `json:"stages,omitempty"`
+	// Logs records visible generated output for runs outside an orchestrator
+	// stage.
+	Logs []StageLog `json:"logs,omitempty"`
 
 	// Human review metadata.
 	ApprovedBy string `json:"approved_by,omitempty"`

@@ -1592,7 +1592,7 @@ func (eng *Engine) runOrchestrator(le *liveExec, oi *orchInstance) {
 		eng.mu.Unlock()
 
 		if stage.Prompt != "" {
-			out, err := eng.invokeOrchPrompt(le, oi.run, node, stage.Prompt, collected)
+			out, err := eng.invokeOrchPrompt(le, oi.run, node, stage.Prompt, collected, sr)
 			if err != nil {
 				eng.failStage(le, sr)
 				eng.finishRunErr(le, oi.run, node, nil, fmt.Errorf("stage %q synthesis: %w", stage.ID, err))
@@ -1624,13 +1624,13 @@ func (eng *Engine) runOrchestrator(le *liveExec, oi *orchInstance) {
 	eng.finishRunOK(le, oi.run, node, final, nil, "")
 }
 
-func (eng *Engine) invokeOrchPrompt(le *liveExec, run *NodeRun, node *pipeline.Node, prompt, input string) (string, error) {
+func (eng *Engine) invokeOrchPrompt(le *liveExec, run *NodeRun, node *pipeline.Node, prompt, input string, stageTarget ...*StageRun) (string, error) {
 	return eng.invokeRetrying(le, run, node.Retry, func(retry int) (string, error) {
 		knowledgeInput, err := eng.withKnowledge(input, node.KnowledgeBases)
 		if err != nil {
 			return "", err
 		}
-		return eng.invokeAgent(le, run, node, node.Retry, retry, runtime.Request{SystemPrompt: prompt, Input: knowledgeInput, Model: node.Model})
+		return eng.invokeAgent(le, run, node, node.Retry, retry, runtime.Request{SystemPrompt: prompt, Input: knowledgeInput, Model: node.Model}, stageTarget...)
 	})
 }
 

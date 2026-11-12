@@ -3,15 +3,17 @@ package engine
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kaladinstorm84/SignalBox/internal/pipeline"
 	"github.com/kaladinstorm84/SignalBox/internal/runtime"
 )
 
-func (eng *Engine) invokeAgent(le *liveExec, run *NodeRun, agent *pipeline.Node, policy *pipeline.RetryPolicy, retry int, req runtime.Request) (string, error) {
+func (eng *Engine) invokeAgent(le *liveExec, run *NodeRun, agent *pipeline.Node, policy *pipeline.RetryPolicy, retry int, req runtime.Request, stageTarget ...*StageRun) (string, error) {
 	name := agent.Runtime
 	req.ReasoningEffort, req.Speed = agent.ReasoningEffort, agent.Speed
+	req.TimeoutSeconds = agent.TimeoutSeconds
 	if policy != nil && retry > 0 && len(policy.Attempts) > 0 {
 		choice := policy.Attempts[retry-1]
 		if choice.Runtime != "" {
@@ -39,7 +41,23 @@ func (eng *Engine) invokeAgent(le *liveExec, run *NodeRun, agent *pipeline.Node,
 	})
 	eng.persistLocked(le)
 	eng.mu.Unlock()
-	out, err := rt.Invoke(le.ctx, req)
+	var target *StageRun
+	if len(stageTarget) > 0 {
+		target = stageTarget[0]
+	}
+	onOutput, flush := eng.streamOutputLogger(le, run, target, index+1)
+	var out string
+	if streaming, ok := rt.(runtime.StreamingRuntime); ok {
+		out, err = streaming.InvokeStream(le.ctx, req, onOutput)
+	} else {
+		out, err = rt.Invoke(le.ctx, req)
+		if err == nil && onOutput != nil {
+			onOutput(out)
+		}
+	}
+	if flush != nil {
+		flush()
+	}
 	eng.mu.Lock()
 	now := time.Now().UTC()
 	run.CallAttempts[index].FinishedAt = &now
@@ -49,6 +67,84 @@ func (eng *Engine) invokeAgent(le *liveExec, run *NodeRun, agent *pipeline.Node,
 	eng.persistLocked(le)
 	eng.mu.Unlock()
 	return out, err
+}
+
+func (eng *Engine) streamOutputLogger(le *liveExec, run *NodeRun, target *StageRun, attempt int) (func(string), func()) {
+	var callbackMu sync.Mutex
+	var pending strings.Builder
+	var lastPersist time.Time
+	write := func(text string, force bool) {
+		callbackMu.Lock()
+		defer callbackMu.Unlock()
+		if text != "" {
+			pending.WriteString(text)
+		}
+		if pending.Len() == 0 || (!force && pending.Len() < 4096 && time.Since(lastPersist) < time.Second) {
+			return
+		}
+		chunk := pending.String()
+		pending.Reset()
+		eng.mu.Lock()
+		defer eng.mu.Unlock()
+
+		stage := target
+		if stage == nil {
+			for _, orchestrator := range le.exec.Runs {
+				if orchestrator.ID != run.OrchRunID {
+					continue
+				}
+				for _, candidate := range orchestrator.Stages {
+					if candidate.StageID == run.StageID {
+						stage = candidate
+						break
+					}
+				}
+				break
+			}
+		}
+		now := time.Now().UTC()
+		logs := &run.Logs
+		if stage != nil {
+			logs = &stage.Logs
+		}
+		var entry *StageLog
+		for i := range *logs {
+			if (*logs)[i].RunID == run.ID && (*logs)[i].Attempt == attempt {
+				entry = &(*logs)[i]
+				break
+			}
+		}
+		if entry == nil {
+			*logs = append(*logs, StageLog{
+				RunID: run.ID, NodeID: run.NodeID, Attempt: attempt, UpdatedAt: now,
+			})
+			entry = &(*logs)[len(*logs)-1]
+		}
+		entry.Text += chunk
+		entry.UpdatedAt = now
+		eng.persistLocked(le)
+		lastPersist = time.Now()
+	}
+	stop := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				write("", true)
+			case <-stop:
+				return
+			}
+		}
+	}()
+	return func(text string) { write(text, false) }, func() {
+		close(stop)
+		<-stopped
+		write("", true)
+	}
 }
 
 // withKnowledge reads current documents for a call without rewriting the

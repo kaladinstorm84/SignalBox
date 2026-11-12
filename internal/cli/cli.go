@@ -33,6 +33,7 @@ Usage:
   signalbox serve [--addr host:port] Serve the tracking & launch web UI
   signalbox mcp [--url http://host:port] [--allow-review]  Serve MCP over stdio
   signalbox run <pipeline> [--input text] [--param k=v]...  Run a pipeline in the terminal
+  signalbox export <pipeline> --output script.py  Export a standalone Python runner
   signalbox chunks list|add|done|remove <execution> ...  Manage execution chunks
   signalbox list | show | start | approve | reject | edit | retry
             restart | rerun | cancel | delete ...   Manage executions on a running server
@@ -61,6 +62,8 @@ func Main(args []string) int {
 		err = cmdMCP(args[1:])
 	case "run":
 		err = cmdRun(args[1:])
+	case "export":
+		err = cmdExport(args[1:], os.Stdout)
 	case "chunks":
 		err = cmdChunks(args[1:], os.Stdout)
 	case "list", "show", "start", "approve", "reject", "edit", "retry", "restart", "rerun", "cancel", "delete":
@@ -75,6 +78,8 @@ func Main(args []string) int {
 			fmt.Print(opsUsage)
 		case len(args) > 1 && args[1] == "registry":
 			fmt.Print(registryUsage)
+		case len(args) > 1 && args[1] == "export":
+			fmt.Print(exportUsage)
 		default:
 			fmt.Print(usage)
 		}

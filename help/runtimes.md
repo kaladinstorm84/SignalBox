@@ -62,6 +62,38 @@ Do not mix grouped runtime settings with top-level model/effort/speed settings:
 put all call settings inside the `runtime` mapping. Unknown grouped keys and
 invalid or unsupported settings fail validation.
 
+### Streaming and timeouts
+
+OpenAI-compatible endpoints using SSE and CLI processes that emit stdout
+incrementally stream visible generated output to execution details. In
+orchestrator runs, that text is saved as a log under its stage; otherwise it is
+saved on the agent run. A CLI that buffers stdout until completion, or another
+runtime without streaming support, records its output when the call returns.
+These logs are response text, not private model reasoning.
+
+Codex calls use `codex exec --json` when streaming, so session activity, tool
+start/completion statuses and agent messages appear during the call. Only the
+final agent message is handed downstream; JSON events and activity markers are
+not part of the article or structured response. Reasoning events are omitted.
+Codex emits messages at event boundaries, not necessarily token by token.
+Small updates are saved at least once per second even if no new output arrives;
+the execution page displays them on its existing two-second refresh.
+
+Each runtime's `timeout_seconds` in `signalbox.yaml` sets its default timeout
+(600 seconds when omitted). An AI node can override that value in pipeline
+YAML; the override applies to each runtime call and retry for that node:
+
+```yaml
+- id: researcher
+  runtime: codex
+  timeout_seconds: 900
+  prompt: Research the supplied task.
+```
+
+An omitted or zero node timeout uses the selected runtime's configured
+timeout. This bounds the complete call, including time spent waiting for
+streamed output.
+
 `speed` accepts `standard` or `fast`. Fast requests provider priority service,
 **not** less reasoning or a cheaper model; it may incur additional charges and
 requires provider/model/account support. Codex receives `service_tier`, Claude

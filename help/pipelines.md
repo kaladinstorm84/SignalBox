@@ -79,6 +79,12 @@
 - **Formatted output:** set `format: true` on an agent to render its Markdown
   output in the execution detail view. The raw Markdown remains available in a
   collapsible section; raw HTML in Markdown is not rendered.
+- **Stage output logs:** while an orchestrator stage is running, streamed
+  generated output from its agents is saved under that stage and shown in the
+  execution detail view. Outside an orchestrator, output is logged on the
+  agent run. The log contains visible response text, not private model
+  reasoning. Runtimes without streaming support add their output when the call
+  completes.
 - **Rejection target:** an approval or `llm_gate` can set `reject-to` to rerun
   an earlier node, or start a rejection-only branch:
 

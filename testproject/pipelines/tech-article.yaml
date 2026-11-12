@@ -1,0 +1,148 @@
+name: tech-article
+version: 1.0.0
+description: >-
+  Research, outline, draft and edit a technical article, with an automated
+  accuracy check and human sign-off before the final copy.
+params:
+  topic:
+    required: true
+    description: The technical subject and the article's central question.
+  audience:
+    default: Software developers
+    description: Intended readers and their assumed background.
+  tone:
+    default: clear and conversational
+    description: Desired voice and tone.
+  length:
+    default: about 1200 words
+    description: Target article length.
+  source_material:
+    default: No source material supplied.
+    description: References, links, notes, or constraints to use during research.
+entry: research
+
+agents:
+  - id: research
+    type: standard
+    runtime: codex
+    description: Builds a source-aware research brief for the article.
+    prompt: |
+      Research the technical topic: ${{ params.topic }}
+
+      Target audience: ${{ params.audience }}
+      Source material from the author:
+      ${{ params.source_material }}
+
+      Produce a concise research brief with:
+      - The key concepts readers need to understand
+      - Important technical claims and the evidence or source for each
+      - Relevant caveats, version assumptions, and likely misconceptions
+      - Questions that still need verification
+
+      Do not invent sources, URLs, benchmarks, or facts. Distinguish supplied
+      evidence from your general knowledge, and clearly flag anything that
+      should be verified before publication.
+    handoff: [outline]
+
+  - id: outline
+    type: standard
+    runtime: codex
+    description: Shapes the research into a reader-focused article outline.
+    prompt: |
+      Create a detailed outline for a technical article about
+      ${{ params.topic }}.
+
+      Audience: ${{ params.audience }}
+      Target length: ${{ params.length }}
+      Tone: ${{ params.tone }}
+
+      Use the research brief in the input. State the article's thesis, give it
+      a useful working title, and order sections from fundamentals toward
+      practical application. For each section, note its purpose, key points,
+      and any example, diagram, or code sample that would help. Keep unverified
+      claims and assumptions visible; do not turn them into established facts.
+    handoff: [writer]
+
+  - id: writer
+    type: standard
+    runtime: codex
+    description: Writes the first complete article draft.
+    prompt: |
+      Write a complete Markdown technical article using the outline and
+      research brief in the input.
+
+      Topic: ${{ params.topic }}
+      Audience: ${{ params.audience }}
+      Target length: ${{ params.length }}
+      Tone: ${{ params.tone }}
+
+      Explain unfamiliar terms, keep the narrative focused on the thesis, and
+      use practical examples where they clarify the material. Include only
+      code that is correct and label assumptions such as language or library
+      versions. Never fabricate citations or claim code was tested when it
+      was not. Preserve verification notes for claims the research brief
+      could not substantiate.
+    handoff: [editor]
+
+  - id: editor
+    type: standard
+    runtime: codex
+    description: Reviews the draft for clarity, structure, and technical gaps.
+    prompt: |
+      Review the article draft in the input for the intended audience,
+      ${{ params.audience }}.
+
+      Identify factual or version-sensitive claims that lack support,
+      misleading simplifications, gaps in the explanation, weak structure,
+      unclear wording, and code or examples that need verification. Separate
+      required fixes from optional style suggestions. Be specific and do not
+      invent technical errors or sources.
+    handoff: [reviser]
+
+  - id: reviser
+    type: standard
+    additional-input: [writer]
+    runtime: codex
+    description: Applies review feedback and produces the final article draft.
+    context: {strategy: own, window: 1}
+    format: true
+    prompt: |
+      Produce the revised, complete Markdown article using the draft and
+      editorial feedback in the input.
+
+      Topic: ${{ params.topic }}
+      Audience: ${{ params.audience }}
+      Target length: ${{ params.length }}
+      Tone: ${{ params.tone }}
+
+      Fix substantive issues while preserving accurate material and the
+      author's intended scope. Do not invent sources or claim unsupported
+      facts. Keep any unresolved verification notes explicit. If the input
+      includes accuracy-gate feedback, address each point in the revision.
+    handoff: [accuracy_check]
+
+  - id: accuracy_check
+    type: llm_gate
+    runtime: codex
+    description: Checks the final article for unsupported or misleading claims.
+    max_reworks: 2
+    additional-input: [research]
+    reject-to: reviser
+    prompt: |
+      Evaluate the revised technical article in the input for publication
+      readiness.
+
+      Reject only for substantive issues: a demonstrably incorrect or
+      misleading technical claim, an invented citation or test result, code
+      presented as verified without evidence, or an unresolved critical
+      issue stated as fact. Do not reject merely because a claim is marked
+      for verification; it must remain clearly labelled as unverified.
+
+      Approve if the article is coherent, appropriate for its stated
+      audience, and has no such critical issue. Otherwise reject and give
+      concise, actionable feedback identifying each issue.
+    handoff: [signoff]
+
+  - id: signoff
+    type: approval
+    description: Human review before treating the article as final.

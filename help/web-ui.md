@@ -152,6 +152,15 @@ The server has no authentication. Keep it bound to loopback or a trusted
 interface; anyone with access can launch configured commands, approve work,
 and edit project settings. Run only trusted pipeline definitions and scripts.
 
+### Export Python
+
+To download a standalone Python version of a saved workflow, open its pipeline
+page and select **Export Python**. The script runs the supported YAML behavior
+without SignalBox; it is not a wrapper around the SignalBox CLI or server.
+Unsupported features produce an explicit error. See
+[Python export](command-line.md#export-a-standalone-python-runner) for supported
+workflows, prerequisites, file export and resume options.
+
 ### Execution process lifecycle
 
 Every top-level execution launched through `serve` runs in its own detached

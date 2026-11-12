@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kaladinstorm84/SignalBox/internal/config"
 	"github.com/kaladinstorm84/SignalBox/internal/pipeline"
@@ -94,6 +95,105 @@ func TestCLIShortPromptIsPassedAsArgument(t *testing.T) {
 	}
 }
 
+func TestCLIStreamsStdout(t *testing.T) {
+	rt := helperRuntime(t, config.RuntimeConfig{Type: "cli"})
+	var chunks strings.Builder
+	out, err := rt.(StreamingRuntime).InvokeStream(context.Background(), Request{Input: "hello"}, func(chunk string) {
+		chunks.WriteString(chunk)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chunks.String() != out {
+		t.Fatalf("streamed output = %q, want %q", chunks.String(), out)
+	}
+}
+
+func TestCodexStreamHelperProcess(t *testing.T) {
+	if os.Getenv("SIGNALBOX_CODEX_STREAM_HELPER") != "1" {
+		return
+	}
+	foundJSON := false
+	for _, arg := range os.Args {
+		if arg == "--json" {
+			foundJSON = true
+		}
+	}
+	if !foundJSON {
+		fmt.Fprintln(os.Stderr, "missing --json")
+		os.Exit(1)
+	}
+	fmt.Println(`{"type":"turn.started"}`)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(os.Getenv("SIGNALBOX_CODEX_STREAM_RELEASE")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			fmt.Fprintln(os.Stderr, "progress was not received before completion")
+			os.Exit(1)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	fmt.Println(`{"type":"item.completed","item":{"id":"r","type":"reasoning","text":"not for the log"}}`)
+	fmt.Println(`{"type":"item.started","item":{"id":"cmd","type":"command_execution","status":"in_progress"}}`)
+	fmt.Println(`{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"article text"}}`)
+	fmt.Println(`{"type":"turn.completed"}`)
+	os.Exit(0)
+}
+
+func TestCodexStreamsProgressBeforeCompletion(t *testing.T) {
+	release := filepath.Join(t.TempDir(), "release")
+	t.Setenv("SIGNALBOX_CODEX_STREAM_HELPER", "1")
+	t.Setenv("SIGNALBOX_CODEX_STREAM_RELEASE", release)
+	rt, err := newCLI("codex", config.RuntimeConfig{
+		Type: "codex", Command: os.Args[0],
+		Args: []string{"-test.run=^TestCodexStreamHelperProcess$", "--", "exec"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	progress := make(chan string, 16)
+	done := make(chan struct{})
+	var output string
+	var invokeErr error
+	go func() {
+		defer close(done)
+		output, invokeErr = rt.(StreamingRuntime).InvokeStream(ctx, Request{Input: "write"}, func(text string) {
+			progress <- text
+		})
+	}()
+	var streamed strings.Builder
+	select {
+	case text := <-progress:
+		streamed.WriteString(text)
+	case <-done:
+		t.Fatalf("call finished before progress: %v", invokeErr)
+	case <-ctx.Done():
+		t.Fatal("no progress received")
+	}
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("Codex helper did not finish")
+	}
+	close(progress)
+	for text := range progress {
+		streamed.WriteString(text)
+	}
+	if invokeErr != nil || output != "article text" {
+		t.Fatalf("output = %q, error = %v", output, invokeErr)
+	}
+	if !strings.Contains(streamed.String(), "Codex working") || !strings.Contains(streamed.String(), "command execution started") ||
+		strings.Contains(streamed.String(), "not for the log") || strings.Contains(output, "command execution") {
+		t.Fatalf("streamed = %q, handoff = %q", streamed.String(), output)
+	}
+}
 func TestCLIInvokesWithConfiguredOptions(t *testing.T) {
 	t.Setenv("SIGNALBOX_HELPER_ARGS", "1")
 	rt := helperRuntime(t, config.RuntimeConfig{

@@ -39,6 +39,7 @@ runtimes:
      # model: gpt-5.4              # pipeline model overrides take precedence
      # reasoning_effort: high      # depends on the selected model
      # speed: fast                 # fast uses priority service and may cost more
+     timeout_seconds: 1000
 
   copilot:
     type: copilot                   # runs: copilot -p "<prompt>"

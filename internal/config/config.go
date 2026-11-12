@@ -387,6 +387,12 @@ func (c *Config) Addr() string { return fmt.Sprintf("%s:%d", c.Server.Host, c.Se
 
 // ValidateRuntimeOptions rejects settings that a runtime cannot pass through.
 func ValidateRuntimeOptions(r RuntimeConfig) error {
+	if r.TimeoutSeconds < 0 {
+		return fmt.Errorf("timeout_seconds must not be negative")
+	}
+	if int64(r.TimeoutSeconds) > int64((1<<63-1)/int64(time.Second)) {
+		return fmt.Errorf("timeout_seconds is too large")
+	}
 	if r.Model != "" && (strings.HasPrefix(r.Model, "-") || strings.ContainsAny(r.Model, " \t\r\n")) {
 		return fmt.Errorf("model must be a single model name, not flags or whitespace")
 	}

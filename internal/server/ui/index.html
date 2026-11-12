@@ -1005,6 +1005,7 @@ function renderRun(x, r) {
     <div class="stage">
       <div class="runhead"><span class="nodeid">stage: ${esc(s.stage_id)}</span>${pill(s.status)}
       ${!x.parent && isTerminal(x.status) && !r.reused_from && s.status !== 'pending' ? `<button class="secondary sm" style="margin-left:auto" title="New execution that keeps earlier stages and reruns from this one" onclick="restartRun('${esc(x.id)}', {run_id: '${esc(r.id)}', stage: '${esc(s.stage_id)}'}, this)">Restart from this stage</button>` : ''}</div>
+      ${(s.logs || []).map(l => `<details data-key="${esc(r.id)}:${esc(s.stage_id)}:log:${esc(l.run_id)}:${l.attempt}" open><summary>streamed output from ${esc(l.node_id)} · attempt ${l.attempt}</summary><pre class="out">${esc(l.text)}</pre></details>`).join('')}
       ${(s.outputs || []).map((o, i) => `<details data-key="${esc(r.id)}:${esc(s.stage_id)}:${i}"><summary>result from ${esc(o.node_id)}</summary><pre class="out">${esc(o.output)}</pre></details>`).join('')}
       ${s.context ? `<details data-key="${esc(r.id)}:${esc(s.stage_id)}:context"><summary>stage context</summary><pre class="out">${esc(s.context)}</pre></details>` : ''}
     </div>`).join('');
@@ -1045,6 +1046,7 @@ function renderRun(x, r) {
     ${r.context ? renderContext(r) : ''}
     ${r.session ? renderSession(r) : ''}
     ${stages}
+    ${(r.logs || []).map(l => `<details data-key="${esc(r.id)}:log:${esc(l.run_id)}:${l.attempt}" open><summary>streamed output · attempt ${l.attempt}</summary><pre class="out">${esc(l.text)}</pre></details>`).join('')}
     ${renderSchemaCheck(r)}
     ${r.output ? `<details data-key="${esc(r.id)}:output" ${!r.stages ? 'open' : ''}><summary>${r.format ? 'formatted output' : r.schema && r.type !== 'llm_gate' ? `output <span class="muted">(${esc(r.schema)} JSON)</span>` : 'output'}</summary>${outputContent}</details>` : ''}
     ${r.verdict ? `<details data-key="${esc(r.id)}:verdict" open><summary>verdict <span class="muted">(${esc(r.schema)} JSON)</span></summary><pre class="out">${esc(r.verdict)}</pre>${rawAnswer(r)}</details>` : ''}
@@ -2367,6 +2369,35 @@ function structuredInputError(input, schema) {
 function pipelineLink(name) {
   return '#/pipelines/view/' + encodeURIComponent(name);
 }
+async function downloadPipelinePython(button) {
+  const errorBox = document.getElementById('pipeline-export-error');
+  errorBox.hidden = true;
+  button.disabled = true;
+  button.textContent = 'Exporting...';
+  try {
+    const name = button.dataset.exportPipeline;
+    const response = await fetch('/api/pipelines/' + encodeURIComponent(name) + '/export?format=python', {cache: 'no-store'});
+    if (!response.ok) {
+      const body = await response.json();
+      throw new Error(body.error || response.statusText);
+    }
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_') + '.py';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast('Python export downloaded');
+  } catch (error) {
+    errorBox.textContent = 'Export failed: ' + error.message;
+    errorBox.hidden = false;
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Export Python';
+  }
+}
 function renderPipelineMenu(pipelines, selected) {
   const menu = document.getElementById('pipeline-menu');
   menu.hidden = false;
@@ -2404,6 +2435,7 @@ async function showPipelines(selected) {
   const filenameByName = new Map(files.filter(file => file.name).map(file => [file.name, file.filename]));
   $main.innerHTML = `
     ${actions}<div class="page-sub">${selected === undefined ? 'Choose a station to explore its pipeline.' : '<a href="#/pipelines">All pipelines</a> / ' + esc(selected)}</div>
+    <div id="pipeline-export-error" class="err-banner" role="alert" hidden></div>
     ${selected === undefined ? `
       <label for="pipeline-search">Find a pipeline</label>
       <input id="pipeline-search" type="search" placeholder="Search by name or description...">
@@ -2427,6 +2459,7 @@ async function showPipelines(selected) {
         ${p.input_schema ? `<div class="muted">input schema: <span class="mono">${esc(p.input_schema)}</span></div>` : ''}
         ${p.files ? `<div class="muted">${esc(filesSpecLabel(p.files))}</div>` : ''}</div>
         <div class="approve-actions" style="margin-top:0">${filenameByName.has(p.name) ? `<button class="secondary" data-edit-file="${esc(filenameByName.get(p.name))}">Edit</button>` : ''}
+        <button class="secondary" data-export-pipeline="${esc(p.name)}">Export Python</button>
         <button class="secondary" data-run-pipeline="${esc(p.name)}">Run</button></div></div>
         <div style="margin-top:10px">${flowDiagram(p)}</div>
         <table style="margin-top:10px"><thead><tr><th>Agent</th><th>Type</th><th>Runtime</th><th>Hands off to</th></tr></thead>
@@ -2457,6 +2490,7 @@ async function showPipelines(selected) {
   $main.querySelectorAll('[data-run-pipeline]').forEach(button => button.addEventListener('click', () => {
     location.hash = '#/new?pipeline=' + encodeURIComponent(button.dataset.runPipeline);
   }));
+  $main.querySelectorAll('[data-export-pipeline]').forEach(button => button.addEventListener('click', () => downloadPipelinePython(button)));
   window.scrollTo(0, 0);
 }
 
