@@ -130,38 +130,50 @@ agents:
     type: approval
 `, config.RuntimeConfig{Type: "codex", Command: python, Args: []string{"-u", helper}})
 	runDir := filepath.Join(dir, "run")
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	release := filepath.Join(dir, "release")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, python, script, "--param", "topic=portable = workflows"+strings.Repeat("x", 7000), "--workdir", dir, "--output-dir", runDir)
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Stdin = strings.NewReader("y\n")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	deadline := time.Now().Add(5 * time.Second)
+	done := make(chan struct{})
+	var runErr error
+	go func() {
+		runErr = cmd.Wait()
+		close(done)
+	}()
+	defer func() {
+		writeTestFile(t, release, "")
+		cancel()
+		<-done
+	}()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
 	for {
 		log, _ := os.ReadFile(filepath.Join(runDir, "0001.log"))
 		if strings.Contains(string(log), "[Codex working]") {
 			break
 		}
 		select {
-		case err := <-done:
-			t.Fatalf("runner ended before emitting progress: %v\n%s", err, stderr.String())
-		default:
-		}
-		if time.Now().After(deadline) {
+		case <-done:
+			t.Fatalf("runner ended before emitting progress: %v\n%s", runErr, stderr.String())
+		case <-ctx.Done():
+			writeTestFile(t, release, "")
 			cancel()
 			<-done
-			t.Fatalf("no progress saved while CLI was running:\n%s", stderr.String())
+			t.Fatalf("no progress saved before test deadline: %v\n%s", runErr, stderr.String())
+		case <-ticker.C:
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
-	writeTestFile(t, filepath.Join(dir, "release"), "")
-	if err := <-done; err != nil {
-		t.Fatalf("export failed: %v\n%s", err, stderr.String())
+	writeTestFile(t, release, "")
+	<-done
+	if runErr != nil {
+		t.Fatalf("export failed: %v\n%s", runErr, stderr.String())
 	}
 	if !strings.HasPrefix(stdout.String(), "DRAFT TWO") || strings.Contains(stdout.String(), "Codex") {
 		t.Fatalf("final handoff contains progress or wrong revision: %q", stdout.String())

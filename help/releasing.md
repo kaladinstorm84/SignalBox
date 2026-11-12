@@ -5,19 +5,26 @@
 ## Publishing a release
 
 The [release workflow](../.github/workflows/release.yml) runs when a tag starting
-with `v` is pushed. It verifies dependencies, runs the Go tests, builds a
-Windows x64 executable stamped with the tag, validates the example pipelines,
-and checks the packaged executable. The ZIP also includes the README, help
-guides, screenshots, and license. Only after these steps succeed does it
-create a GitHub Release with generated notes, the ZIP, and its checksum.
-The release is initially a draft while its files upload, then published.
+with `v` is pushed. It verifies dependencies, runs the Go tests, and builds
+executables stamped with the tag for Windows x64, Linux x64/ARM64, and macOS
+Intel/Apple Silicon. Each target builds on a matching native runner, validates
+the example pipelines, and checks both the built and extracted executables.
+Windows ships as a ZIP; Linux and macOS ship as `.tar.gz` archives, preserving
+executable permissions. Every archive also includes the README, help guides,
+screenshots, and license. macOS binaries are not Developer ID signed or notarized.
+Only after all targets and tests succeed does the workflow create a GitHub
+Release with generated notes, all five archives, and a combined `SHA256SUMS.txt`.
+The checksums are verified after downloading all build artifacts, before release
+creation. The release is initially a draft while its files upload, then published.
 
 The full test suite runs on Linux, including the detached-worker binary
-lifecycle test. Windows runs `go test -short ./...`, which skips that lifecycle
-test because GitHub-hosted Windows jobs forbid the process breakaway it
-requires. Windows-specific unit tests and executable/package checks still run.
-Both jobs must pass before publication. This does not relax the application's
-breakaway requirement: Windows hosts running detached workers must permit it.
+lifecycle test. All packaging jobs also run `go test -short ./...` on their
+native architecture. Short mode skips the lifecycle test because GitHub-hosted
+Windows jobs forbid the process breakaway it requires; the separate Linux
+regression job retains full lifecycle coverage. Windows-specific unit tests
+and executable/package checks still run. All jobs must pass before publication.
+This does not relax the application's breakaway requirement: Windows hosts
+running detached workers must permit it.
 
 Commit and push the source and workflow first, then tag the commit to release:
 

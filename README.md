@@ -13,7 +13,7 @@ and script interpreters are installed separately when needed.
 ## Get started
 
 - [Install SignalBox, configure PATH, and update](help/installation.md)
-- [Download Windows x64 releases](https://github.com/kaladinstorm84/SignalBox/releases)
+- [Download Windows, Linux and macOS releases](https://github.com/kaladinstorm84/SignalBox/releases)
 - [Use the web UI](help/web-ui.md) or [command line](help/command-line.md)
 
 The starter pipeline uses a mock runtime, so you can try it without AI credentials.
@@ -50,7 +50,7 @@ on your PATH, or to install without Go.
 
 | Guide | Covers |
 |-------|--------|
-| [Installation and updates](help/installation.md) | Go install, Windows PATH, release ZIPs and troubleshooting |
+| [Installation and updates](help/installation.md) | Go install, Windows PATH, platform release archives and troubleshooting |
 | [Web UI and execution lifecycle](help/web-ui.md) | Pages, diagrams and detached workers |
 | [Command line](help/command-line.md) | Launch, approve, reject and manage executions |
 | [Retries, context and recovery](help/execution.md) | Failure handling, context strategies and restart |

@@ -132,17 +132,33 @@ runtime definitions and other project settings require a server restart.
 
 ### Downloadable releases
 
-Windows x64 builds are published on the
+Platform builds are published on the
 [GitHub Releases page](https://github.com/kaladinstorm84/SignalBox/releases).
-Download `signalbox-v<VERSION>-windows-amd64.zip`, extract it, and run
-`signalbox.exe`. The archive contains the executable (including the embedded
-web UI), README, help guides and screenshots, and license. Agent runtimes such as Codex, Claude, Copilot,
-and optional tools such as Python or OpenSpec must still be installed separately.
+Choose the archive matching your operating system and processor:
 
-Each release includes `SHA256SUMS.txt`. Compare the ZIP's checksum before
+| Platform | Archive |
+|----------|---------|
+| Windows x64 | `signalbox-v<VERSION>-windows-amd64.zip` |
+| Linux x64 | `signalbox-v<VERSION>-linux-amd64.tar.gz` |
+| Linux ARM64 | `signalbox-v<VERSION>-linux-arm64.tar.gz` |
+| macOS Intel | `signalbox-v<VERSION>-darwin-amd64.tar.gz` |
+| macOS Apple Silicon | `signalbox-v<VERSION>-darwin-arm64.tar.gz` |
+
+Extract the ZIP on Windows and run `signalbox.exe`. On Linux/macOS, extract
+the `.tar.gz` archive with `tar -xzf` and run `./signalbox`; the archive preserves
+the executable permission. macOS builds are not Developer ID signed or notarized.
+Each archive contains the executable (including the embedded web UI), README,
+help guides and screenshots, and license. Agent runtimes such as Codex, Claude,
+Copilot, and optional tools such as Python or OpenSpec must still be installed
+separately. Older releases may only include the Windows build.
+
+Each release includes `SHA256SUMS.txt` covering every archive. Compare your
+archive's checksum with its entry before
 extracting it:
 
 ```powershell
 Get-FileHash .\signalbox-v1.0.0-windows-amd64.zip -Algorithm SHA256
 Get-Content .\SHA256SUMS.txt
 ```
+
+On Linux use `sha256sum <archive>`; on macOS use `shasum -a 256 <archive>`.
