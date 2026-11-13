@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>signalbox</id>
+    <version>{{VERSION}}</version>
+    <title>SignalBox</title>
+    <authors>kaladinstorm84</authors>
+    <projectUrl>https://github.com/{{REPOSITORY}}</projectUrl>
+    <iconUrl>https://cdn.jsdelivr.net/gh/{{REPOSITORY}}@{{TAG}}/packaging/chocolatey/icon.svg</iconUrl>
+    <projectSourceUrl>https://github.com/{{REPOSITORY}}/tree/{{TAG}}</projectSourceUrl>
+    <packageSourceUrl>https://github.com/{{REPOSITORY}}/tree/{{TAG}}/packaging/chocolatey</packageSourceUrl>
+    <docsUrl>https://github.com/{{REPOSITORY}}/blob/{{TAG}}/README.md</docsUrl>
+    <bugTrackerUrl>https://github.com/{{REPOSITORY}}/issues</bugTrackerUrl>
+    <licenseUrl>https://github.com/{{REPOSITORY}}/blob/{{TAG}}/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <copyright>Copyright (c) 2026 kaladinstorm84</copyright>
+    <tags>signalbox ai agents workflow pipelines automation yaml cli foss</tags>
+    <summary>YAML-based AI agent workflow engine with human approval stages and an embedded web UI.</summary>
+    <description>SignalBox is a YAML-based AI agent workflow system with human approval stages. Describe a pipeline of agents in YAML, point each agent at a runtime (Codex, Claude, Copilot, or any OpenAI-compatible API), and SignalBox runs the chain, pausing at approval gates for review in the web UI or terminal.
+
+Features:
+
+- Pipelines of agents defined in YAML, with handoffs between stages
+- Human approvals and LLM quality gates that can send rejected work back for revision
+- Local code steps and command-based watchers that start pipelines automatically
+- A web UI embedded in the executable, plus a command line for launching and managing executions
+
+This package installs the `signalbox` command, a single Go executable for Windows x64. It downloads the official release archive from GitHub and verifies its SHA-256 checksum. Agent runtimes (such as the Codex, Claude and Copilot CLIs, which need their own accounts or licenses) and any script interpreters used by code steps are not included and must be installed separately.</description>
+    <releaseNotes>https://github.com/{{REPOSITORY}}/releases/tag/{{TAG}}</releaseNotes>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

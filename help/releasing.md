@@ -52,10 +52,48 @@ push error and push that tag explicitly rather than incrementing again.
 
 Use `vMAJOR.MINOR.PATCH` for normal releases or a suffix such as
 `v1.0.0-rc.1` for prereleases. The workflow rejects other tag formats and
-automatically marks suffixed versions as prereleases. It uses GitHub's built-in
-`GITHUB_TOKEN`; no personal access token or signing secrets are needed.
-Only the publishing job has repository-content write permission.
+automatically marks suffixed versions as prereleases. Publishing to GitHub uses
+the built-in `GITHUB_TOKEN`; no personal access token or signing secrets are
+needed. Only the publishing job has repository-content write permission. The
+[Chocolatey job](#publishing-to-chocolatey) also needs the `CHOC_KEY` secret.
 
 Existing releases are not overwritten. If upload or publication fails after a
 draft is created, inspect that draft before retrying: finish publishing it
 manually, or delete the incomplete draft before rerunning the workflow.
+
+## Publishing to Chocolatey
+
+After the GitHub Release is published, stable tags also run a `chocolatey` job
+that submits the Windows build to the
+[Chocolatey community repository](https://community.chocolatey.org/packages/signalbox).
+Prerelease tags (those with a `-` suffix) are never submitted. The job:
+
+1. Builds the package from the **published** Windows ZIP with
+   [New-ChocolateyPackage.ps1](../packaging/chocolatey/New-ChocolateyPackage.ps1).
+   The script requires the ZIP's SHA-256 to match its `SHA256SUMS.txt` entry and
+   bakes that checksum into the install script, so Chocolatey verifies exactly
+   what users download.
+2. Installs and uninstalls the package on the runner, and requires
+   `signalbox version` to report the tag.
+3. Runs `choco push` with the `CHOC_KEY` repository secret.
+
+Create `CHOC_KEY` once under **Settings > Secrets and variables > Actions**,
+using the API key from your Chocolatey account page. The job fails with a clear
+message if the secret is missing or empty.
+
+A successful push only submits the version. Chocolatey moderates submitted
+versions, so `choco install signalbox` does not find it until it is approved;
+the job summary links the package page. If a moderator asks for changes,
+rebuild and push the **same version** again. This needs
+[Chocolatey](https://chocolatey.org/install) on `PATH`:
+
+```powershell
+.\packaging\chocolatey\New-ChocolateyPackage.ps1 -Tag v1.2.3 -OutputDirectory dist\choco
+choco push dist\choco\signalbox.1.2.3.nupkg --source https://push.chocolatey.org/ --api-key <your-api-key>
+```
+
+The same commands submit a release made before the job existed. Never replace
+the files of a published release: the package's checksum comes from them, so fix
+problems with a new version. If only the `chocolatey` job fails for a transient
+reason, re-run just that job. A re-run uses the workflow as it was at the tag,
+so a bug in the job itself needs a new tag or the manual commands above.

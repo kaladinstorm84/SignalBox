@@ -162,3 +162,32 @@ Get-Content .\SHA256SUMS.txt
 ```
 
 On Linux use `sha256sum <archive>`; on macOS use `shasum -a 256 <archive>`.
+
+### Install with Chocolatey (Windows)
+
+Stable releases are also submitted to the
+[Chocolatey community repository](https://community.chocolatey.org/packages/signalbox).
+After Chocolatey's moderators approve a version, install it from an elevated
+PowerShell prompt:
+
+```powershell
+choco install signalbox
+signalbox version
+```
+
+The package downloads the release ZIP, verifies its published SHA-256 checksum,
+and adds `signalbox` to `PATH` through a Chocolatey shim; open a new terminal if
+the current one does not find it. It supports 64-bit Windows only, and
+prerelease versions are not published to Chocolatey.
+
+To update, stop the running SignalBox server and allow active executions to
+finish or cancel them, as described in
+[Update an installed version](#update-an-installed-version), then run:
+
+```powershell
+choco upgrade signalbox
+signalbox version
+```
+
+Your projects, configuration, and execution history are not replaced. Remove the
+executable with `choco uninstall signalbox`.

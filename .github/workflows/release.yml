@@ -245,3 +245,57 @@ jobs:
           fi
           gh release create "$RELEASE_TAG" dist/*.zip dist/*.tar.gz dist/SHA256SUMS.txt "${options[@]}"
           gh release edit "$RELEASE_TAG" --draft=false
+
+  # Prereleases (tags containing a hyphen) are never submitted to Chocolatey.
+  chocolatey:
+    name: Publish Chocolatey package
+    needs: publish
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Built from the published release assets so the checksum baked into the
+      # install script is the one users will actually download.
+      - name: Build package from the published release
+        run: |
+          .\packaging\chocolatey\New-ChocolateyPackage.ps1 -Tag $env:GITHUB_REF_NAME -Repository $env:GITHUB_REPOSITORY -OutputDirectory dist\choco
+
+      - name: Test install and uninstall
+        run: |
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          $source = (Resolve-Path dist\choco).Path
+          choco install signalbox --source $source --version $version --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $chocoRoot = if ($env:ChocolateyInstall) { $env:ChocolateyInstall } else { Join-Path $env:ProgramData 'chocolatey' }
+          $shim = Join-Path $chocoRoot 'bin\signalbox.exe'
+          $actual = & $shim version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($actual -ne "signalbox $env:GITHUB_REF_NAME") {
+            throw "Installed package has an unexpected version: $actual"
+          }
+          choco uninstall signalbox --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Test-Path -LiteralPath $shim) {
+            throw "Uninstall left $shim behind"
+          }
+
+      - name: Push to the Chocolatey community repository
+        env:
+          CHOC_KEY: ${{ secrets.CHOC_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CHOC_KEY)) {
+            throw 'The CHOC_KEY repository secret is missing or empty'
+          }
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          $nupkg = Join-Path (Resolve-Path dist\choco).Path "signalbox.$version.nupkg"
+          choco push $nupkg --source https://push.chocolatey.org/ --api-key $env:CHOC_KEY
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "Submitted signalbox $version for moderation: https://community.chocolatey.org/packages/signalbox/$version" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
