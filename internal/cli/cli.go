@@ -112,21 +112,23 @@ func cmdInit(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(abs, "pipelines"), 0o755); err != nil {
-		return err
-	}
-
 	project := filepath.Base(abs)
 	files := map[string]string{
-		filepath.Join(abs, config.FileName):             fmt.Sprintf(configTemplate, project),
-		filepath.Join(abs, "pipelines", "default.yaml"): defaultPipelineTemplate,
-		filepath.Join(abs, ".gitignore"):                gitignoreTemplate,
-		filepath.Join(abs, "AGENTS.md"):                 agentsTemplate,
+		filepath.Join(abs, config.FileName):                                    fmt.Sprintf(configTemplate, project),
+		filepath.Join(abs, "pipelines", "default.yaml"):                        defaultPipelineTemplate,
+		filepath.Join(abs, "plugins", "word-count", "plugin.yaml"):             wordCountPluginTemplate,
+		filepath.Join(abs, "plugins", "word-count", "main.py"):                 wordCountScriptTemplate,
+		filepath.Join(abs, "knowledge-bases", "project-handbook", "policy.md"): projectHandbookTemplate,
+		filepath.Join(abs, ".gitignore"):                                       gitignoreTemplate,
+		filepath.Join(abs, "AGENTS.md"):                                        agentsTemplate,
 	}
 	for path, content := range files {
 		if _, err := os.Stat(path); err == nil && !*force {
 			fmt.Printf("skip   %s (exists, use --force to overwrite)\n", rel(abs, path))
 			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
 		}
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			return err
@@ -134,6 +136,7 @@ func cmdInit(args []string) error {
 		fmt.Printf("create %s\n", rel(abs, path))
 	}
 	fmt.Printf("\nProject %q initialised.\n", project)
+	fmt.Println("The default pipeline requires Python 3 as python on PATH; no AI credentials are needed.")
 	fmt.Println("Next steps:")
 	fmt.Println("  signalbox validate        # check the config and pipelines")
 	fmt.Println("  signalbox serve           # open the web UI")

@@ -16,7 +16,9 @@ and script interpreters are installed separately when needed.
 - [Download Windows, Linux and macOS releases](https://github.com/kaladinstorm84/SignalBox/releases)
 - [Use the web UI](help/web-ui.md) or [command line](help/command-line.md)
 
-The starter pipeline uses a mock runtime, so you can try it without AI credentials.
+The starter pipeline uses a mock runtime, so no AI credentials are needed.
+Its bundled word-count plugin requires Python 3 available as `python` on `PATH`;
+the drafting agent also uses a sample knowledge base.
 
 ```powershell
 go install github.com/kaladinstorm84/SignalBox/cmd/signalbox@latest

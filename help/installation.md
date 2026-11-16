@@ -5,10 +5,12 @@
 ## Getting started
 
 Building from source requires Go 1.25 or newer. The scaffolded default pipeline
-uses the `mock` runtime, so no AI credentials are needed to try it. For real
-runtimes, install/authenticate the relevant CLI or set the API key environment
-variable configured for the OpenAI-compatible runtime. Code steps require
-their language's interpreter on `PATH`.
+uses the `mock` runtime, so no AI credentials are needed to try it. Its bundled
+word-count plugin requires Python 3 available as `python` on `PATH`; no extra
+Python packages are needed. For real runtimes, install/authenticate the
+relevant CLI or set the API key environment variable configured for the
+OpenAI-compatible runtime. Code and plugin steps require their language's
+interpreter on `PATH`.
 
 ### Install from GitHub
 
@@ -60,7 +62,7 @@ when unset) to `PATH` in your shell profile.
 #### Create and run a project
 
 ```powershell
-signalbox init my-project     # creates config, starter pipeline, .gitignore, and AGENTS.md
+signalbox init my-project     # creates config, demo pipeline, plugin, knowledge base and guides
 Set-Location my-project
 signalbox validate            # check config and all pipelines
 signalbox serve               # web UI on http://127.0.0.1:8484
@@ -73,10 +75,19 @@ in the project directory for a terminal execution, or stop the server first:
 signalbox run default --input "Hello SignalBox"
 ```
 
+The starter pipeline runs two mock agents and the Python word-count plugin
+in parallel during research. Its drafting agent receives the writing policy
+from the project handbook, and a human approval gate still reviews the draft.
+The sample files are:
+
+- `plugins/word-count/plugin.yaml` and `plugins/word-count/main.py`
+- `knowledge-bases/project-handbook/policy.md`
+
 `signalbox init` also creates an `AGENTS.md` project guide with layout,
-workflow, and pipeline-authoring conventions, plus a `.gitignore` for local
-execution state. Existing scaffold files are left untouched by default; pass
-`--force` to overwrite them.
+workflow, pipeline-authoring conventions, and examples for creating script
+plugins and knowledge bases, plus a `.gitignore` for local execution state.
+Existing scaffold files are left untouched by default; pass `--force` to
+overwrite them, including the sample plugin and knowledge document.
 
 #### Update an installed version
 
