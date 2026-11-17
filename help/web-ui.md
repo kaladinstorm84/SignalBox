@@ -71,9 +71,10 @@
   and stages. A searchable, scrollable submenu under **Pipelines** lets you
   switch between definitions; **All pipelines** returns to the board and schemas.
   Pipeline detail links can be bookmarked, and **Run** preselects that pipeline.
-  Use **New pipeline** to create a YAML file or **Edit** on a
-  pipeline to modify its source. The editor writes to the configured
-  `pipelines_dir`, preserves comments/whitespace, and validates the graph,
+  The dropdown arrow beside **Run** offers **Export Python** (download a Python
+  version of the pipeline) and **Edit**. Use **New pipeline** to create a YAML
+  file or **Edit** from this menu to modify its source. The editor writes to
+  the configured `pipelines_dir`, preserves comments/whitespace, and validates the graph,
   runtime/code references, and duplicate pipeline names before saving.
   Filenames must be `.yaml` or `.yml` files, not paths. Existing filenames are
   read-only in the editor, and a new file never overwrites an existing one.

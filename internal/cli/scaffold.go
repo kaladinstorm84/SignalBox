@@ -69,15 +69,14 @@ runtimes:
 #     pipeline: default
 `
 
-const defaultPipelineTemplate = `# A demo using mock AI agents, a Python plugin and a knowledge base.
+const defaultPipelineTemplate = `# A demo using mock AI agents, a Python plugin and a knowledge base in sequence.
 # Requires Python 3 available as python on PATH; no AI credentials are needed.
 # Configure real runtimes in signalbox.yaml when ready.
 name: default
 description: >-
-  Demo flow: a triage agent hands off to an orchestrator that coordinates a
-  research stage (two AI agents and a word-count plugin in parallel) and a
-  drafting stage using the project handbook, then a human approves the draft
-  before the publisher agent finishes.
+  Demo flow: triage passes the brief to research, analysis, then drafting in
+  sequential orchestrator stages. A Python plugin counts the completed draft
+  before a human approves it and the publisher agent finishes.
 entry: triage
 
 agents:
@@ -93,17 +92,23 @@ agents:
     handoff: [coordinator]
 
   # An orchestrator accepts handoffs from many agents (fan-in) and runs its
-  # stages in order. Each stage dispatches to agents in parallel and collects
-  # the results of their chains before moving on.
+  # stages in order. Stages run sequentially; agents within each stage run in
+  # parallel and their chains finish before the next stage begins.
   - id: coordinator
     type: orchestrator
     runtime: mock
-    description: Long-running coordinator for research and drafting.
+    description: Runs research, analysis and drafting in dependency order.
     stages:
       - id: research
-        agents: [researcher, analyst, word_counter]
+        agents: [researcher]
         prompt: |
-          Merge the research notes, analysis and word count into one coherent summary.
+          Summarize the research findings for the analyst. Preserve relevant
+          facts and clearly identify anything that still needs investigation.
+      - id: analysis
+        agents: [analyst]
+        prompt: |
+          Analyze the research findings above. Summarize the evidence, risks
+          and open questions for the writer.
       - id: drafting
         agents: [writer]
     handoff: [review]
@@ -122,21 +127,23 @@ agents:
     runtime: mock
     description: Analyses risks and constraints.
     prompt: |
-      You are the analyst. Identify risks, constraints, and open questions.
-
-  # The plugin's descriptor and script live in plugins/word-count/.
-  - id: word_counter
-    type: plugin:word-count
-    description: Counts words in the research-stage input.
+      You are the analyst. Analyze the research findings in your input.
+      Identify evidence, risks, constraints, and open questions.
 
   - id: writer
     type: standard
     runtime: mock
     knowledge_bases: [project-handbook]
+    handoff: [word_counter]
     description: Produces the draft using the project's writing policy.
     prompt: |
       You are the writer. Produce a polished draft from the stage context.
       Follow the writing policy in the attached project handbook.
+
+  # Counts the writer's output and passes the draft along with the count.
+  - id: word_counter
+    type: plugin:word-count
+    description: Counts the completed draft before human review.
 
   # An approval node pauses the execution until a human approves or rejects
   # it in the web UI (signalbox serve) or the terminal (signalbox run).
@@ -159,11 +166,10 @@ entry: main.py
 timeout_seconds: 30
 `
 
-const wordCountScriptTemplate = `import json
-import sys
+const wordCountScriptTemplate = `import sys
 
 text = sys.stdin.read()
-print(json.dumps({"words": len(text.split())}))
+sys.stdout.write(f"Draft word count: {len(text.split())}\n\n--- Draft ---\n{text}")
 `
 
 const projectHandbookTemplate = `# Writing policy
@@ -194,8 +200,9 @@ Knowledge bases provide reusable reference documents for AI agents.
 - knowledge-bases/<name>/ contains the text documents in a knowledge base.
 - .signalbox/ stores local execution state; do not edit or commit it.
 
-The starter default pipeline already uses the word-count plugin in its
-research stage and the project-handbook knowledge base when drafting.
+The starter default pipeline passes work through sequential research,
+analysis and drafting stages, then uses the word-count plugin on the draft.
+The project-handbook knowledge base is attached to the writer.
 Install Python 3 as python on PATH before running it; its AI agents use
 mock, so no AI credentials are needed.
 
@@ -280,7 +287,8 @@ sandbox; review code before running it.
 
 Run signalbox validate, then:
 signalbox run count-words --input "Hello reusable plugins"
-The result should be {"words": 3}; also check empty input and error paths.
+The result begins with "Draft word count: 3" and includes the original text;
+also check empty input and error paths.
 
 ## Creating knowledge bases
 

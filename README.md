@@ -18,7 +18,8 @@ and script interpreters are installed separately when needed.
 
 The starter pipeline uses a mock runtime, so no AI credentials are needed.
 Its bundled word-count plugin requires Python 3 available as `python` on `PATH`;
-the drafting agent also uses a sample knowledge base.
+the pipeline runs research, analysis and drafting in sequence, then counts the
+draft. The drafting agent also uses a sample knowledge base.
 
 ```powershell
 go install github.com/kaladinstorm84/SignalBox/cmd/signalbox@latest

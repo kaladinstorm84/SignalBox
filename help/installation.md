@@ -75,9 +75,10 @@ in the project directory for a terminal execution, or stop the server first:
 signalbox run default --input "Hello SignalBox"
 ```
 
-The starter pipeline runs two mock agents and the Python word-count plugin
-in parallel during research. Its drafting agent receives the writing policy
-from the project handbook, and a human approval gate still reviews the draft.
+The starter pipeline runs research, analysis and drafting in sequential
+orchestrator stages. The drafting agent receives the writing policy from the
+project handbook, then the Python plugin counts and preserves its draft for
+the human approval gate.
 The sample files are:
 
 - `plugins/word-count/plugin.yaml` and `plugins/word-count/main.py`

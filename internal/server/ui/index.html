@@ -174,6 +174,18 @@
   button.danger { background: transparent; color: var(--err); border: 1px solid var(--err); box-shadow: none; }
   button.danger:hover { background: rgba(226,70,58,.12); }
   button.sm { padding: 3px 9px; font-size: 12px; }
+  .pipeline-actions { display: inline-flex; flex: 0 0 auto; }
+  .pipeline-actions > button:first-child { border-radius: 5px 0 0 5px; }
+  .pipeline-actions > button:last-of-type { border-radius: 0 5px 5px 0; border-left: 0; padding: 9px 10px; }
+  .pipeline-actions svg { display: block; width: 16px; height: 16px; }
+  .pipeline-actions-menu {
+    position: fixed; inset: auto; margin: 0; width: 170px; padding: 6px;
+    background: var(--bg2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 5px; box-shadow: 0 6px 18px rgba(0,0,0,.4);
+  }
+  .pipeline-actions-menu button { display: block; width: 100%; text-align: left; border: 0; background: transparent; }
+  .pipeline-actions-menu button:hover { background: var(--bg3); }
+  .pipeline-actions button:focus-visible { outline: 2px solid var(--accent2); outline-offset: 2px; }
   .results-head { display: flex; align-items: center; gap: 10px; margin: 20px 0 10px; }
   td.actions { white-space: nowrap; text-align: right; }
   td.actions button + button { margin-left: 6px; }
@@ -2369,6 +2381,41 @@ function structuredInputError(input, schema) {
 function pipelineLink(name) {
   return '#/pipelines/view/' + encodeURIComponent(name);
 }
+function closePipelineActions() {
+  document.querySelector('#pipeline-actions-menu:popover-open')?.hidePopover();
+}
+window.addEventListener('resize', closePipelineActions);
+document.addEventListener('scroll', closePipelineActions, true);
+
+function bindPipelineActions() {
+  const menu = document.getElementById('pipeline-actions-menu');
+  const toggle = document.getElementById('pipeline-actions-toggle');
+  if (!menu) return;
+  menu.addEventListener('toggle', () => {
+    const open = menu.matches(':popover-open');
+    toggle.setAttribute('aria-expanded', String(open));
+    if (!open) return;
+    const rect = toggle.getBoundingClientRect();
+    menu.style.left = Math.max(8, Math.min(rect.right - menu.offsetWidth, innerWidth - menu.offsetWidth - 8)) + 'px';
+    menu.style.top = (rect.bottom + menu.offsetHeight + 6 <= innerHeight
+      ? rect.bottom + 6 : Math.max(8, rect.top - menu.offsetHeight - 6)) + 'px';
+    menu.querySelector('button:not(:disabled)')?.focus({preventScroll: true});
+  });
+  menu.addEventListener('focusout', event => {
+    if (!menu.contains(event.relatedTarget) && event.relatedTarget !== toggle) menu.hidePopover();
+  });
+  menu.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    menu.hidePopover();
+    toggle.focus({preventScroll: true});
+  });
+  menu.addEventListener('click', event => {
+    if (!event.target.closest('button')) return;
+    menu.hidePopover();
+    toggle.focus({preventScroll: true});
+  });
+}
 async function downloadPipelinePython(button) {
   const errorBox = document.getElementById('pipeline-export-error');
   errorBox.hidden = true;
@@ -2458,9 +2505,17 @@ async function showPipelines(selected) {
         ${p.sources && p.sources.length ? `<div class="muted">imports: ${p.sources.map(src => `<span class="mono">${esc(src)}</span>`).join(', ')}</div>` : ''}
         ${p.input_schema ? `<div class="muted">input schema: <span class="mono">${esc(p.input_schema)}</span></div>` : ''}
         ${p.files ? `<div class="muted">${esc(filesSpecLabel(p.files))}</div>` : ''}</div>
-        <div class="approve-actions" style="margin-top:0">${filenameByName.has(p.name) ? `<button class="secondary" data-edit-file="${esc(filenameByName.get(p.name))}">Edit</button>` : ''}
-        <button class="secondary" data-export-pipeline="${esc(p.name)}">Export Python</button>
-        <button class="secondary" data-run-pipeline="${esc(p.name)}">Run</button></div></div>
+        <div class="pipeline-actions">
+          <button data-run-pipeline="${esc(p.name)}">Run</button>
+          <button id="pipeline-actions-toggle" popovertarget="pipeline-actions-menu" aria-controls="pipeline-actions-menu"
+            aria-expanded="false" aria-label="More actions for ${esc(p.name)}" title="More pipeline actions">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+          </button>
+          <div id="pipeline-actions-menu" class="pipeline-actions-menu" popover="auto" role="group" aria-label="Pipeline actions">
+            <button class="secondary" data-export-pipeline="${esc(p.name)}">Export Python</button>
+            ${filenameByName.has(p.name) ? `<button class="secondary" data-edit-file="${esc(filenameByName.get(p.name))}">Edit</button>` : ''}
+          </div>
+        </div></div>
         <div style="margin-top:10px">${flowDiagram(p)}</div>
         <table style="margin-top:10px"><thead><tr><th>Agent</th><th>Type</th><th>Runtime</th><th>Hands off to</th></tr></thead>
         <tbody>${p.nodes.map(n => `
@@ -2491,6 +2546,7 @@ async function showPipelines(selected) {
     location.hash = '#/new?pipeline=' + encodeURIComponent(button.dataset.runPipeline);
   }));
   $main.querySelectorAll('[data-export-pipeline]').forEach(button => button.addEventListener('click', () => downloadPipelinePython(button)));
+  bindPipelineActions();
   window.scrollTo(0, 0);
 }
 
