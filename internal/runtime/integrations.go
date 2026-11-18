@@ -42,10 +42,15 @@ func (c *cliRuntime) integrationArgs(req Request) (args, env []string, cleanup f
 		if strings.HasPrefix(req.Model, "-") || strings.ContainsAny(req.Model, " \t\r\n") {
 			return nil, nil, cleanup, fmt.Errorf("invalid model %q", req.Model)
 		}
-		if c.modelArg == "" {
+		switch {
+		case c.appServer:
+			// app-server has no --model flag; this config override is equivalent.
+			args = append(args, "-c", "model="+tomlValue(req.Model))
+		case c.modelArg == "":
 			return nil, nil, cleanup, fmt.Errorf("runtime %q does not support per-agent models; set model_arg in %s", c.name, config.FileName)
+		default:
+			args = append(args, c.modelArg, req.Model)
 		}
-		args = append(args, c.modelArg, req.Model)
 	}
 	if effort := options.ReasoningEffort; effort != "" {
 		switch c.kind {

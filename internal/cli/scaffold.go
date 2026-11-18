@@ -42,7 +42,8 @@ runtimes:
   #   # timeout_seconds: 600
 
   # codex:
-  #   type: codex                   # runs: codex exec "<prompt>"
+  #   type: codex                   # runs: codex app-server (one session per call)
+  #   # args: ["exec"]             # opt out: one-shot codex exec "<prompt>"
   #   model: gpt-5.4               # default; pipeline model overrides win
   #   reasoning_effort: high       # model-dependent effort level
   #   speed: standard              # fast requests priority service (extra cost)

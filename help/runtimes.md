@@ -71,11 +71,25 @@ saved on the agent run. A CLI that buffers stdout until completion, or another
 runtime without streaming support, records its output when the call returns.
 These logs are response text, not private model reasoning.
 
-Codex calls use `codex exec --json` when streaming, so session activity, tool
-start/completion statuses and agent messages appear during the call. Only the
-final agent message is handed downstream; JSON events and activity markers are
-not part of the article or structured response. Reasoning events are omitted.
-Codex emits messages at event boundaries, not necessarily token by token.
+Codex runs through `codex app-server`: SignalBox starts one App Server
+process per call, speaks its JSON-RPC protocol over stdio, and runs the prompt
+as a single turn. Agent text streams token by token, and session activity and
+tool start/completion statuses appear as markers during the call. Only the
+final agent message (the turn's final answer) is handed downstream; activity
+markers are not part of the article or structured response. Reasoning is
+neither requested nor logged, and messages from sub-agent threads are ignored.
+
+SignalBox cannot answer prompts mid-call, so it starts each thread with
+`approvalPolicy: never`, as `codex exec` does. Any command or file-change
+approval or MCP input request that still arrives is declined and noted in the
+log. Sandboxing follows your Codex configuration. A timeout or cancellation
+first interrupts the turn, then stops the server.
+
+To use the one-shot CLI instead, set `args: [exec]` (plus any `codex exec`
+flags) on the runtime. That mode streams `codex exec --json` events, which
+arrive at event boundaries rather than token by token. Python export always
+generates `codex exec` commands.
+
 Small updates are saved at least once per second even if no new output arrives;
 the execution page displays them on its existing two-second refresh.
 
@@ -133,8 +147,9 @@ runtimes:
 Each configured flag receives its value as a separate process argument.
 
 `standard`, `llm_gate`, and `orchestrator` agents can set `runtime.model` (it may use
-a param). The `codex`, `claude`, and `copilot` runtimes pass it as
-`--model`, `openai` uses it instead of the runtime's `model`, and `mock`
+a param). The `claude` and `copilot` runtimes pass it as `--model`, `codex`
+passes it as `-c model="<model>"` (`--model` with `args: [exec]`), `openai`
+uses it instead of the runtime's `model`, and `mock`
 ignores it. A `cli` runtime needs `model_arg` (for example `model_arg:
 --model`) or validation fails. Session participants use their own settings.
 The execution's **Runtime calls** section shows the effective provider, model,
@@ -220,7 +235,7 @@ Configured in `signalbox.yaml` and referenced by name from agents:
 | Type | Backing |
 |------|---------|
 | `openai` | Any OpenAI-compatible chat completions API (`base_url` configurable, key read from an env var). |
-| `codex` | `codex exec "<prompt>"` (local CLI). |
+| `codex` | `codex app-server` over stdio, one session per call (local CLI); `args: [exec]` uses `codex exec "<prompt>"`. |
 | `claude` | `claude -p "<prompt>"` (local CLI). |
 | `copilot` | `copilot -p "<prompt>"` (local CLI). |
 | `cli` | Any custom command; prompt via final argument or stdin (`prompt_mode`). |
@@ -232,6 +247,8 @@ prompt delivery, timeout) is overridable per runtime.
 By default the prompt is passed as the final argument. Windows limits a
 command line to 32,767 characters, so a prompt longer than about 24,000
 characters (e.g. a judge receiving every planner's output) is piped through
-stdin instead for `codex` (`codex exec -`) and `claude` (`claude -p`). Other
-runtimes fail with a clear error in that case; set `prompt_mode: stdin` if the
-command can read its prompt from stdin.
+stdin instead for `codex` with `args: [exec]` (`codex exec -`) and `claude`
+(`claude -p`). Other runtimes fail with a clear error in that case; set
+`prompt_mode: stdin` if the command can read its prompt from stdin. The
+default `codex` App Server mode sends the prompt over its protocol, so it has
+no command-line limit and ignores `prompt_mode`.

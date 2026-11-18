@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -38,6 +39,9 @@ type cliRuntime struct {
 	code bool
 	// commandOnly runs a CLI operation with no prompt argument or stdin.
 	commandOnly bool
+	// appServer drives `codex app-server` over stdio JSON-RPC instead of
+	// passing the prompt to a one-shot command.
+	appServer bool
 }
 
 // filesInstructions tells an agent CLI where the uploaded files are.
@@ -86,12 +90,14 @@ func (e *ProcessExitError) Unwrap() error { return e.cause }
 // single-prompt mode; the user can override command/args in signalbox.yaml.
 // stdinArgs, when set, are appended instead of the prompt to make the CLI read
 // the prompt from stdin; prompts too long for the command line use this.
+// codex defaults to its App Server; `args: [exec]` selects one-shot
+// `codex exec`, which reads a long prompt from stdin via "-".
 var cliPresets = map[string]struct {
 	command   string
 	args      []string
 	stdinArgs []string
 }{
-	"codex":   {command: "codex", args: []string{"exec"}, stdinArgs: []string{"-"}},
+	"codex":   {command: "codex", args: []string{"app-server"}, stdinArgs: []string{"-"}},
 	"claude":  {command: "claude", args: []string{"-p"}, stdinArgs: []string{}},
 	"copilot": {command: "copilot", args: []string{"-p"}},
 }
@@ -139,6 +145,7 @@ func newCLI(name string, rc config.RuntimeConfig) (Runtime, error) {
 		modelArg:   modelArg,
 		model:      rc.Model,
 		options:    rc,
+		appServer:  rc.Type == "codex" && slices.Contains(args, "app-server"),
 	}, nil
 }
 
@@ -181,6 +188,9 @@ func (c *cliRuntime) invoke(ctx context.Context, req Request, onOutput func(stri
 	defer cancel()
 
 	args := c.baseArgs(extra)
+	if c.appServer {
+		return c.invokeAppServer(ctx, prompt, args, env, timeout, onOutput)
+	}
 	codexStream := c.kind == "codex" && onOutput != nil
 	if codexStream {
 		hasJSON := false

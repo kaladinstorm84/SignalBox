@@ -25,7 +25,7 @@ runtimes:
   claude:
     type: claude          # claude -p "<prompt>"
   codex:
-    type: codex           # codex exec "<prompt>"
+    type: codex           # codex app-server (args: [exec] for codex exec "<prompt>")
   copilot:
     type: copilot         # copilot -p "<prompt>"
   custom:

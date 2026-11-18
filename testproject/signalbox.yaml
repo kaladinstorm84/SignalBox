@@ -15,6 +15,8 @@ server:
   host: 127.0.0.1
   port: 8484
 
+generation_runtime: codex
+
 # Runtimes map agent "runtime" names to AI backends.
 # Types: openai (OpenAI-compatible API), codex, claude, copilot (local agent
 # CLIs), cli (any custom command), mock (deterministic echo for demos/tests).

@@ -29,6 +29,15 @@ func ExportCLICommand(name string, rc config.RuntimeConfig, req Request) (CLICom
 	if len(req.MCP) > 0 || req.Schema != nil || req.FilesDir != "" || len(req.Files) > 0 {
 		return CLICommand{}, fmt.Errorf("Python export does not support MCP grants, schemas, or uploaded files")
 	}
+	if rc.Type == "codex" {
+		// Exported scripts run one-shot `codex exec`; they do not speak the
+		// App Server protocol live calls use.
+		if rc.Args == nil {
+			rc.Args = []string{"exec"}
+		} else if slices.Contains(rc.Args, "app-server") {
+			return CLICommand{}, fmt.Errorf("Python export runs codex exec; runtime %q sets app-server args, so omit args or use args: [exec]", name)
+		}
+	}
 	rt, err := newCLI(name, rc)
 	if err != nil {
 		return CLICommand{}, err

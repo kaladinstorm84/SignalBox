@@ -48,6 +48,9 @@ func TestConfiguredCLIOptions(t *testing.T) {
 					model = "default-model"
 				}
 				want := []string{"--model", model}
+				if tc.kind == "codex" {
+					want = []string{"-c", `model="` + model + `"`}
+				}
 				if tc.kind != "copilot" {
 					options := tc.fast
 					if speed == "standard" {
