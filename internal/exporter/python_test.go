@@ -28,6 +28,9 @@ func pythonExecutable(t *testing.T) string {
 
 func writeTestFile(t *testing.T, path, text string) {
 	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -35,11 +38,11 @@ func writeTestFile(t *testing.T, path, text string) {
 
 func exportTestScript(t *testing.T, dir, yaml string, rc config.RuntimeConfig) string {
 	t.Helper()
-	p, err := pipeline.Parse([]byte(yaml))
+	p, err := pipeline.ParseWith([]byte(yaml), pipeline.Options{Root: dir})
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := Python(p, &config.Config{Runtimes: map[string]config.RuntimeConfig{"agent": rc}})
+	data, err := Python(p, &config.Config{Root: dir, Runtimes: map[string]config.RuntimeConfig{"agent": rc}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,6 +407,203 @@ func TestPythonExportRejectsUnsupportedFeatures(t *testing.T) {
 			p, err := pipeline.Parse([]byte("name: test\nagents:\n  - id: first\n    runtime: agent\n    prompt: write\n"))
 			if err != nil {
 				t.Fatal(err)
+			}
+
+			func TestPythonExportOrchestratorSnapshotsAndResume(t *testing.T) {
+				python := pythonExecutable(t)
+				dir := t.TempDir()
+				helper := filepath.Join(dir, "agent.py")
+				writeTestFile(t, helper, `
+			import sys, time
+			from pathlib import Path
+			prompt = sys.stdin.read()
+			role = prompt.splitlines()[0]
+			with Path(role + ".calls").open("a") as calls:
+			    calls.write("called\n")
+			if role in ("RESEARCH", "ANALYSIS"):
+			    Path(role + ".ready").touch()
+			    peer = "ANALYSIS" if role == "RESEARCH" else "RESEARCH"
+			    deadline = time.monotonic() + 5
+			    while not Path(peer + ".ready").exists():
+			        if time.monotonic() > deadline:
+			            raise RuntimeError("stage branches were not started in parallel")
+			        time.sleep(0.01)
+			    print(role + " evidence")
+			elif role == "SYNTH":
+			    assert "--- result from researcher ---\nRESEARCH evidence" in prompt
+			    assert "--- result from analyst ---\nANALYSIS evidence" in prompt
+			    assert "COORDINATOR REFERENCE" in prompt
+			    if not Path("synthesis-release").exists():
+			        raise RuntimeError("synthesis blocked")
+			    print("SYNTHESIZED OUTLINE")
+			elif role == "WRITE":
+			    assert "SYNTHESIZED OUTLINE" in prompt
+			    assert "--- additional input from researcher ---\nRESEARCH evidence" in prompt
+			    assert "WRITER REFERENCE" in prompt
+			    print("DRAFT: original article")
+			elif role == "FINAL":
+			    assert "counted:3\nDRAFT: original article" in prompt
+			    assert "COORDINATOR REFERENCE" in prompt
+			    print("FINAL DRAFT: original article")
+			elif role == "PUBLISH":
+			    assert "FINAL DRAFT: original article" in prompt
+			    assert "--- additional input from writer ---\nDRAFT: original article" in prompt
+			    print("PUBLISHED")
+			else:
+			    raise RuntimeError("unexpected role " + role)
+			`)
+				writeTestFile(t, filepath.Join(dir, "knowledge-bases", "coord", "notes.md"), "COORDINATOR REFERENCE")
+				writeTestFile(t, filepath.Join(dir, "knowledge-bases", "writing", "policy.md"), "WRITER REFERENCE")
+				writeTestFile(t, filepath.Join(dir, "plugins", "count", "plugin.yaml"), "language: python\nentry: main.py\ntimeout_seconds: 10\n")
+				writeTestFile(t, filepath.Join(dir, "plugins", "count", "helper.py"), "def count(text):\n    return len(text.split())\n")
+				writeTestFile(t, filepath.Join(dir, "plugins", "count", "resources", "prefix.txt"), "counted")
+				writeTestFile(t, filepath.Join(dir, "plugins", "count", "main.py"), `
+			import sys
+			from pathlib import Path
+			from helper import count
+			with Path("PLUGIN.calls").open("a") as calls:
+			    calls.write("called\n")
+			if not Path("plugin-release").exists():
+			    raise RuntimeError("plugin blocked")
+			text = sys.stdin.read()
+			prefix = (Path(__file__).parent / "resources" / "prefix.txt").read_text()
+			print(f"{prefix}:{count(text)}\n{text}")
+			`)
+				script := exportTestScript(t, dir, `name: coordinated
+			entry: coordinator
+			params:
+			  role: {default: SYNTH}
+			agents:
+			  - id: coordinator
+			    type: orchestrator
+			    runtime: agent
+			    knowledge_bases: [coord]
+			    prompt: FINAL
+			    stages:
+			      - id: research
+			        agents: [researcher, analyst]
+			        prompt: ${{ params.role }}
+			      - id: drafting
+			        agents: [writer]
+			    handoff: [review]
+			  - id: researcher
+			    runtime: agent
+			    prompt: RESEARCH
+			  - id: analyst
+			    runtime: agent
+			    prompt: ANALYSIS
+			  - id: writer
+			    runtime: agent
+			    knowledge_bases: [writing]
+			    additional-input: [researcher]
+			    prompt: WRITE
+			    handoff: [count]
+			  - id: count
+			    type: plugin:count
+			  - id: review
+			    type: approval
+			    handoff: [publisher]
+			  - id: publisher
+			    runtime: agent
+			    additional-input: [writer]
+			    prompt: PUBLISH
+			`, config.RuntimeConfig{Type: "cli", Command: python, Args: []string{"-u", helper}, PromptMode: "stdin"})
+				for _, folder := range []string{"plugins", "knowledge-bases"} {
+					if err := os.RemoveAll(filepath.Join(dir, folder)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				runDir := filepath.Join(dir, "run")
+				output, err := runPython(t, python, script, "--input", "brief", "--workdir", dir, "--output-dir", runDir, "--yes")
+				if err == nil || !bytes.Contains(output, []byte("synthesis blocked")) {
+					t.Fatalf("synthesis failure was lost: %v\n%s", err, output)
+				}
+				writeTestFile(t, filepath.Join(dir, "synthesis-release"), "")
+				output, err = runPython(t, python, script, "--resume", "--output-dir", runDir, "--yes")
+				if err == nil || !bytes.Contains(output, []byte("plugin blocked")) {
+					t.Fatalf("plugin failure was lost: %v\n%s", err, output)
+				}
+				writeTestFile(t, filepath.Join(dir, "plugin-release"), "")
+				output, err = runPython(t, python, script, "--resume", "--output-dir", runDir, "--yes")
+				if err != nil {
+					t.Fatalf("resuming orchestrator: %v\n%s", err, output)
+				}
+				if result, err := os.ReadFile(filepath.Join(runDir, "result.txt")); err != nil || string(result) != "PUBLISHED" {
+					t.Fatalf("final result = %q, %v", result, err)
+				}
+				if output, err := runPython(t, python, script, "--resume", "--output-dir", runDir); err != nil {
+					t.Fatalf("resuming completed orchestrator: %v\n%s", err, output)
+				}
+				for role, want := range map[string]int{"RESEARCH": 1, "ANALYSIS": 1, "SYNTH": 2, "WRITE": 1, "PLUGIN": 2, "FINAL": 1, "PUBLISH": 1} {
+					calls, err := os.ReadFile(filepath.Join(dir, role+".calls"))
+					if err != nil || strings.Count(string(calls), "called") != want {
+						t.Errorf("%s calls = %q, want %d: %v", role, calls, want, err)
+					}
+				}
+				var state struct {
+					History []struct {
+						Node     string `json:"node"`
+						Children []struct {
+							Log string `json:"log"`
+						} `json:"children"`
+					} `json:"history"`
+				}
+				data, err := os.ReadFile(filepath.Join(runDir, "checkpoint.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := json.Unmarshal(data, &state); err != nil {
+					t.Fatal(err)
+				}
+				if len(state.History) != 3 || state.History[0].Node != "coordinator" || len(state.History[0].Children) != 4 {
+					t.Fatalf("orchestrator history was not retained: %s", data)
+				}
+			}
+
+			func TestPythonExportOrchestratorWithoutSynthesisAndPluginCodes(t *testing.T) {
+				python := pythonExecutable(t)
+				for _, exitCode := range []int{0, 1, 2} {
+					t.Run(strconv.Itoa(exitCode), func(t *testing.T) {
+						dir := t.TempDir()
+						writeTestFile(t, filepath.Join(dir, "plugins", "check", "plugin.yaml"), "language: python\nentry: main.py\ncodes: {success: 0, fail: 1, retry: 2}\n")
+						writeTestFile(t, filepath.Join(dir, "plugins", "check", "main.py"), `
+			import sys
+			from pathlib import Path
+			text = sys.stdin.read()
+			first = not Path("checked").exists()
+			Path("checked").touch()
+			print("revise this" if first else text)
+			sys.exit(`+strconv.Itoa(exitCode)+` if first else 0)
+			`)
+						script := exportTestScript(t, dir, `name: checks
+			agents:
+			  - id: coordinator
+			    type: orchestrator
+			    stages:
+			      - id: work
+			        agents: [writer]
+			  - id: writer
+			    runtime: agent
+			    handoff: [check]
+			  - id: check
+			    type: plugin:check
+			`, config.RuntimeConfig{Type: "cli", Command: python, Args: []string{"-c", "import sys; print(sys.stdin.read())"}, PromptMode: "stdin"})
+						runDir := filepath.Join(dir, "run")
+						output, err := runPython(t, python, script, "--workdir", dir, "--input", "original", "--output-dir", runDir)
+						if exitCode == 1 {
+							if err == nil || !bytes.Contains(output, []byte("revise this")) {
+								t.Fatalf("plugin failure was not terminal: %v\n%s", err, output)
+							}
+							if resumed, err := runPython(t, python, script, "--resume", "--output-dir", runDir); err == nil || !bytes.Contains(resumed, []byte("rejected")) {
+								t.Fatalf("terminal plugin rejection resumed: %v\n%s", err, resumed)
+							}
+						} else if err != nil {
+							t.Fatalf("plugin execution: %v\n%s", err, output)
+						} else if exitCode == 2 && !bytes.Contains(output, []byte("--- rejection notes from check ---")) {
+							t.Fatalf("plugin retry did not rework the writer: %s", output)
+						}
+					})
+				}
 			}
 			cfg := &config.Config{Runtimes: map[string]config.RuntimeConfig{"agent": {Type: "codex"}}}
 			switch feature {

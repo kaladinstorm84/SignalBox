@@ -4,6 +4,7 @@
 import argparse
 import base64
 import codecs
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import contextlib
 import hashlib
 import json
@@ -27,6 +28,15 @@ GATE_INSTRUCTIONS = (
     "\n\nReturn only one JSON object with exactly two string fields, decision and feedback. "
     'decision must be "approve" or "reject". Example: {"decision":"approve","feedback":"..."}.'
 )
+APPROVAL_LOCK = threading.Lock()
+
+
+class PluginRetry(RuntimeError):
+    pass
+
+
+class PluginFailure(RuntimeError):
+    pass
 
 
 def resolve_params(supplied):
@@ -202,7 +212,7 @@ def stop_process(process):
     process.wait(timeout=5)
 
 
-def invoke(command, prompt, payload, workdir, emit):
+def invoke(command, prompt, payload, workdir, emit, cancel=None, codes=None):
     combined = prompt + "\n\n---\n\n" + payload if prompt else payload
     args = [command["command"]] + (command["args"] or [])
     stdin_text = None
@@ -264,6 +274,8 @@ def invoke(command, prompt, payload, workdir, emit):
     open_streams = 2
     try:
         while open_streams or process.poll() is None:
+            if cancel is not None and cancel.is_set():
+                raise RuntimeError("stage canceled because another branch failed or the runner was interrupted")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise RuntimeError(f"{command['command']} timed out after {command['timeout_seconds']:g}s")
@@ -292,8 +304,13 @@ def invoke(command, prompt, payload, workdir, emit):
             name, text = chunks.get_nowait()
             if name == "failure":
                 raise RuntimeError(text)
-        if process.returncode:
-            detail = "".join(stderr).strip() or "".join(stdout).strip()
+        detail = "\n\n".join(text.strip() for text in ("".join(stdout), "".join(stderr)) if text.strip())
+        if codes:
+            if process.returncode == codes["retry"]:
+                raise PluginRetry(detail or f"plugin returned exit code {process.returncode}")
+            if process.returncode == codes["fail"]:
+                raise PluginFailure(detail or f"plugin returned exit code {process.returncode}")
+        if process.returncode != (codes["success"] if codes else 0):
             raise RuntimeError(f"{command['command']} exited with code {process.returncode}: {detail[:800]}")
         return codex.finish() if codex else "".join(stdout).strip()
     finally:
@@ -302,6 +319,110 @@ def invoke(command, prompt, payload, workdir, emit):
             stream.close()
         for reader in readers:
             reader.join(timeout=1)
+
+
+def invoke_plugin(node, payload, workdir, emit, cancel):
+    plugin = node["plugin"]
+    definition = plugin["definition"]
+    with tempfile.TemporaryDirectory(prefix="signalbox-plugin-") as temporary:
+        root = Path(temporary)
+        for name, encoded in plugin["files"].items():
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(base64.b64decode(encoded))
+        entry = str(root / definition["entry"])
+        commands = {
+            "python": ("python", ["-B", "-X", "utf8", entry]),
+            "javascript": ("node", [entry]),
+            "powershell": ("powershell", ["-NoProfile", "-NonInteractive", "-File", entry]),
+        }
+        executable, args = commands[definition["language"]]
+        command = {
+            "type": "cli", "command": executable, "args": args,
+            "prompt_mode": "stdin", "timeout_seconds": definition.get("timeout_seconds") or 600,
+        }
+        return invoke(command, "", payload, workdir, emit, cancel, definition.get("codes"))
+
+
+def history_view(history):
+    runs = []
+    for run in history:
+        runs.extend(run.get("children", []))
+        runs.append(run)
+    return sorted(runs, key=lambda run: run.get("finished_at", 0))
+
+
+def new_state(params, workdir, payload):
+    return {
+        "fingerprint": FINGERPRINT, "params": params, "workdir": workdir,
+        "next": 0, "input": payload, "history": [], "reworks": {},
+        "attempts": 0, "status": "pending", "error": "",
+    }
+
+
+def invoke_orchestrator(node, payload, state, directory, checkpoint, stem, auto_approve, inherited, emit, cancel):
+    if "orchestrator" not in state:
+        state["orchestrator"] = {"directory": stem + ".stages", "next": 0, "input": payload, "history": []}
+        save_checkpoint(checkpoint, state)
+    progress = state["orchestrator"]
+    root = directory / progress["directory"]
+    while progress["next"] < len(node["stages"]):
+        index = progress["next"]
+        stage = node["stages"][index]
+        emit(f"\n[Stage {stage['id']}]\n")
+        previous = inherited + history_view(state["history"]) + progress["history"]
+
+        def branch_run(branch_index, branch):
+            folder = root / f"stage-{index + 1:04d}" / f"branch-{branch_index + 1:04d}"
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / "checkpoint.json"
+            child = json.loads(path.read_text(encoding="utf-8")) if path.exists() else new_state(
+                state["params"], state["workdir"], progress["input"],
+            )
+            if child["status"] == "rejected":
+                raise PluginFailure(f"stage {stage['id']} branch {branch[0]['id']} was rejected")
+            try:
+                output = execute(child, folder, path, auto_approve, branch, previous, cancel)
+            except RuntimeError as error:
+                if child["status"] == "rejected":
+                    raise PluginFailure(str(error)) from error
+                raise
+            return branch[-1]["id"], output, child
+
+        results = []
+        if len(stage["branches"]) == 1:
+            results.append(branch_run(0, stage["branches"][0]))
+        else:
+            with ThreadPoolExecutor(max_workers=min(len(stage["branches"]), SPEC["max_concurrent_calls"])) as pool:
+                futures = [pool.submit(branch_run, i, branch) for i, branch in enumerate(stage["branches"])]
+                try:
+                    for future in as_completed(futures):
+                        results.append(future.result())
+                except (OSError, ValueError, RuntimeError, EOFError, KeyboardInterrupt, subprocess.TimeoutExpired):
+                    cancel.set()
+                    raise
+        results.sort(key=lambda result: result[2]["history"][-1]["finished_at"])
+        collected = results[0][1] if len(results) == 1 else "\n\n".join(
+            f"--- result from {node_id} ---\n{output}" for node_id, output, _ in results
+        )
+        if stage["prompt"]:
+            collected = invoke(
+                node["command"], substitute(stage["prompt"], state["params"]),
+                collected + node["knowledge"], state["workdir"], emit, cancel,
+            )
+        for _, _, child in results:
+            progress["history"].extend(history_view(child["history"]))
+        progress["history"].sort(key=lambda run: run["finished_at"])
+        progress["input"] = collected
+        progress["next"] = index + 1
+        save_checkpoint(checkpoint, state)
+    output = progress["input"]
+    if node["prompt"]:
+        output = invoke(
+            node["command"], substitute(node["prompt"], state["params"]),
+            output + node["knowledge"], state["workdir"], emit, cancel,
+        )
+    return output
 
 
 def additional_input(node, payload, history):
@@ -323,7 +444,7 @@ def runtime_input(node, payload, history):
     strategy = context["strategy"]
     candidates = [
         run for run in history
-        if run["status"] == "completed" and run["type"] == "standard" and run["output"]
+        if run["status"] == "completed" and (run["type"] in ("standard", "orchestrator") or run["type"].startswith("plugin:")) and run["output"]
         and (strategy != "own" or run["node"] == node["id"])
         and run["output"] not in payload
     ]
@@ -399,12 +520,17 @@ def rework_target(node, history, nodes):
     return None, ""
 
 
-def execute(state, directory, checkpoint, auto_approve):
-    nodes = SPEC["nodes"]
+def execute(state, directory, checkpoint, auto_approve, nodes=None, inherited=None, cancel=None):
+    nodes = SPEC["nodes"] if nodes is None else nodes
+    inherited = [] if inherited is None else inherited
+    cancel = threading.Event() if cancel is None else cancel
     while state["next"] < len(nodes):
+        if cancel.is_set():
+            raise RuntimeError("stage canceled")
         index = state["next"]
         node = nodes[index]
-        payload = additional_input(node, state["input"], state["history"])
+        history = inherited + history_view(state["history"])
+        payload = additional_input(node, state["input"], history)
         state["attempts"] += 1
         state["status"] = "waiting_approval" if node["type"] == "approval" else "running"
         state["error"] = ""
@@ -423,12 +549,20 @@ def execute(state, directory, checkpoint, auto_approve):
                 decision, feedback = "approve", ""
                 output = payload
                 if node["type"] == "approval":
-                    decision, feedback = approve(node, payload, auto_approve)
+                    with APPROVAL_LOCK:
+                        decision, feedback = approve(node, payload, auto_approve)
                     emit(f"[Human decision: {decision}]\n{feedback}\n")
+                elif node["type"] == "orchestrator":
+                    output = invoke_orchestrator(node, payload, state, directory, checkpoint, stem, auto_approve, inherited, emit, cancel)
+                elif node.get("plugin"):
+                    try:
+                        output = invoke_plugin(node, runtime_input(node, payload, history), state["workdir"], emit, cancel)
+                    except PluginRetry as error:
+                        decision, feedback = "reject", str(error)
                 else:
                     if node["type"] == "llm_gate":
                         prompt += GATE_INSTRUCTIONS
-                    response = invoke(node["command"], prompt, runtime_input(node, payload, state["history"]), state["workdir"], emit)
+                    response = invoke(node["command"], prompt, runtime_input(node, payload, history) + node["knowledge"], state["workdir"], emit, cancel)
                     if node["type"] == "llm_gate":
                         verdict = json.loads(response)
                         if (
@@ -460,12 +594,15 @@ def execute(state, directory, checkpoint, auto_approve):
                     (directory / (stem + ".txt")).write_text(output, encoding="utf-8")
                     state["next"] = index + 1
                     state["input"] = output
-                state["history"].append({
+                record = {
                     "node": node["id"], "type": node["type"], "input": payload, "output": output,
                     "status": "completed" if decision == "approve" else "rejected",
                     "decision": decision if node["type"] != "standard" else "",
-                    "feedback": feedback, "log": stem + ".log",
-                })
+                    "feedback": feedback, "log": stem + ".log", "finished_at": time.time_ns(),
+                }
+                if node["type"] == "orchestrator":
+                    record["children"] = state.pop("orchestrator")["history"]
+                state["history"].append(record)
                 if state["status"] == "rejected":
                     save_checkpoint(checkpoint, state)
                     raise RuntimeError(state["error"])
@@ -473,7 +610,7 @@ def execute(state, directory, checkpoint, auto_approve):
                 save_checkpoint(checkpoint, state)
         except (OSError, ValueError, RuntimeError, EOFError, KeyboardInterrupt, subprocess.TimeoutExpired) as error:
             if state["status"] != "rejected":
-                state["status"] = "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
+                state["status"] = "rejected" if isinstance(error, PluginFailure) else "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
                 state["error"] = str(error) or "interrupted"
             save_checkpoint(checkpoint, state)
             with (directory / (stem + ".log")).open("a", encoding="utf-8", newline="\n") as log:
@@ -518,11 +655,7 @@ def main(argv=None):
                 workdir = (args.workdir or Path.cwd()).resolve()
                 if not workdir.is_dir():
                     raise ValueError(f"working directory does not exist: {workdir}")
-                state = {
-                    "fingerprint": FINGERPRINT, "params": resolve_params(args.param),
-                    "workdir": str(workdir), "next": 0, "input": args.input or "",
-                    "history": [], "reworks": {}, "attempts": 0, "status": "pending", "error": "",
-                }
+                state = new_state(resolve_params(args.param), str(workdir), args.input or "")
                 save_checkpoint(checkpoint, state)
             result = execute(state, directory, checkpoint, args.yes)
             sys.stdout.write(result + "\n")
