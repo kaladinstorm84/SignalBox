@@ -1,5 +1,6 @@
 
-[](https://img.shields.io/chocolatey/v/Signalbox)
+![Chocolatey Version](https://img.shields.io/chocolatey/v/Signalbox)
+
 # SignalBox
 
 SignalBox is a YAML based AI agent workflow system with human approval stages.
