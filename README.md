@@ -1,3 +1,6 @@
+
+![Chocolatey Version](https://img.shields.io/chocolatey/v/Signalbox)
+
 # SignalBox
 
 SignalBox is a YAML based AI agent workflow system with human approval stages.
@@ -22,7 +25,7 @@ the pipeline runs research, analysis and drafting in sequence, then counts the
 draft. The drafting agent also uses a sample knowledge base.
 
 ```powershell
-go install github.com/kaladinstorm84/SignalBox/cmd/signalbox@latest
+choco install signalbox -y // or go install github.com/kaladinstorm84/SignalBox/cmd/signalbox@latest
 signalbox init my-project
 Set-Location my-project
 signalbox serve
