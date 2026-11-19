@@ -1,0 +1,68 @@
+# Example pipeline demonstrating three-level environment variables
+name: variables-demo
+description: >-
+  Demonstrates environment variable precedence: project → pipeline → step.
+  Variables cascade with higher levels overriding lower levels.
+  Run with: signalbox run variables-demo --input "test"
+entry: check-variables
+
+# Pipeline-level variables (medium precedence)
+# These override project-level variables from signalbox.yaml
+variables:
+  LOG_LEVEL: "debug"
+  ENVIRONMENT: "staging"
+
+agents:
+  - id: check-variables
+    type: standard
+    runtime: mock
+    description: >-
+      Demonstrate environment variable precedence.
+      
+      Project variables from signalbox.yaml:
+        PROJECT_VAR: from-project
+        SHARED_VAR: overridden-by-pipeline
+      
+      Pipeline variables from this file:
+        LOG_LEVEL: debug (overrides project)
+        ENVIRONMENT: staging
+      
+      Step variables from this agent:
+        STEP_VAR: from-step (only at step level)
+        SHARED_VAR: overridden-by-step (overrides both project and pipeline)
+    
+    prompt: |
+      Explain that the following environment variables were available during execution:
+      - PROJECT_VAR: from-project (defined at project level in signalbox.yaml)
+      - LOG_LEVEL: debug (overridden from project "info" to "debug" at pipeline level)
+      - ENVIRONMENT: staging (defined at pipeline level)
+      - STEP_VAR: from-step (defined at step level, highest precedence)
+      - SHARED_VAR: overridden-by-step (defined at all three levels, step value used)
+      
+      This demonstrates the precedence: Project → Pipeline → Step.
+    
+    # Step-level variables (highest precedence)
+    # These override both project and pipeline variables
+    variables:
+      STEP_VAR: "from-step"
+      SHARED_VAR: "overridden-by-step"
+    
+    handoff: [show-cascade]
+
+  - id: show-cascade
+    type: standard
+    runtime: mock
+    description: Show how variables cascade through precedence levels.
+    prompt: |
+      Summarize how environment variable precedence works in SignalBox:
+      
+      1. Start with project-level variables (signalbox.yaml)
+      2. Pipeline-level variables override matching project variables
+      3. Step-level variables override matching pipeline or project variables
+      
+      In this example:
+      - PROJECT_VAR only existed at project level
+      - LOG_LEVEL was overridden from project to pipeline level
+      - SHARED_VAR was overridden from project to pipeline to step level (ultimate override)
+      - ENVIRONMENT was added at pipeline level
+      - STEP_VAR was added at step level

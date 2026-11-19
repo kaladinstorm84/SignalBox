@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Jira issue snapshot",
+  "description": "Verbatim fields read from one Jira issue. The jira-requirement plugin normalises this into a requirement.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "issue_key",
+    "summary",
+    "description",
+    "labels",
+    "acceptance_criteria",
+    "comments",
+    "retrieval_complete",
+    "retrieval_notes"
+  ],
+  "properties": {
+    "issue_key": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*-[0-9]+$" },
+    "source_url": { "type": ["string", "null"] },
+    "summary": { "type": ["string", "null"] },
+    "description": {
+      "type": ["string", "null"],
+      "description": "The description exactly as Jira returned it."
+    },
+    "labels": { "type": "array", "items": { "type": "string" } },
+    "acceptance_criteria_field_id": { "type": ["string", "null"] },
+    "acceptance_criteria": {
+      "type": ["string", "null"],
+      "description": "The Acceptance Criteria field exactly as Jira returned it; null when the field is absent or empty."
+    },
+    "comments": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/comment" }
+    },
+    "retrieval_complete": {
+      "type": "boolean",
+      "description": "True only when the issue and every page of comments were retrieved."
+    },
+    "retrieval_notes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Limitations, failures or access observations. Empty when retrieval was complete."
+    }
+  },
+  "$defs": {
+    "comment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "author", "created", "updated", "parent_id", "body", "restricted", "internal"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "author": { "type": ["string", "null"] },
+        "created": { "type": ["string", "null"] },
+        "updated": { "type": ["string", "null"] },
+        "parent_id": { "type": ["string", "null"] },
+        "body": { "type": ["string", "null"] },
+        "restricted": { "type": "boolean" },
+        "internal": { "type": "boolean" }
+      }
+    }
+  }
+}

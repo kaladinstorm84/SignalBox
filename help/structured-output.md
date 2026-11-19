@@ -63,10 +63,12 @@ agents:
   inserted as-is; objects and arrays as compact JSON; missing fields as empty
   text. Field conditions and templates need `output.schema` on the node.
 - **Gates.** On an `llm_gate`, the schema describes the verdict. It must
-  still carry the string fields `decision` (`approve`/`reject`) and
-  `feedback`, and may add others (scores, issue lists). `output.*` conditions
-  and templates on a gate read the verdict, and field-conditioned routes run
-  only on approval. `{{ output }}` remains the input the gate passes on.
+  carry the string fields `decision` (`approve`/`reject`) and `feedback`, and
+  may add others (scores, issue lists). If the gate has an `on_escalate` route,
+  add `escalate` to the decision enum; the gate may then request human review
+  with that decision. `on_escalate` routes also run when the gate exhausts its
+  configured rework limit. Field-conditioned routes run only on approval.
+  `{{ output }}` remains the input the gate passes on.
 
 Each run records the schema and every validation attempt (errors and, for
 invalid attempts, the rejected answer). The web UI shows a schema badge on

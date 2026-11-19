@@ -1,0 +1,8 @@
+description: Validate a drafted or revised test plan against its requirement, assign its identity and decide whether it is ready for review.
+language: python
+entry: main.py
+timeout_seconds: 30
+codes:
+  success: 0
+  fail: 1
+  retry: 2

@@ -21,7 +21,11 @@ const gateSchema = `{"type":"object","required":["decision","feedback","score"],
 func newSchemaEngine(t *testing.T, yaml, root string, handlers map[string]func(ctx context.Context, req runtime.Request) (string, error)) *Engine {
 	t.Helper()
 	dir := t.TempDir()
-	for name, content := range map[string]string{"triage.json": triageSchema, "gate.json": gateSchema} {
+	for name, content := range map[string]string{
+		"triage.json":        triageSchema,
+		"gate.json":          gateSchema,
+		"gate-escalate.json": `{"type":"object","required":["decision","feedback"],"properties":{"decision":{"enum":["approve","reject","escalate"]},"feedback":{"type":"string"}}}`,
+	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}

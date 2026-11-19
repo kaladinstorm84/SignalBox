@@ -11,7 +11,7 @@
 | `standard` | Accepts a handoff (or several; see joins below), runs its prompt against a runtime, then hands off to one or more agents or a single orchestrator. |
 | `orchestrator` | A long-running coordinator. It accepts handoffs from **many** agents (fan-in: it waits until every inbound handoff has arrived), then runs its **stages** in order. Each stage dispatches to agents in parallel and collects the terminal output of every chain it started before moving on. A stage (or the orchestrator itself) can define a `prompt` to synthesise the collected results using the orchestrator's runtime. |
 | `approval` | A human gate. Approval passes the payload through unchanged. Rejection follows `reject-to` when specified; otherwise it restarts work after the last upstream approved gate in the same stage/scope, or retries immediate upstream work. Reviewer notes are appended to the rework input. |
-| `llm_gate` | An automated quality gate. It evaluates its input with the configured runtime and records an approve/reject decision and feedback separately from human approvals. Rejected work can be sent to `reject-to` for a bounded number of reworks. |
+| `llm_gate` | An automated quality gate. It evaluates its input with the configured runtime and records an approve/reject/escalate decision and feedback separately from human approvals. Rejected work can be sent to `reject-to` for a bounded number of reworks; `on_escalate` routes a human-requested escalation or an exhausted rework limit to an approval node. |
 | `manual_edit` | Pauses for a person to edit the incoming payload in the web UI or terminal, then hands the edited text downstream. |
 | `code` | Executes a local script with its input on stdin, then hands stdout to downstream nodes. No AI runtime is required. |
 | `plugin:<name>` | Runs a reusable folder-backed script with code-node semantics. Share it through the registry; see [Script plugins](plugins.md). |
@@ -42,7 +42,8 @@
           Reviewer feedback: {{ comment }}
   ```
 
-  Conditions are `always`, `on_approve`, and `on_reject`, plus output-field
+  Conditions are `always`, `on_approve`, `on_reject`, and `on_escalate` (LLM
+  gates only), plus output-field
   comparisons on nodes with an output schema (see "Structured responses"). With no `condition`,
   a handoff keeps the legacy approval behavior (it runs after approval).
   `input` replaces the default output payload and supports only `{{ input }}`,
@@ -117,8 +118,9 @@
 An `llm_gate` is a distinct automated decision step. Its `prompt` describes
 the evaluation criteria; the configured runtime receives the node's input and
 is instructed to return exactly one JSON object with `decision` (`approve` or
-`reject`) and `feedback` (a string). Invalid verdicts fail clearly instead of
-being treated as approval.
+`reject`) and `feedback` (a string). When the gate has an `on_escalate` route,
+it may also return `decision: "escalate"` to request human review. Invalid
+verdicts fail clearly instead of being treated as approval.
 
 ```yaml
 - id: quality_review
@@ -133,9 +135,50 @@ being treated as approval.
 The gate passes its input onward when approved. A rejection appends its
 feedback to the rework input and invokes `reject-to`; after the configured
 number of reworks, another rejection ends the execution with a clear
-`rework limit` error. `max_reworks` is between 0 and 10; it must be positive
-when automatic gate rework is configured. The execution record and UI show
-LLM verdicts and feedback independently of human approval metadata.
+`rework limit` error unless an `on_escalate` route is configured. In that case,
+the gate's feedback is retained with a rework-limit note; use `{{ comment }}` in
+the route's `input` template to include it in the approval node's input.
+`on_escalate` must target an `approval` node, or a node whose handoffs lead to
+one (for example a plugin that renders a review pack), so an escalation can
+never skip human review.
+
+An explicit `escalate` verdict immediately routes to that approval node without
+using a rework. Without an `on_escalate` route, `escalate` is an invalid
+verdict. For schema-validated gates, the decision property's enum must include
+`escalate`. Escalation is recorded separately from approval; the execution
+continues through the approval node. If the human rejects and sends the work
+back for revision, the gate's bounded rework counter starts fresh.
+`max_reworks` is between 0 and 10; it must be positive when automatic gate
+rework is configured.
+
+```yaml
+- id: quality_review
+  type: llm_gate
+  runtime: codex
+  prompt: |
+    Review the plan. If a product decision or clarification is needed, return
+    decision "escalate" and explain the question in feedback.
+  max_reworks: 2
+  reject-to: planner
+  handoff:
+    - to: human_review
+      condition: on_approve
+    - to: human_review
+      condition: on_escalate
+      input: |
+        {{ input }}
+
+        Gate feedback: {{ comment }}
+
+- id: human_review
+  type: approval
+  reject-to: planner
+  handoff: [publish]
+```
+
+The execution record and UI show LLM verdicts, feedback, and whether an
+escalation was requested or caused by the rework limit independently of human
+approval metadata.
 
 ## Pipeline YAML
 

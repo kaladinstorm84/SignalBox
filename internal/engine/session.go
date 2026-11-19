@@ -130,6 +130,7 @@ func (eng *Engine) sessionTurn(le *liveExec, run *NodeRun, node *pipeline.Node, 
 		Model:        participant.Model,
 		MCP:          agentGrants(run.MCP, participantID),
 	}
+	req.Variables = eng.mergeVariables(participant, le.p)
 	eng.persistLocked(le)
 	eng.mu.Unlock()
 

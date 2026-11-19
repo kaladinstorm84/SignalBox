@@ -210,6 +210,8 @@ type Node struct {
 	TimeoutSeconds int            `yaml:"timeout_seconds,omitempty"`
 	Codes          map[string]int `yaml:"codes,omitempty"`
 	OpenSpec       *OpenSpecSpec  `yaml:"openspec,omitempty"`
+	// Variables are environment variables set for this step.
+	Variables map[string]string `yaml:"variables,omitempty"`
 
 	// Stages is only valid for orchestrators.
 	Stages []Stage `yaml:"stages,omitempty"`
@@ -281,6 +283,8 @@ type Pipeline struct {
 	Input *InputSpec `yaml:"input,omitempty"`
 	// Files declares the uploaded files an execution accepts.
 	Files *FilesSpec `yaml:"files,omitempty"`
+	// Variables are environment variables set for all executions of this pipeline.
+	Variables map[string]string `yaml:"variables,omitempty"`
 	// Sources lists files merged in through imports, in load order.
 	Sources []string `yaml:"-"`
 
@@ -530,6 +534,9 @@ func (p *Pipeline) validate() error {
 	if err := p.checkRejectionTargets(); err != nil {
 		return fmt.Errorf("pipeline %q: %w", p.Name, err)
 	}
+	if err := p.checkEscalationTargets(); err != nil {
+		return fmt.Errorf("pipeline %q: %w", p.Name, err)
+	}
 	if err := p.checkStageClosures(); err != nil {
 		return fmt.Errorf("pipeline %q: %w", p.Name, err)
 	}
@@ -540,6 +547,39 @@ func (p *Pipeline) validate() error {
 		return fmt.Errorf("pipeline %q: %w", p.Name, err)
 	}
 	return nil
+}
+
+// checkEscalationTargets keeps an escalation from bypassing human review: an
+// on_escalate route must reach an approval node, directly or through steps
+// such as a plugin that prepares the review pack.
+func (p *Pipeline) checkEscalationTargets() error {
+	for _, node := range p.Nodes {
+		for _, route := range node.Handoff {
+			if route.Condition != "on_escalate" || p.reachesApproval(route.To) {
+				continue
+			}
+			return fmt.Errorf("agent %q: on_escalate handoff target %q must be an approval node or lead to one via handoffs", node.ID, route.To)
+		}
+	}
+	return nil
+}
+
+func (p *Pipeline) reachesApproval(from string) bool {
+	seen := map[string]bool{}
+	queue := []string{from}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		if p.byID[id].Type == TypeApproval {
+			return true
+		}
+		queue = append(queue, p.byID[id].HandoffTargets()...)
+	}
+	return false
 }
 
 func (p *Pipeline) checkRejectionTargets() error {
@@ -770,13 +810,17 @@ func (p *Pipeline) validateNode(n *Node) error {
 			if n.Type != TypeApproval && n.Type != TypeLLMGate {
 				return fmt.Errorf("agent %q: handoff condition %q is only supported on approval and llm_gate nodes", n.ID, route.Condition)
 			}
+		case "on_escalate":
+			if n.Type != TypeLLMGate {
+				return fmt.Errorf("agent %q: handoff condition %q is only supported on llm_gate nodes", n.ID, route.Condition)
+			}
 		case "on_consensus", "on_no_consensus":
 			if n.Type != TypeSession {
 				return fmt.Errorf("agent %q: handoff condition %q is only supported on session nodes", n.ID, route.Condition)
 			}
 		default:
 			if !schema.IsFieldCondition(route.Condition) {
-				return fmt.Errorf("agent %q: unknown handoff condition %q (want always, on_approve, on_reject, on_consensus, on_no_consensus, or a field comparison such as output.risk == \"high\")", n.ID, route.Condition)
+				return fmt.Errorf("agent %q: unknown handoff condition %q (want always, on_approve, on_reject, on_escalate, on_consensus, on_no_consensus, or a field comparison such as output.risk == \"high\")", n.ID, route.Condition)
 			}
 		}
 		if route.To == "" {

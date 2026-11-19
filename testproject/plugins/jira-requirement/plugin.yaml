@@ -1,0 +1,8 @@
+description: Normalise a Jira issue snapshot into a requirement with stable source references (AC-n, SUMMARY, DESCRIPTION, COMMENT:<id>).
+language: python
+entry: main.py
+timeout_seconds: 30
+codes:
+  success: 0
+  fail: 1
+  retry: 2

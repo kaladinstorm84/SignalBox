@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Test plan review verdict",
+  "description": "LLM gate verdict with the structured review report. decision and feedback are required by the gate; the report fields feed the human review pack.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decision", "feedback", "findings", "coverage", "scenario_cards"],
+  "properties": {
+    "decision": {
+      "enum": ["approve", "reject", "escalate"],
+      "description": "approve: no findings. reject: findings that a revision can fix. escalate: every finding needs a human product decision."
+    },
+    "feedback": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Plain-text brief for the reviser, who sees only this text. Restate every finding with its id, scenario numbers, problem, plan excerpt and suggested change."
+    },
+    "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+    "coverage": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/coverage_row" },
+      "description": "One or more rows for every source reference of the requirement."
+    },
+    "scenario_cards": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/scenario_card" },
+      "description": "One card per scenario, in plan order."
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "category",
+        "severity",
+        "scenario_numbers",
+        "problem",
+        "source_reference_ids",
+        "plan_excerpts",
+        "suggested_change",
+        "requires_human_clarification"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^F-[0-9]{3}$" },
+        "category": {
+          "enum": [
+            "coverage_gap",
+            "source_fidelity",
+            "observable_outcomes",
+            "test_data",
+            "scenario_coherence",
+            "duplication",
+            "ambiguity",
+            "revision_integrity"
+          ]
+        },
+        "severity": { "enum": ["minor", "major", "critical"] },
+        "scenario_numbers": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 },
+          "description": "One-based scenario positions; empty for plan-wide findings."
+        },
+        "problem": { "type": "string", "minLength": 1 },
+        "source_reference_ids": { "type": "array", "items": { "type": "string" } },
+        "plan_excerpts": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Verbatim text copied from the candidate plan."
+        },
+        "suggested_change": { "type": "string", "minLength": 1 },
+        "requires_human_clarification": { "type": "boolean" }
+      }
+    },
+    "coverage_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_reference_id",
+        "status",
+        "scenario_numbers",
+        "requirement_excerpt",
+        "assessment",
+        "finding_ids"
+      ],
+      "properties": {
+        "source_reference_id": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["covered", "partial", "blocked", "not_covered", "not_applicable"] },
+        "scenario_numbers": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
+        "requirement_excerpt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Verbatim text copied from the requirement source; the complete text for an acceptance criterion."
+        },
+        "assessment": { "type": "string", "minLength": 1 },
+        "finding_ids": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "criterion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "rationale", "finding_ids"],
+      "properties": {
+        "status": { "enum": ["satisfied", "issue_found", "cannot_assess", "not_applicable"] },
+        "rationale": { "type": "string", "minLength": 1 },
+        "finding_ids": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "scenario_card": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scenario_number", "criteria"],
+      "properties": {
+        "scenario_number": { "type": "integer", "minimum": 1 },
+        "criteria": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source_fidelity",
+            "observable_outcomes",
+            "test_data",
+            "scenario_coherence",
+            "duplication",
+            "ambiguity",
+            "revision_integrity"
+          ],
+          "properties": {
+            "source_fidelity": { "$ref": "#/$defs/criterion" },
+            "observable_outcomes": { "$ref": "#/$defs/criterion" },
+            "test_data": { "$ref": "#/$defs/criterion" },
+            "scenario_coherence": { "$ref": "#/$defs/criterion" },
+            "duplication": { "$ref": "#/$defs/criterion" },
+            "ambiguity": { "$ref": "#/$defs/criterion" },
+            "revision_integrity": { "$ref": "#/$defs/criterion" }
+          }
+        }
+      }
+    }
+  }
+}

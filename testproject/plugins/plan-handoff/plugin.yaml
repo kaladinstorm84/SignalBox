@@ -1,0 +1,8 @@
+description: Verify the AI review against the plan and requirement, then render the human review pack with the plan embedded for later steps.
+language: python
+entry: main.py
+timeout_seconds: 30
+codes:
+  success: 0
+  fail: 1
+  retry: 2

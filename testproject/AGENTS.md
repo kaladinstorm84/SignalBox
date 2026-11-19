@@ -15,7 +15,9 @@ the [help directory](../help/); link to its guides rather than restating them.
 | `shared/` | Importable templates and agents (`imports:`). Keep shared files out of `pipelines/`. |
 | `schemas/` | JSON Schemas (`.json`/`.yaml`) referenced by name without extension. |
 | `libs/` | Scripts for `type: code` nodes (`python`, `javascript`, `powershell`). |
+| `plugins/` | Reusable script nodes (`type: plugin:<name>`), one folder each with `plugin.yaml`. See [Script plugins](../help/plugins.md). |
 | `samples/` | Example inputs and uploads for demos. |
+| `evidence/` | Write-once output of the `jira-test-plan` archive plugin. Never edit or commit it. |
 | `registry/` | Local pipeline registry. Published versions are immutable; never edit them. |
 | `.signalbox/` | Execution state, database and uploads. Never edit or commit it. |
 
@@ -59,6 +61,7 @@ Always run `validate` after changing anything in `pipelines/`, `shared/`,
    | One LLM step | `standard` |
    | Independent specialists in parallel, then collect | `orchestrator` with `stages` |
    | Deterministic transform or check | `code` |
+   | The same, reused by several pipelines or nodes | `plugin:<name>` |
    | Schema-checked JSON with routing on fields | `output.schema` plus `condition: output.x == ...` |
    | Automated quality check with bounded rework | `llm_gate` with `reject-to` and `max_reworks` |
    | Agents debating to agreement | `session` |
@@ -110,7 +113,10 @@ Always run `validate` after changing anything in `pipelines/`, `shared/`,
   its latest draft. Targets must be in the same stage/scope and lead back to
   the gate. `max_reworks` is 1–10 when rework is configured.
 - **Gates:** an `llm_gate` must return `decision` (`approve`/`reject`) and
-  `feedback`. A custom gate schema must keep both.
+  `feedback`. A custom gate schema must keep both. Use `on_escalate` to route
+  gate-requested clarification or exhausted rework to an `approval` node (or a
+  node that leads to one, such as a plugin that renders the review pack);
+  include `escalate` in the schema's decision enum when the gate may request it.
 - **Schemas:** local `$ref` only. `on_invalid: repair` (agents) re-asks with
   the validation errors; code steps default to `fail`.
 - **Params:** `${{ params.x }}` works in prompts, descriptions, `model`,

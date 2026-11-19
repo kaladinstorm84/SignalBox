@@ -246,7 +246,7 @@ jobs:
           gh release create "$RELEASE_TAG" dist/*.zip dist/*.tar.gz dist/SHA256SUMS.txt "${options[@]}"
           gh release edit "$RELEASE_TAG" --draft=false
 
-  # Prereleases (tags containing a hyphen) are never submitted to Chocolatey.
+  # Prereleases (tags containing a hyphen) are never submitted to package managers.
   chocolatey:
     name: Publish Chocolatey package
     needs: publish
@@ -299,3 +299,58 @@ jobs:
           choco push $nupkg --source https://push.chocolatey.org/ --api-key $env:CHOC_KEY
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "Submitted signalbox $version for moderation: https://community.chocolatey.org/packages/signalbox/$version" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+
+  # Generate winget and Scoop manifests for manual PR submission
+  winget-manifest:
+    name: Generate winget manifest
+    needs: publish
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Generate winget manifest
+        run: |
+          .\packaging\winget\New-WingetManifest.ps1 -Tag $env:GITHUB_REF_NAME -Repository $env:GITHUB_REPOSITORY -OutputDirectory dist\winget
+
+      - name: Upload manifest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: winget-manifest
+          path: dist/winget/kaladinstorm84.SignalBox/**
+          if-no-files-found: error
+          retention-days: 90
+
+  scoop-manifest:
+    name: Generate Scoop manifest
+    needs: publish
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Generate Scoop manifest
+        run: |
+          .\packaging\scoop\New-ScoopManifest.ps1 -Tag $env:GITHUB_REF_NAME -Repository $env:GITHUB_REPOSITORY -OutputDirectory dist\scoop
+
+      - name: Upload manifest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scoop-manifest
+          path: dist/scoop/signalbox.json
+          if-no-files-found: error
+          retention-days: 90

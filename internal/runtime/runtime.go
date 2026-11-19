@@ -37,6 +37,8 @@ type Request struct {
 	// CLIs receive the folder as SIGNALBOX_FILES_DIR.
 	FilesDir string
 	Files    []string
+	// Variables are environment variables to set for this invocation.
+	Variables map[string]string
 }
 
 // FilesDirEnv names the environment variable that carries Request.FilesDir.

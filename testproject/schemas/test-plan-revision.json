@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Test plan revision",
+  "description": "A complete revised test plan plus the identity of the plan it replaces. The plan-check plugin assigns the new plan identity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "revision_kind",
+    "based_on_plan_id",
+    "based_on_revision",
+    "changes",
+    "human_feedback",
+    "title",
+    "objective",
+    "assumptions",
+    "open_questions",
+    "scenarios"
+  ],
+  "properties": {
+    "revision_kind": { "enum": ["ai_review", "human_feedback"] },
+    "based_on_plan_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The plan_id of the plan being revised, copied exactly from the input."
+    },
+    "based_on_revision": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The revision number of the plan being revised, copied exactly from the input."
+    },
+    "changes": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "One line per finding or requested change: what was done, or why it was not."
+    },
+    "human_feedback": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["reference", "text"],
+        "properties": {
+          "reference": { "type": "string", "pattern": "^FEEDBACK:R[0-9]+$" },
+          "text": { "type": "string", "minLength": 1 }
+        }
+      },
+      "description": "Every human_feedback entry of the plan being revised, copied unchanged. A human_feedback revision also adds FEEDBACK:R<based_on_revision + 1> holding the reviewer's comment verbatim; an ai_review revision never adds one."
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "objective": { "type": "string", "minLength": 1 },
+    "assumptions": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "open_questions": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/scenario" }
+    }
+  },
+  "$defs": {
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "source_reference_ids",
+        "preconditions",
+        "actions",
+        "expected_results",
+        "recommended_test_layer"
+      ],
+      "properties": {
+        "title": { "type": "string", "minLength": 1 },
+        "source_reference_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "preconditions": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "actions": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "expected_results": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "recommended_test_layer": { "enum": ["ui_e2e", "api", "hybrid", "manual"] }
+      }
+    }
+  }
+}

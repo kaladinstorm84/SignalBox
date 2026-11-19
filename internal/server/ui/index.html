@@ -1063,7 +1063,7 @@ function renderRun(x, r) {
     ${r.output ? `<details data-key="${esc(r.id)}:output" ${!r.stages ? 'open' : ''}><summary>${r.format ? 'formatted output' : r.schema && r.type !== 'llm_gate' ? `output <span class="muted">(${esc(r.schema)} JSON)</span>` : 'output'}</summary>${outputContent}</details>` : ''}
     ${r.verdict ? `<details data-key="${esc(r.id)}:verdict" open><summary>verdict <span class="muted">(${esc(r.schema)} JSON)</span></summary><pre class="out">${esc(r.verdict)}</pre>${rawAnswer(r)}</details>` : ''}
     ${r.edited_by ? `<div class="muted" style="margin-top:8px">Edited by ${esc(r.edited_by)}</div>` : ''}
-    ${r.decision_source === 'llm_gate' ? `<div class="muted" style="margin-top:8px">LLM gate ${esc(r.decision || r.status)}${r.gate_reworks ? ` · rework ${r.gate_reworks}` : ''}${r.comment ? ': ' + esc(r.comment) : ''}</div>` : ''}
+    ${r.decision_source === 'llm_gate' ? `<div class="muted" style="margin-top:8px">LLM gate ${esc(r.decision || r.status)}${r.gate_reworks ? ` · rework ${r.gate_reworks}` : ''}${r.gate_escalation ? ` · escalated: ${r.gate_escalation === 'rework_limit' ? 'rework limit reached' : 'human requested'}` : ''}${r.comment ? ': ' + esc(r.comment) : ''}</div>` : ''}
     ${r.approved_by ? `<div class="muted" style="margin-top:8px">${r.status === 'rejected' ? 'Rejected' : 'Approved'} by ${esc(r.approved_by)}${r.comment ? ': ' + esc(r.comment) : ''}</div>` : ''}
     ${waiting ? `
       <div class="approve-box">

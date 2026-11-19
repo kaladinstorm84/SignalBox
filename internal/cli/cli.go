@@ -508,7 +508,7 @@ func buildEngine(cfg *config.Config, pipelines map[string]*pipeline.Pipeline, pe
 			return nil, err
 		}
 	}
-	eng, err := engine.NewWithLimit(pipelines, registry, store, cfg.MaxConcurrentCalls, cfg.Root)
+	eng, err := engine.NewWithConfig(pipelines, registry, store, cfg, cfg.MaxConcurrentCalls)
 	if err != nil {
 		return nil, err
 	}

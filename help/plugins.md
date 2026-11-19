@@ -135,3 +135,33 @@ go run ..\cmd\signalbox run plugin-text-stats --input "Hello reusable plugins"
 
 The result is JSON containing `lines`, `words` and `characters`. No AI calls
 or credentials are required. You can also launch it from the web UI.
+
+## Example: plugins around an AI review loop
+
+The [jira-test-plan pipeline](../testproject/pipelines/jira-test-plan.yaml)
+turns one Jira issue into a human-approved test plan. AI nodes draft, review
+and revise; four plugins do the work that must not be left to a model:
+
+| Plugin | Role |
+|--------|------|
+| `jira-requirement` | Flattens Jira markup, splits the acceptance criteria and assigns the source references (`AC-n`, `COMMENT:<id>`, ...) the plan must cite. Source defects fail the run. |
+| `plan-check` | Rejects invented references and duplicate scenarios, derives acceptance-criterion links and assigns a content-derived plan id and revision number. Runs after the drafter and every reviser. |
+| `plan-handoff` | Checks the AI review's quotes, scenario numbers and coverage rows against the plan, then renders the Markdown pack the person approves. |
+| `plan-archive` | Writes the approved plan, pack, requirement, decision and checksums to `evidence/<issue>/<plan id>/`. It never overwrites; an identical re-run is a no-op. |
+
+The `llm_gate` allows two AI revisions, then routes to the person. A person's
+rejection comment goes to a separate reviser, and the gate reviews the new
+revision again with a fresh budget. `plan-handoff` sits on the gate's
+`on_escalate` route, which is allowed because it leads to an approval node.
+
+Things to know when adapting it:
+
+- Plugin exit code `retry` rejects and reruns with no counter, so these plugins
+  use `fail` (exit 1) for every hard error.
+- Evidence is write-once by plugin discipline, not enforced by the file
+  system, and records the approver's comment but not their identity.
+- A plan's `human_feedback` and lineage fields are echoed by the reviser
+  agent; `plan-check` validates their shape but cannot prove they are unchanged.
+- Run `go test ./internal/engine -run TestJiraTestPlan` for scripted runs of
+  every path (it needs Python and no credentials). A live run needs the
+  `atlassian` MCP server and a Jira issue key as input.

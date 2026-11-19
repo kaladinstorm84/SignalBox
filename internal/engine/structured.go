@@ -102,7 +102,7 @@ func structuredDoc(run *NodeRun, output string) any {
 
 // verdictErrors checks that a schema-validated gate verdict also carries
 // the decision and feedback fields the gate needs.
-func verdictErrors(doc any) []string {
+func verdictErrors(doc any, allowEscalation bool) []string {
 	obj, ok := doc.(map[string]any)
 	if !ok {
 		return []string{"verdict must be a JSON object"}
@@ -111,8 +111,12 @@ func verdictErrors(doc any) []string {
 	decision, ok := obj["decision"].(string)
 	if !ok {
 		errs = append(errs, `verdict must include a string field "decision"`)
-	} else if decision != "approve" && decision != "reject" {
-		errs = append(errs, fmt.Sprintf(`decision is %q; want "approve" or "reject"`, decision))
+	} else if decision != "approve" && decision != "reject" && !(allowEscalation && decision == "escalate") {
+		want := `"approve" or "reject"`
+		if allowEscalation {
+			want = `"approve", "reject" or "escalate"`
+		}
+		errs = append(errs, fmt.Sprintf(`decision is %q; want %s`, decision, want))
 	}
 	if _, ok := obj["feedback"].(string); !ok {
 		errs = append(errs, `verdict must include a string field "feedback"`)

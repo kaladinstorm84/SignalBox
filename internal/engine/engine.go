@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kaladinstorm84/SignalBox/internal/config"
 	"github.com/kaladinstorm84/SignalBox/internal/knowledgebase"
 	"github.com/kaladinstorm84/SignalBox/internal/pipeline"
 	"github.com/kaladinstorm84/SignalBox/internal/runtime"
@@ -30,6 +31,7 @@ type Engine struct {
 	pipelines     map[string]*pipeline.Pipeline
 	registry      *runtime.Registry
 	store         *Store
+	config        *config.Config
 	execs         map[string]*liveExec
 	callSlots     chan struct{}
 	projectRoot   string
@@ -160,6 +162,25 @@ func NewWithLimit(pipelines map[string]*pipeline.Pipeline, registry *runtime.Reg
 	return eng, nil
 }
 
+// NewWithConfig builds an engine with config access for environment variable support.
+func NewWithConfig(pipelines map[string]*pipeline.Pipeline, registry *runtime.Registry, store *Store, cfg *config.Config, maxConcurrentCalls int) (*Engine, error) {
+	if maxConcurrentCalls < 1 {
+		return nil, fmt.Errorf("maximum concurrent calls must be at least 1")
+	}
+	eng := &Engine{
+		pipelines:    pipelines,
+		registry:     registry,
+		store:        store,
+		config:       cfg,
+		execs:        map[string]*liveExec{},
+		callSlots:    make(chan struct{}, maxConcurrentCalls),
+		projectRoot:  cfg.Root,
+		knowledge:    knowledgebase.New(cfg.Root),
+		uploadLimits: DefaultUploadLimits(),
+	}
+	return eng, nil
+}
+
 // Pipelines copies the definition map, not the definitions themselves.
 // Callers must treat the returned pipeline objects as immutable.
 func (eng *Engine) Pipelines() map[string]*pipeline.Pipeline {
@@ -178,6 +199,31 @@ func (eng *Engine) SetPipelines(pipelines map[string]*pipeline.Pipeline) {
 	eng.mu.Lock()
 	defer eng.mu.Unlock()
 	eng.pipelines = pipelines
+}
+
+// mergeVariables combines project, pipeline, and node-level variables
+// with proper precedence: project (lowest) -> pipeline -> node (highest).
+func (eng *Engine) mergeVariables(node *pipeline.Node, p *pipeline.Pipeline) map[string]string {
+	result := make(map[string]string)
+	
+	// Start with project-level variables
+	if eng.config != nil {
+		for k, v := range eng.config.Variables {
+			result[k] = v
+		}
+	}
+	
+	// Override with pipeline-level variables
+	for k, v := range p.Variables {
+		result[k] = v
+	}
+	
+	// Override with node-level variables
+	for k, v := range node.Variables {
+		result[k] = v
+	}
+	
+	return result
 }
 
 // Start begins a new execution of the named pipeline and returns its ID.
@@ -838,6 +884,7 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 		}
 		invokeWith = func(input string, _ int) (string, error) {
 			req := runtime.Request{Input: input}
+			req.Variables = eng.mergeVariables(node, le.p)
 			delivery.apply(&req)
 			return rt.Invoke(le.ctx, req)
 		}
@@ -849,6 +896,7 @@ func (eng *Engine) runNode(le *liveExec, run *NodeRun, node *pipeline.Node, octx
 			}
 			req := agentRequest(run, node.Prompt, knowledgeInput)
 			req.Schema = sch
+			req.Variables = eng.mergeVariables(node, le.p)
 			delivery.apply(&req)
 			return eng.invokeAgent(le, run, node, node.Retry, retry, req)
 		}
@@ -932,6 +980,7 @@ type gateVerdict struct {
 
 func (eng *Engine) runLLMGate(le *liveExec, run *NodeRun, node *pipeline.Node, octx *stageState) {
 	sch := le.p.SchemaFor(node.OutputSchema())
+	allowEscalation := hasGateEscalateRoute(node)
 	delivery, err := eng.deliverFiles(le, run, node)
 	if err != nil {
 		eng.finishRunErr(le, run, node, octx, err)
@@ -939,9 +988,17 @@ func (eng *Engine) runLLMGate(le *liveExec, run *NodeRun, node *pipeline.Node, o
 	}
 	prompt := node.Prompt + "\n\nReturn only one JSON object with exactly two string fields, decision and feedback. " +
 		`decision must be "approve" or "reject". Example: {"decision":"approve","feedback":"..."}.`
+	if allowEscalation {
+		prompt = node.Prompt + "\n\nReturn only one JSON object with exactly two string fields, decision and feedback. " +
+			`decision must be "approve", "reject", or "escalate". Use "escalate" only when a human decision or clarification is required. Example: {"decision":"escalate","feedback":"..."}`
+	}
 	if sch != nil {
 		prompt = node.Prompt + "\n\nReturn only one JSON object conforming to the schema below. It must include the string fields decision and feedback; " +
 			`decision must be "approve" or "reject".`
+		if allowEscalation {
+			prompt = node.Prompt + "\n\nReturn only one JSON object conforming to the schema below. It must include the string fields decision and feedback; " +
+				`decision must be "approve", "reject", or "escalate". Use "escalate" only when a human decision or clarification is required.`
+		}
 	}
 	retrying := func(input string) (string, error) {
 		return eng.invokeRetrying(le, run, node.Retry, func(retry int) (string, error) {
@@ -951,6 +1008,7 @@ func (eng *Engine) runLLMGate(le *liveExec, run *NodeRun, node *pipeline.Node, o
 			}
 			req := agentRequest(run, prompt, knowledgeInput)
 			req.Schema = sch
+			req.Variables = eng.mergeVariables(node, le.p)
 			delivery.apply(&req)
 			return eng.invokeAgent(le, run, node, node.Retry, retry, req)
 		})
@@ -967,7 +1025,7 @@ func (eng *Engine) runLLMGate(le *liveExec, run *NodeRun, node *pipeline.Node, o
 			if len(res.Errors) > 0 {
 				return res.JSON, res.Errors
 			}
-			return res.JSON, verdictErrors(res.Value)
+			return res.JSON, verdictErrors(res.Value, allowEscalation)
 		}
 		normalized, err := eng.conform(le, run, node, sch, verdictText, check, retrying)
 		if err != nil {
@@ -981,7 +1039,7 @@ func (eng *Engine) runLLMGate(le *liveExec, run *NodeRun, node *pipeline.Node, o
 		eng.mu.Lock()
 		run.Verdict = normalized
 		eng.mu.Unlock()
-	} else if verdict, err = parseStrictVerdict(node, verdictText); err != nil {
+	} else if verdict, err = parseStrictVerdict(node, verdictText, allowEscalation); err != nil {
 		eng.finishRunErr(le, run, node, octx, err)
 		return
 	}
@@ -999,12 +1057,16 @@ func (eng *Engine) runLLMGate(le *liveExec, run *NodeRun, node *pipeline.Node, o
 		eng.finishRunOK(le, run, node, run.Input, octx, "approve")
 		return
 	}
+	if *verdict.Decision == "escalate" {
+		eng.finishRunEscalated(le, run, node, octx, "requested")
+		return
+	}
 	eng.finishRunRejected(le, run, node, octx, *verdict.Feedback, run.Input)
 }
 
 // parseStrictVerdict parses a gate verdict without a schema: exactly one
 // JSON object with only decision and feedback.
-func parseStrictVerdict(node *pipeline.Node, verdictText string) (gateVerdict, error) {
+func parseStrictVerdict(node *pipeline.Node, verdictText string, allowEscalation bool) (gateVerdict, error) {
 	var verdict gateVerdict
 	decoder := json.NewDecoder(strings.NewReader(verdictText))
 	decoder.DisallowUnknownFields()
@@ -1019,8 +1081,12 @@ func parseStrictVerdict(node *pipeline.Node, verdictText string) (gateVerdict, e
 	if verdict.Decision == nil || verdict.Feedback == nil {
 		return verdict, fmt.Errorf("llm_gate %q verdict must include decision and feedback", node.ID)
 	}
-	if *verdict.Decision != "approve" && *verdict.Decision != "reject" {
-		return verdict, fmt.Errorf("llm_gate %q returned decision %q; want approve or reject", node.ID, *verdict.Decision)
+	if *verdict.Decision != "approve" && *verdict.Decision != "reject" && !(allowEscalation && *verdict.Decision == "escalate") {
+		want := "approve or reject"
+		if allowEscalation {
+			want = "approve, reject, or escalate"
+		}
+		return verdict, fmt.Errorf("llm_gate %q returned decision %q; want %s", node.ID, *verdict.Decision, want)
 	}
 	return verdict, nil
 }
@@ -1080,6 +1146,19 @@ func (eng *Engine) finishRunRejected(le *liveExec, run *NodeRun, node *pipeline.
 		}
 		if reworks >= node.MaxReworks {
 			limitReached = true
+			if hasGateEscalateRoute(node) {
+				run.GateEscalation = "rework_limit"
+				run.Comment = appendGateEscalationNote(note, node.MaxReworks)
+				selected := selectHandoffs(node, OutcomeEscalate, nil)
+				eng.deactivateHandoffsLocked(le, node, selected, octx, nil)
+				eng.routeRunLocked(le, run, node, selected, output, octx, nil)
+				delete(le.reworks, run.ID)
+				eng.releaseStageLocked(octx)
+				eng.endRunLocked(le)
+				eng.persistLocked(le)
+				eng.mu.Unlock()
+				return
+			}
 		} else {
 			if work == nil {
 				work = &reworkState{gates: map[string]int{}}
@@ -1130,6 +1209,43 @@ func (eng *Engine) finishRunRejected(le *liveExec, run *NodeRun, node *pipeline.
 	eng.endRunLocked(le)
 	eng.persistLocked(le)
 	eng.mu.Unlock()
+}
+
+func (eng *Engine) finishRunEscalated(le *liveExec, run *NodeRun, node *pipeline.Node, octx *stageState, reason string) {
+	eng.mu.Lock()
+	now := time.Now().UTC()
+	run.Status = StatusRejected
+	run.FinishedAt = &now
+	run.GateEscalation = reason
+	run.Output = run.Input
+	routes := selectHandoffs(node, OutcomeEscalate, nil)
+	if len(routes) == 0 {
+		run.Status = StatusFailed
+		run.Error = fmt.Sprintf("llm_gate %q escalated without an on_escalate route", node.ID)
+		if !le.exec.Status.Terminal() {
+			le.exec.Status = StatusFailed
+			le.exec.Error = run.Error
+			if le.cancel != nil {
+				le.cancel()
+			}
+		}
+	} else {
+		eng.deactivateHandoffsLocked(le, node, routes, octx, nil)
+		eng.routeRunLocked(le, run, node, routes, run.Input, octx, nil)
+	}
+	delete(le.reworks, run.ID)
+	eng.releaseStageLocked(octx)
+	eng.endRunLocked(le)
+	eng.persistLocked(le)
+	eng.mu.Unlock()
+}
+
+func appendGateEscalationNote(feedback string, maxReworks int) string {
+	note := fmt.Sprintf("Human review required: the gate reached its rework limit (%d).", maxReworks)
+	if strings.TrimSpace(feedback) == "" {
+		return note
+	}
+	return feedback + "\n\n" + note
 }
 
 // reworkAfterRejectionLocked prefers an explicit target, then the last
@@ -1307,6 +1423,10 @@ func selectHandoffs(node *pipeline.Node, outcome string, doc any) []pipeline.Han
 			if outcome == OutcomeNoConsensus {
 				selected = append(selected, route)
 			}
+		case "on_escalate":
+			if outcome == OutcomeEscalate {
+				selected = append(selected, route)
+			}
 		case "on_approve":
 			if outcome == "approve" {
 				selected = append(selected, route)
@@ -1318,7 +1438,7 @@ func selectHandoffs(node *pipeline.Node, outcome string, doc any) []pipeline.Han
 		default:
 			// A field comparison routes like an unconditional handoff when
 			// it holds against the structured output.
-			if outcome == "reject" || outcome == OutcomeNoConsensus {
+			if outcome == "reject" || outcome == OutcomeNoConsensus || outcome == OutcomeEscalate {
 				continue
 			}
 			if cond, err := schema.ParseCondition(route.Condition); err == nil && cond.Eval(doc) {
@@ -1327,6 +1447,15 @@ func selectHandoffs(node *pipeline.Node, outcome string, doc any) []pipeline.Han
 		}
 	}
 	return selected
+}
+
+func hasGateEscalateRoute(node *pipeline.Node) bool {
+	for _, route := range node.Handoff {
+		if route.Condition == "on_escalate" {
+			return true
+		}
+	}
+	return false
 }
 
 func hasExplicitRejectRoute(node *pipeline.Node) bool {
@@ -1630,7 +1759,9 @@ func (eng *Engine) invokeOrchPrompt(le *liveExec, run *NodeRun, node *pipeline.N
 		if err != nil {
 			return "", err
 		}
-		return eng.invokeAgent(le, run, node, node.Retry, retry, runtime.Request{SystemPrompt: prompt, Input: knowledgeInput, Model: node.Model}, stageTarget...)
+		req := runtime.Request{SystemPrompt: prompt, Input: knowledgeInput, Model: node.Model}
+		req.Variables = eng.mergeVariables(node, le.p)
+		return eng.invokeAgent(le, run, node, node.Retry, retry, req, stageTarget...)
 	})
 }
 

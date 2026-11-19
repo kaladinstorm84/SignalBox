@@ -11,6 +11,11 @@ state_dir: .signalbox
 # Maximum number of terminal executions to retain (0 keeps history forever).
 execution_retention: 1000
 
+# Project-level environment variables (lowest precedence)
+variables:
+  PROJECT_VAR: "from-project"
+  SHARED_VAR: "overridden-by-pipeline"
+
 server:
   host: 127.0.0.1
   port: 8484

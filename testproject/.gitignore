@@ -3,3 +3,6 @@
 
 # Flag file for the recovery-drill demo
 recovery-drill.fixed
+
+# Write-once evidence from the jira-test-plan pipeline
+evidence/

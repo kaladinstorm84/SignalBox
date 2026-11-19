@@ -213,7 +213,7 @@ func (eng *Engine) recordIntegrationsLocked(le *liveExec, run *NodeRun, node *pi
 
 // agentRequest builds a runtime request carrying the run's model and grants.
 func agentRequest(run *NodeRun, prompt, input string) runtime.Request {
-	return runtime.Request{SystemPrompt: prompt, Input: input, Model: run.Model, MCP: run.MCP}
+	return runtime.Request{SystemPrompt: prompt, Input: input, Model: run.Model, MCP: run.MCP, Variables: map[string]string{}}
 }
 
 // agentGrants returns the grants recorded for one agent of a session.

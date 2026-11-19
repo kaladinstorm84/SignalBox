@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Test plan draft",
+  "description": "A business-level test plan proposed from one requirement. An empty scenarios list is a valid needs-clarification answer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["title", "objective", "assumptions", "open_questions", "scenarios"],
+  "properties": {
+    "title": { "type": "string", "minLength": 1 },
+    "objective": { "type": "string", "minLength": 1 },
+    "assumptions": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "open_questions": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "scenarios": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/scenario" }
+    }
+  },
+  "$defs": {
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "source_reference_ids",
+        "preconditions",
+        "actions",
+        "expected_results",
+        "recommended_test_layer"
+      ],
+      "properties": {
+        "title": { "type": "string", "minLength": 1 },
+        "source_reference_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Source references (SUMMARY, DESCRIPTION, AC-n, GENERATED-AC-n, COMMENT:<id>) that justify the scenario."
+        },
+        "preconditions": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "actions": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "expected_results": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "recommended_test_layer": { "enum": ["ui_e2e", "api", "hybrid", "manual"] }
+      }
+    }
+  }
+}

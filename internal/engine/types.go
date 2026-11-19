@@ -125,6 +125,8 @@ type NodeRun struct {
 	DecisionSource string `json:"decision_source,omitempty"`
 	Decision       string `json:"decision,omitempty"`
 	GateReworks    int    `json:"gate_reworks,omitempty"`
+	// GateEscalation records why an LLM gate routed its result to a human.
+	GateEscalation string `json:"gate_escalation,omitempty"`
 
 	// Schema names the JSON Schema the run's output (or, for an llm_gate,
 	// its verdict) must conform to.
@@ -208,6 +210,7 @@ type ContextEntry struct {
 const (
 	OutcomeConsensus   = "consensus"
 	OutcomeNoConsensus = "no_consensus"
+	OutcomeEscalate    = "escalate"
 )
 
 // SessionRun is the persisted state of a session node: its transcript is

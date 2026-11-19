@@ -180,6 +180,11 @@ func (c *cliRuntime) invoke(ctx context.Context, req Request, onOutput func(stri
 	extra = append(extra, filesExtra...)
 	env = append(env, filesEnv...)
 
+	// Add request variables to environment
+	for key, value := range req.Variables {
+		env = append(env, key+"="+value)
+	}
+
 	timeout, err := invocationTimeout(c.timeout, req.TimeoutSeconds)
 	if err != nil {
 		return "", err

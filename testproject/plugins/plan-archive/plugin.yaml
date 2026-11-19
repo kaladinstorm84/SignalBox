@@ -1,0 +1,8 @@
+description: Archive an approved test plan as write-once evidence (plan, review pack, requirement, human decision and checksums).
+language: python
+entry: main.py
+timeout_seconds: 30
+codes:
+  success: 0
+  fail: 1
+  retry: 2

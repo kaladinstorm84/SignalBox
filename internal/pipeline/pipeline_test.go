@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -102,6 +103,62 @@ agents:
 				t.Fatalf("error = %v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestEscalationHandoffRequiresLLMGateAndApprovalTarget(t *testing.T) {
+	for _, test := range []struct {
+		name, nodeType, targetType, want string
+	}{
+		{name: "non-gate source", nodeType: "standard", targetType: "approval", want: "only supported on llm_gate nodes"},
+		{name: "non-approval target", nodeType: "llm_gate", targetType: "standard", want: "must be an approval node"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			definition := fmt.Sprintf(`name: p
+entry: source
+agents:
+  - id: source
+    type: %s
+    runtime: mock
+    prompt: inspect
+    handoff:
+      - to: review
+        condition: on_escalate
+  - id: review
+    type: %s
+    runtime: mock
+    prompt: review
+`, test.nodeType, test.targetType)
+			if _, err := Parse([]byte(definition)); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestEscalationHandoffMayLeadToApprovalThroughAnotherNode(t *testing.T) {
+	definition := `name: p
+entry: gate
+agents:
+  - id: gate
+    type: llm_gate
+    runtime: mock
+    prompt: inspect
+    handoff:
+      - to: pack
+        condition: on_escalate
+  - id: pack
+    runtime: mock
+    handoff: [review]
+  - id: review
+    type: approval
+`
+	if _, err := Parse([]byte(definition)); err != nil {
+		t.Fatal(err)
+	}
+	unreviewed := strings.Replace(definition, "handoff: [review]", "handoff: []", 1)
+	if _, err := Parse([]byte(unreviewed)); err == nil || !strings.Contains(err.Error(), "must be an approval node or lead to one") {
+		t.Fatalf("error = %v, want an approval-target error", err)
 	}
 }
 

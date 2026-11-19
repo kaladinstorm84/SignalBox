@@ -113,6 +113,8 @@ type Config struct {
 	Registry RegistryConfig `yaml:"registry,omitempty"`
 	// Uploads limits the files attached to executions.
 	Uploads UploadsConfig `yaml:"uploads,omitempty"`
+	// Variables are environment variables set for all executions.
+	Variables map[string]string `yaml:"variables,omitempty"`
 
 	// Root is the directory containing signalbox.yaml (not serialised).
 	Root string `yaml:"-"`

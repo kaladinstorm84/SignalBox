@@ -2,6 +2,17 @@
 
 [Back to SignalBox](../README.md)
 
+## Overview
+
+SignalBox releases are distributed across multiple package managers:
+
+- **GitHub Releases** — Direct binary downloads with SHA-256 checksums
+- **Chocolatey** — Windows package manager (automated submission)
+- **winget** — Windows Package Manager (manual PR submission)
+- **Scoop** — Lightweight Windows package manager (manual PR submission)
+
+For detailed instructions on submitting to winget and Scoop, see [Package Managers](./package-managers.md).
+
 ## Publishing a release
 
 The [release workflow](../.github/workflows/release.yml) runs when a tag starting
@@ -60,6 +71,10 @@ needed. Only the publishing job has repository-content write permission. The
 Existing releases are not overwritten. If upload or publication fails after a
 draft is created, inspect that draft before retrying: finish publishing it
 manually, or delete the incomplete draft before rerunning the workflow.
+
+After publication, the workflow automatically generates manifests for winget and
+Scoop (available as build artifacts). See [Package Managers](./package-managers.md)
+for submission instructions.
 
 ## Publishing to Chocolatey
 

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Checked test plan",
+  "description": "Output of the plan-check plugin: the deterministic status used to route the plan, plus the plan itself.",
+  "type": "object",
+  "required": ["kind", "status", "plan", "checks"],
+  "properties": {
+    "kind": { "const": "test-plan" },
+    "status": { "enum": ["ready", "needs_clarification"] },
+    "plan": { "type": "object" },
+    "checks": { "type": "object" }
+  }
+}
